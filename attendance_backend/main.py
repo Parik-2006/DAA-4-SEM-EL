@@ -17,6 +17,9 @@ from config.constants import API_PREFIX, CORS_ALLOWED_ORIGINS, SYSTEM_NAME, SYST
 from config.logging_config import setup_logging
 from models.model_manager import ModelManager
 from api import health
+from api import attendance
+from services.firebase_service import initialize_firebase
+from services.rtsp_stream_handler import get_stream_manager
 
 
 # Setup logging
@@ -33,15 +36,42 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info(f"Starting {SYSTEM_NAME} v{SYSTEM_VERSION}")
     
+    settings = get_settings()
+    
+    # Initialize Firebase
+    try:
+        if settings.firebase_credentials_path:
+            logger.info("Initializing Firebase...")
+            initialize_firebase(
+                credentials_path=settings.firebase_credentials_path,
+                database_url=getattr(settings, 'firebase_database_url', None),
+                storage_bucket=getattr(settings, 'firebase_storage_bucket', None),
+                use_firestore=getattr(settings, 'use_firestore', True)
+            )
+            logger.info("✓ Firebase initialized successfully")
+        else:
+            logger.warning("Firebase credentials path not configured")
+    except Exception as e:
+        logger.error(f"Failed to initialize Firebase: {e}")
+        logger.warning("Operating without Firebase (data won't be persisted)")
+    
     try:
         # Initialize models
         logger.info("Initializing ML models...")
         device = "cuda"  # Use GPU if available
         ModelManager.initialize(device=device)
-        logger.info("ML models initialized successfully")
+        logger.info("✓ ML models initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize models: {e}")
         # Continue anyway - models can be loaded on-demand
+    
+    # Initialize stream manager
+    try:
+        logger.info("Initializing stream manager...")
+        stream_manager = get_stream_manager()
+        logger.info("✓ Stream manager initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize stream manager: {e}")
     
     yield
     
@@ -129,6 +159,9 @@ async def system_info() -> Dict[str, Any]:
 
 # Include health routes
 app.include_router(health.router, prefix=API_PREFIX, tags=["health"])
+
+# Include attendance routes
+app.include_router(attendance.router, prefix=API_PREFIX, tags=["attendance"])
 
 
 # ============ Error Handlers ============

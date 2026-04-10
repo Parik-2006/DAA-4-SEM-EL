@@ -1,0 +1,667 @@
+{
+  "info": {
+    "_postman_id": "attendance-api-collection",
+    "name": "Attendance System API v1",
+    "description": "Complete REST API for attendance management system with Firebase integration",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health & System",
+      "item": [
+        {
+          "name": "Health Check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has status field', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData).to.have.property('status');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/attendance/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "attendance",
+                "health"
+              ]
+            },
+            "description": "Check system health status"
+          }
+        },
+        {
+          "name": "System Statistics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/attendance/stats",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "attendance",
+                "stats"
+              ]
+            },
+            "description": "Get system-wide statistics"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Student Management",
+      "item": [
+        {
+          "name": "Register Student",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 201 Created', function() {",
+                  "  pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "var jsonData = pm.response.json();",
+                  "pm.environment.set('registered_student_id', jsonData.student_id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"student_id\": \"STU{{$timestamp}}\",\n  \"name\": \"John Doe\",\n  \"email\": \"john.doe@college.edu\",\n  \"phone\": \"+1234567890\",\n  \"embeddings\": [\n    [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/attendance/register-student",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "attendance",
+                "register-student"
+              ]
+            },
+            "description": "Register a new student with face embeddings"
+          }
+        },
+        {
+          "name": "Get All Students",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has students array', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData).to.have.property('students');",
+                  "  pm.expect(jsonData.students).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/attendance/students?limit=50&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "attendance",
+                "students"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            },
+            "description": "Get list of all registered students with pagination"
+          }
+        },
+        {
+          "name": "Get Specific Student",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/attendance/students/{{registered_student_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "attendance",
+                "students",
+                "{{registered_student_id}}"
+              ]
+            },
+            "description": "Get details for a specific student"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Attendance Marking",
+      "item": [
+        {
+          "name": "Mark Attendance",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 201 Created', function() {",
+                  "  pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "var jsonData = pm.response.json();",
+                  "pm.environment.set('attendance_record_id', jsonData.record_id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"student_id\": \"{{registered_student_id}}\",\n  \"timestamp\": \"{{$isotimestamp}}\",\n  \"confidence\": 0.95,\n  \"track_id\": 1,\n  \"camera_id\": \"CAM_MAIN\",\n  \"metadata\": {\n    \"detection_method\": \"optimized_pipeline\",\n    \"frame_number\": 150\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/attendance/mark-attendance",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "attendance",
+                "mark-attendance"
+              ]
+            },
+            "description": "Mark attendance for a recognized student"
+          }
+        },
+        {
+          "name": "Get Attendance Records",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/attendance/attendance?limit=50&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "attendance",
+                "attendance"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            },
+            "description": "Retrieve all attendance records"
+          }
+        },
+        {
+          "name": "Get Attendance by Student",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/attendance/attendance?student_id={{registered_student_id}}&limit=50",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "attendance",
+                "attendance"
+              ],
+              "query": [
+                {
+                  "key": "student_id",
+                  "value": "{{registered_student_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            },
+            "description": "Get attendance records for a specific student"
+          }
+        },
+        {
+          "name": "Get Attendance by Date Range",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/attendance/attendance?date_from=2024-04-01T00:00:00&date_to=2024-04-30T23:59:59&limit=100",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "attendance",
+                "attendance"
+              ],
+              "query": [
+                {
+                  "key": "date_from",
+                  "value": "2024-04-01T00:00:00"
+                },
+                {
+                  "key": "date_to",
+                  "value": "2024-04-30T23:59:59"
+                },
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            },
+            "description": "Get attendance records for a date range"
+          }
+        },
+        {
+          "name": "Daily Report",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/attendance/attendance/daily-report?date=2024-04-10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "attendance",
+                "attendance",
+                "daily-report"
+              ],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "2024-04-10"
+                }
+              ]
+            },
+            "description": "Get daily attendance report for a specific date"
+          }
+        }
+      ]
+    },
+    {
+      "name": "RTSP Streams",
+      "item": [
+        {
+          "name": "Add RTSP Stream",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 201 Created', function() {",
+                  "  pm.response.to.have.status(201);",
+                  "});",
+                  "",
+                  "var jsonData = pm.response.json();",
+                  "pm.environment.set('stream_id', jsonData.stream_id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"stream_id\": \"entrance_cam_{{$timestamp}}\",\n  \"rtsp_url\": \"rtsp://192.168.1.100:554/stream1\",\n  \"camera_name\": \"Main Entrance\",\n  \"location\": \"Building A\",\n  \"enabled\": true,\n  \"frame_skip\": 2,\n  \"min_consecutive_frames\": 5,\n  \"confidence_threshold\": 0.6\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/attendance/streams",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "attendance",
+                "streams"
+              ]
+            },
+            "description": "Add a new RTSP stream"
+          }
+        },
+        {
+          "name": "Get All Streams",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has streams array', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData).to.have.property('streams');",
+                  "  pm.expect(jsonData.streams).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/attendance/streams",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "attendance",
+                "streams"
+              ]
+            },
+            "description": "Get list of all RTSP streams"
+          }
+        },
+        {
+          "name": "Start Stream",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/attendance/streams/{{stream_id}}/start",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "attendance",
+                "streams",
+                "{{stream_id}}",
+                "start"
+              ]
+            },
+            "description": "Start processing an RTSP stream"
+          }
+        },
+        {
+          "name": "Stop Stream",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/attendance/streams/{{stream_id}}/stop",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "attendance",
+                "streams",
+                "{{stream_id}}",
+                "stop"
+              ]
+            },
+            "description": "Stop processing an RTSP stream"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Error Scenarios",
+      "item": [
+        {
+          "name": "Register Duplicate Student (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 409 Conflict', function() {",
+                  "  pm.response.to.have.status(409);",
+                  "});",
+                  "",
+                  "pm.test('Error code is STUDENT_EXISTS', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.error_code).to.equal('STUDENT_EXISTS');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"student_id\": \"{{registered_student_id}}\",\n  \"name\": \"Duplicate\",\n  \"email\": \"dup@college.edu\",\n  \"embeddings\": [[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]]\n}\n"
+            },
+            "url": {
+              "raw": "{{base_url}}/attendance/register-student",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "attendance",
+                "register-student"
+              ]
+            },
+            "description": "Try registering a student that already exists (should fail with 409)"
+          }
+        },
+        {
+          "name": "Get Non-existent Student (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 404 Not Found', function() {",
+                  "  pm.response.to.have.status(404);",
+                  "});",
+                  "",
+                  "pm.test('Error code is STUDENT_NOT_FOUND', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.error_code).to.equal('STUDENT_NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/attendance/students/NONEXISTENT99999",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "attendance",
+                "students",
+                "NONEXISTENT99999"
+              ]
+            },
+            "description": "Try getting a student that doesn't exist (should fail with 404)"
+          }
+        },
+        {
+          "name": "Invalid Embedding Dimension (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 400 Bad Request', function() {",
+                  "  pm.response.to.have.status(400);",
+                  "});",
+                  "",
+                  "pm.test('Error code is VALIDATION_ERROR', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.error_code).to.equal('VALIDATION_ERROR');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"student_id\": \"STU_BAD_EMBED\",\n  \"name\": \"Bad Embedding\",\n  \"email\": \"bad@college.edu\",\n  \"embeddings\": [[0.1, 0.2, 0.3]]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/attendance/register-student",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "attendance",
+                "register-student"
+              ]
+            },
+            "description": "Try registering with invalid embedding dimension (should fail with 400)"
+          }
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Set default base URL if not already set",
+          "if (!pm.environment.get('base_url')) {",
+          "  pm.environment.set('base_url', 'http://localhost:8000/api/v1');",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000/api/v1",
+      "type": "string"
+    },
+    {
+      "key": "student_id",
+      "value": "STU001",
+      "type": "string"
+    },
+    {
+      "key": "registered_student_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "stream_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "attendance_record_id",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}
