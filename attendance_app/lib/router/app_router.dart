@@ -3,11 +3,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:smart_attendance/providers/auth_provider.dart';
 import 'package:smart_attendance/screens/attendance/attendance_screen.dart';
+import 'package:smart_attendance/screens/attendance/dashboard_screen.dart';
 import 'package:smart_attendance/screens/attendance/live_camera_screen.dart';
 import 'package:smart_attendance/screens/attendance/qr_scan_screen.dart';
 import 'package:smart_attendance/screens/auth/login_screen.dart';
 import 'package:smart_attendance/screens/auth/register_screen.dart';
 import 'package:smart_attendance/screens/auth/student_registration_screen.dart';
+import 'package:smart_attendance/screens/history/enhanced_history_screen.dart';
 import 'package:smart_attendance/screens/history/history_screen.dart';
 import 'package:smart_attendance/screens/home/home_screen.dart';
 import 'package:smart_attendance/screens/profile/profile_screen.dart';
@@ -22,9 +24,11 @@ class AppRoutes {
   static const studentRegistration = '/student-registration';
   static const home = '/home';
   static const attendance = '/attendance';
+  static const dashboard = '/dashboard';
   static const liveCamera = '/live-camera';
   static const qrScan = '/qr-scan';
   static const history = '/history';
+  static const enhancedHistory = '/history-enhanced';
   static const profile = '/profile';
 }
 
@@ -121,6 +125,22 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             ),
           ),
         ],
+      ),
+      // Attendance dashboard (full-screen)
+      GoRoute(
+        path: AppRoutes.dashboard,
+        pageBuilder: (context, state) => _slideTransition(
+          state,
+          const AttendanceDashboardScreen(),
+        ),
+      ),
+      // Enhanced history (full-screen)
+      GoRoute(
+        path: AppRoutes.enhancedHistory,
+        pageBuilder: (context, state) => _slideTransition(
+          state,
+          const EnhancedHistoryScreen(),
+        ),
       ),
       // Full-screen QR scanner (outside shell)
       GoRoute(
