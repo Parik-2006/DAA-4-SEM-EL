@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: attendance-dashboard
+    runtime: node
+    plan: free
+    buildCommand: npm run build
+    startCommand: npm run preview
+    envVars:
+      - key: VITE_API_BASE_URL
+        scope: build
+        secretFile: .env.render
+      - key: VITE_API_TIMEOUT
+        scope: build
+        value: "15000"
+      - key: VITE_POLLING_INTERVAL
+        scope: build
+        value: "5000"
+    autoSelectPlan: false
+    previewsEnabled: true
