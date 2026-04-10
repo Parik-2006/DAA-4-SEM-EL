@@ -3,9 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:smart_attendance/providers/auth_provider.dart';
 import 'package:smart_attendance/screens/attendance/attendance_screen.dart';
+import 'package:smart_attendance/screens/attendance/live_camera_screen.dart';
 import 'package:smart_attendance/screens/attendance/qr_scan_screen.dart';
 import 'package:smart_attendance/screens/auth/login_screen.dart';
 import 'package:smart_attendance/screens/auth/register_screen.dart';
+import 'package:smart_attendance/screens/auth/student_registration_screen.dart';
 import 'package:smart_attendance/screens/history/history_screen.dart';
 import 'package:smart_attendance/screens/home/home_screen.dart';
 import 'package:smart_attendance/screens/profile/profile_screen.dart';
@@ -17,8 +19,10 @@ class AppRoutes {
   static const splash = '/';
   static const login = '/login';
   static const register = '/register';
+  static const studentRegistration = '/student-registration';
   static const home = '/home';
   static const attendance = '/attendance';
+  static const liveCamera = '/live-camera';
   static const qrScan = '/qr-scan';
   static const history = '/history';
   static const profile = '/profile';
@@ -41,8 +45,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         return AppRoutes.splash;
       }
 
-      final isOnAuthPage = currentPath == AppRoutes.login ||
-          currentPath == AppRoutes.register;
+  final isOnAuthPage = currentPath == AppRoutes.login ||
+          currentPath == AppRoutes.register ||
+          currentPath == AppRoutes.studentRegistration;
 
       // Redirect unauthenticated users to login
       if (!isLoading && !isAuthenticated && !isOnAuthPage &&
@@ -74,6 +79,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         pageBuilder: (context, state) => _slideTransition(
           state,
           const RegisterScreen(),
+        ),
+      ),
+      GoRoute(
+        path: AppRoutes.studentRegistration,
+        pageBuilder: (context, state) => _slideTransition(
+          state,
+          const StudentRegistrationScreen(),
         ),
       ),
       // Main app shell with bottom nav
@@ -116,6 +128,14 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         pageBuilder: (context, state) => _slideUpTransition(
           state,
           const QrScanScreen(),
+        ),
+      ),
+      // Full-screen live camera (outside shell)
+      GoRoute(
+        path: AppRoutes.liveCamera,
+        pageBuilder: (context, state) => _slideUpTransition(
+          state,
+          const LiveCameraScreen(),
         ),
       ),
     ],
