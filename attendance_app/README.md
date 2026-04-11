@@ -70,107 +70,75 @@ flutter pub get
 
 ### 3. Configure backend URL
 
-Edit `lib/services/api_service.dart`:
+⚡ WDS Scheduling Engine (Weighted Dynamic Scoring)
+A Next-Generation Non-Preemptive CPU Scheduler. Designed for High-Performance Computing, Cloud Clusters, and Autonomous Systems.
 
-```dart
-// Android emulator → FastAPI on localhost
-static const String devBaseUrl = 'http://10.0.2.2:8000';
+📖 Project Objective
+Modern computing environments (like 5G Edge Gateways and AI Training Clusters) suffer from inefficiencies when using standard CPU schedulers:
 
-// Physical device → your machine's IP on the same network
-static const String devBaseUrl = 'http://192.168.1.100:8000';
+FCFS (First-Come-First-Serve): causes the "Convoy Effect" (UI freezes behind background tasks).
+SJF (Shortest Job First): causes "Starvation" (Long tasks never run).
+The Solution: The Weighted Dynamic Score (WDS) algorithm. It utilizes a Cooperative Multitasking Architecture where tasks yield control at specific checkpoints. The scheduler calculates a dynamic score based on Efficiency, Fairness, and Priority to decide the next task.
 
-// Production
-static const String prodBaseUrl = 'https://api.yourattendance.com';
-```
+⚙️ The WDS Formula
+The engine calculates a score (S) for every waiting process in real-time:
 
-### 4. Run the app
+S = (Wwait × Twaiting) + (Wburst × 30/Tburst) + (Wprio × Plevel)
+
+Wwait (Aging Factor): Prevents starvation by boosting the score of waiting tasks.
+Wburst (Efficiency): Favors short jobs to reduce system latency.
+Wprio (Urgency): Allows critical operations (e.g., "Emergency Braking") to override standard logic.
+
+🌍 Real-World Scenarios
+This project simulates WDS performance in four specific industries:
+
+| Industry         | The Problem                                 | The WDS Solution                                 |
+|------------------|---------------------------------------------|--------------------------------------------------|
+| 🤖 AI Clusters   | Long training epochs block checkpoint saves.| Yield Points: WDS pauses training to run quick saves. |
+| 📡 5G Edge       | 4K video streams block health alert packets.| Packet Yielding: Emergency packets get priority override. |
+| 🚗 Autonomous OS | Map downloads block Lidar obstacle detection.| Context Switch: Lidar gets instant CPU access.    |
+| ☁️ Cloud Functions | Cold starts delay user login requests.     | Aging Factor: Login requests gain score while waiting. |
+
+🛠️ Tech Stack
+Backend: Python (Flask)
+Algorithm: Weighted Dynamic Scoring (Custom Heuristic)
+Frontend: HTML5, CSS3, JavaScript (Fetch API)
+Visualization: Chart.js (for Latency Graphs)
+
+🚀 How to Run Locally
+Clone the Repository
 
 ```bash
-flutter run
-```
-
----
-
-## 🔌 FastAPI Backend — Expected Endpoints
-
-### Authentication (`/api/v1/auth`)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/login` | OAuth2 form login → returns JWT |
-| `POST` | `/register` | Create student account |
-| `GET` | `/me` | Get current user profile |
-| `POST` | `/refresh` | Refresh access token |
-| `POST` | `/logout` | Invalidate token |
-
-**Login request format** (OAuth2 form data):
-```
-Content-Type: application/x-www-form-urlencoded
-username=user@email.com&password=secret
-```
-
-**Login response:**
-```json
-{
-  "access_token": "eyJ...",
-  "token_type": "bearer",
-  "expires_in": 3600,
-  "refresh_token": "eyJ..."
 }
+cd wds-scheduler
 ```
+Install Dependencies
 
-### Courses (`/api/v1/courses`)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/enrolled` | Student's enrolled courses |
-| `GET` | `/{id}/attendance` | Attendance for a course (teacher) |
-
-**Course response:**
-```json
-{
-  "id": "uuid",
-  "name": "Data Structures",
-  "code": "CS301",
-  "teacher_name": "Dr. Smith",
-  "department": "Computer Science",
-  "credits": 3,
-  "schedule": [
-    { "day_of_week": "Monday", "start_time": "09:00", "end_time": "10:30", "room": "LT-4" }
-  ],
-  "total_students": 45,
-  "is_active": true
-}
+```bash
+pip install -r requirements.txt
 ```
+Run the Server
 
-### Attendance (`/api/v1/attendance`)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/me` | Student's attendance records |
-| `GET` | `/me/summary` | Overall stats (present/absent counts) |
-| `POST` | `/mark` | Manual attendance mark |
-| `POST` | `/mark-qr` | QR code attendance marking |
-| `POST` | `/generate-qr` | Generate session QR (teacher) |
-
-**Summary response:**
-```json
-{
-  "total_classes": 45,
-  "present_count": 38,
-  "absent_count": 5,
-  "late_count": 2,
-  "excused_count": 0
-}
+```bash
+python app.py
 ```
+Open in Browser Visit http://127.0.0.1:5000
 
-**QR mark request:**
-```json
-{
-  "qr_token": "SESSION_TOKEN_HERE",
-  "device_id": "optional-device-id",
-  "scanned_at": "2024-01-15T10:30:00Z"
-}
+☁️ Deployment
+This project is deployed on Vercel.
+
+1. Push code to GitHub.
+2. Import repository into Vercel.
+3. Vercel automatically detects the Python runtime via vercel.json.
+
+📄 License
+This project is for educational research purposes.
+
+🤝 Contributing & Issues
+This project is open for viewing. Direct changes are restricted.
+
+Found a bug? Please Open a New Issue and describe the problem.
+Want to fix it? Please Fork the repo and submit a Pull Request (PR) for review.
 ```
 
 ---
