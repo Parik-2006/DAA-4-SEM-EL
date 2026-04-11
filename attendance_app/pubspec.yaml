@@ -27,7 +27,7 @@ dependencies:
 
   # UI & Icons
   cupertino_icons: ^1.0.6
-  lucide_icons: ^0.0.4
+  lucide_icons: ^0.257.0
   shimmer: ^3.0.0
   flutter_animate: ^4.5.0
   lottie: ^3.1.0
@@ -68,19 +68,3 @@ flutter:
     - assets/images/
     - assets/animations/
     - assets/icons/
-
-  fonts:
-    - family: Sora
-      fonts:
-        - asset: assets/fonts/Sora-Regular.ttf
-        - asset: assets/fonts/Sora-Medium.ttf
-          weight: 500
-        - asset: assets/fonts/Sora-SemiBold.ttf
-          weight: 600
-        - asset: assets/fonts/Sora-Bold.ttf
-          weight: 700
-    - family: JetBrainsMono
-      fonts:
-        - asset: assets/fonts/JetBrainsMono-Regular.ttf
-        - asset: assets/fonts/JetBrainsMono-Medium.ttf
-          weight: 500

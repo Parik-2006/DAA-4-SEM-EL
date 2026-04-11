@@ -19,8 +19,8 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements
 COPY requirements.txt .
 
-# Build wheels for faster installation
-RUN pip wheel --no-cache-dir --no-deps --wheel-dir /build/wheels -r requirements.txt
+# Build wheels for faster installation (large ML wheels need higher timeout/retries)
+RUN pip wheel --no-cache-dir --no-deps --retries 20 --timeout 1000 --wheel-dir /build/wheels -r requirements.txt
 
 
 # Stage 2: Runtime
@@ -33,11 +33,11 @@ RUN apt-get update && apt-get install -y \
     libopenblas0 \
     liblapack3 \
     libgomp1 \
-    libhdf5103 \
+    libhdf5-310 \
     libsm6 \
     libxext6 \
     libxrender-dev \
-    libgl1-mesa-glx \
+    libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy wheels from builder

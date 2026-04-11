@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:smart_attendance/models/user_model.dart';
 import 'package:smart_attendance/services/auth_service.dart';
@@ -77,8 +78,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
         password: password,
       );
       state = AuthState.authenticated(result.user);
-    } on ApiException catch (e) {
-      state = AuthState.error(e.message);
+    } on DioException catch (e) {
+      state = AuthState.error(e.message ?? 'Login failed');
     } catch (_) {
       state = AuthState.error('Login failed. Please try again.');
     }
@@ -104,8 +105,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
       );
       // Auto-login after registration
       await login(email: email, password: password);
-    } on ApiException catch (e) {
-      state = AuthState.error(e.message);
+    } on DioException catch (e) {
+      state = AuthState.error(e.message ?? 'Registration failed');
     } catch (_) {
       state = AuthState.error('Registration failed. Please try again.');
     }

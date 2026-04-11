@@ -133,10 +133,8 @@ class _LiveCameraScreenState extends ConsumerState<LiveCameraScreen>
           MobileScanner(
             controller: _cameraController,
             onDetect: (capture) {
-              // Frame is available for face detection
-              if (capture.raw != null && !_isProcessing) {
-                _processFrame(capture.raw!.planes[0].bytes);
-              }
+              // Note: mobile_scanner 5.x doesn't expose raw frame bytes
+              // Face detection is handled by periodic detection loop above
             },
             overlayBuilder: (context, constraints) {
               return Stack(

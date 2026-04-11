@@ -97,7 +97,45 @@ models/*.pth
 .DS_Store
 Thumbs.db
 Desktop.ini
+# ============ Docker ============
+.docker/
+Docker containers/
+.dockerignore
 
+# ============ Build & Cache ============
+.flutter-plugins
+.dart_tool/
+.graddle/
+build/
+.cache/
+.buildlog/
+.gradle/
+local.properties
+*.apk
+*.ipa
+
+# ============ Firebase ============
+config/firebase-credentials.json
+firebase-credentials.json
+firebase-key.json
+
+# ============ Sensitive/Private ============
+.env
+.env.local
+.env.*.local
+.env.production
+config/private/
+secrets/
+*.key
+*.pem
+credentials.json
+
+# ============ Unnecessary Documentation (Use README.md only) ============
+*.backup.md
+*.old.md
+DEV_*.md
+TEST_*.md
+DRAFT_*.md
 # ============ Coverage & Testing ============
 .coverage
 htmlcov/

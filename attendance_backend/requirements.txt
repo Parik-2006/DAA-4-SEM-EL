@@ -14,7 +14,7 @@ Pillow==10.0.0
 ultralytics==8.0.0  # YOLOv8 for face detection
 facenet-pytorch==2.5.0  # FaceNet implementation
 deepface==0.0.75  # Alternative to facenet-pytorch (includes RetinaFace)
-retinaface==0.0.13  # Face detector
+retinaface==1.1.1  # Face detector
 
 # Vector Search & Indexing
 faiss-cpu==1.7.4  # Facebook's similarity search library
@@ -30,7 +30,7 @@ scipy==1.11.3
 
 # Async & Concurrency
 aiofiles==23.2.1
-asyncio-timeout==4.0.3
+async-timeout==4.0.3
 
 # Logging & Monitoring
 python-json-logger==2.0.7
