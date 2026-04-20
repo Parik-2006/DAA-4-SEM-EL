@@ -1,11 +1,26 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart';
 import 'package:smart_attendance/router/app_router.dart';
 import 'package:smart_attendance/theme/app_theme.dart';
+import 'package:smart_attendance/services/firebase_services.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  try {
+    // Initialize Firebase
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+
+    // Initialize Firebase services
+    await initializeFirebaseServices();
+  } catch (e) {
+    debugPrint('Firebase initialization error: $e');
+  }
 
   // Lock to portrait orientation
   await SystemChrome.setPreferredOrientations([

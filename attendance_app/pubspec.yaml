@@ -35,6 +35,13 @@ dependencies:
   # Date & Time
   intl: ^0.19.0
 
+  # Firebase
+  firebase_core: ^2.24.0
+  firebase_auth: ^4.10.0
+  cloud_firestore: ^4.13.0
+  firebase_storage: ^11.2.0
+  firebase_analytics: ^10.5.0
+
   # QR Code (for attendance marking)
   qr_flutter: ^4.1.0
   mobile_scanner: ^5.0.0

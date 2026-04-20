@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "103216880346",
+    "project_id": "daa-4th-sem",
+    "storage_bucket": "daa-4th-sem.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:103216880346:android:7c194987d4b1bcf08be3e3",
+        "android_client_info": {
+          "package_name": "com.attendmate.mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAIVYy3iymGvfWt9LL99nyvakXNACHtY-E"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
