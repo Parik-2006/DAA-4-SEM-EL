@@ -10,7 +10,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+attendance_backend/lib/
 lib64/
 parts/
 sdist/
@@ -62,8 +62,8 @@ build/
 
 # ============ Environment Files (SENSITIVE - DO NOT COMMIT) ============
 .env
-.env.local
-.env.*.local
+attendance_backend/.env.local
+attendance_backend/.env.*.local
 .env.production
 config/firebase-credentials.json
 firebase-credentials.json
