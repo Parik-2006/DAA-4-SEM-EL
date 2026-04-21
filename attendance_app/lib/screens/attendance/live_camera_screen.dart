@@ -1,106 +1,199 @@
-import 'dart:async';
-import 'dart:convert';
-
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
-import 'package:smart_attendance/models/face_model.dart';
-import 'package:smart_attendance/providers/registration_provider.dart';
-import 'package:smart_attendance/theme/app_theme.dart';
+import 'dart:convert';
+import 'package:dio/dio.dart';
+import '../../providers/auth_provider.dart';
+import '../../theme/app_colors.dart';
 
 class LiveCameraScreen extends ConsumerStatefulWidget {
-  const LiveCameraScreen({super.key});
+  const LiveCameraScreen({Key? key}) : super(key: key);
 
   @override
   ConsumerState<LiveCameraScreen> createState() => _LiveCameraScreenState();
 }
 
-class _LiveCameraScreenState extends ConsumerState<LiveCameraScreen>
-    with WidgetsBindingObserver {
-  late MobileScannerController _cameraController;
-  Timer? _detectionTimer;
-  bool _isProcessing = false;
-  bool _showFaceNames = true;
+class _LiveCameraScreenState extends ConsumerState<LiveCameraScreen> {
+  CameraController? _cameraController;
+  bool _isTakingPhoto = false;
+  bool _isInitialized = false;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     _initializeCamera();
-    _startFaceDetectionLoop();
   }
 
-  /// Initialize camera controller
-  void _initializeCamera() {
-    _cameraController = MobileScannerController(
-      facing: CameraFacing.front,
-      autoStart: true,
-      detectionSpeed: DetectionSpeed.normal,
-      formats: const [],
-    );
-  }
+  Future<void> _initializeCamera() async {
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        if (mounted) {
+          _showErrorDialog('No cameras available on this device');
+        }
+        return;
+      }
 
-  /// Start periodic face detection
-  void _startFaceDetectionLoop() {
-    _detectionTimer = Timer.periodic(
-      const Duration(milliseconds: 500), // Process every 500ms for smooth updates
-      (_) async {
-        if (_isProcessing) return;
-        // Face detection will be triggered by camera frames
-      },
-    );
-  }
+      _cameraController = CameraController(
+        cameras[0],
+        ResolutionPreset.high,
+      );
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    switch (state) {
-      case AppLifecycleState.detached:
-      case AppLifecycleState.hidden:
-      case AppLifecycleState.paused:
-        _cameraController.stop();
-        break;
-      case AppLifecycleState.resumed:
-        _cameraController.start();
-        break;
-      case AppLifecycleState.inactive:
-        break;
+      await _cameraController!.initialize();
+      if (mounted) {
+        setState(() {
+          _isInitialized = true;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        _showErrorDialog('Failed to initialize camera: $e');
+      }
     }
   }
 
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _detectionTimer?.cancel();
-    _cameraController.dispose();
-    super.dispose();
-  }
+  Future<void> _markAttendance() async {
+    if (_isTakingPhoto ||
+        _cameraController == null ||
+        !_cameraController!.value.isInitialized) {
+      return;
+    }
 
-  /// Process camera frame for face detection
-  Future<void> _processFrame(List<int> frameBytes) async {
-    if (_isProcessing) return;
-
-    setState(() => _isProcessing = true);
+    setState(() => _isTakingPhoto = true);
 
     try {
-      // Convert frame to base64
-      final frameBase64 = base64Encode(frameBytes);
+      final image = await _cameraController!.takePicture();
+      final bytes = await image.readAsBytes();
+      final base64Image = base64Encode(bytes);
 
-      // Detect faces using provider
-      final detectionNotifier = ref.read(detectedFacesProvider.notifier);
-      await detectionNotifier.detectFaces(frameBase64);
+      final userId = ref.read(authProvider).userId;
+      if (userId == null) {
+        _showErrorDialog('User ID not found');
+        return;
+      }
+
+      final response = await Dio().post(
+        'http://localhost:8000/api/v1/attendance/mark-mobile?student_id=$userId&image_base64=$base64Image',
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final status = response.data['message'] ?? 'Attendance marked';
+        _showSuccessDialog(status);
+      } else {
+        _showErrorDialog('Failed to mark attendance');
+      }
     } catch (e) {
-      // Silently handle errors to avoid UI interruption
-      debugPrint('Face detection error: $e');
+      _showErrorDialog('Error: $e');
     } finally {
-      setState(() => _isProcessing = false);
+      if (mounted) {
+        setState(() => _isTakingPhoto = false);
+      }
     }
+  }
+
+  void _showSuccessDialog(String message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Success'),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              Navigator.pop(context);
+            },
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showErrorDialog(String message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Error'),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final detectedFaces = ref.watch(detectedFacesProvider);
+    if (!_isInitialized) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Mark Attendance')),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
 
     return Scaffold(
+      appBar: AppBar(
+        title: const Text('Mark Attendance'),
+        elevation: 0,
+      ),
+      body: Stack(
+        children: [
+          CameraPreview(_cameraController!),
+          Positioned(
+            bottom: 30,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: FloatingActionButton(
+                onPressed: _isTakingPhoto ? null : _markAttendance,
+                backgroundColor: AppColors.primary,
+                disabledElevation: 0,
+                child: _isTakingPhoto
+                    ? const SizedBox(
+                        width: 24,
+                        height: 24,
+                        child: CircularProgressIndicator(
+                          valueColor:
+                              AlwaysStoppedAnimation<Color>(Colors.white),
+                          strokeWidth: 2,
+                        ),
+                      )
+                    : const Icon(Icons.camera_alt, size: 28),
+              ),
+            ),
+          ),
+          Positioned(
+            top: 20,
+            left: 20,
+            right: 20,
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.5),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text(
+                'Position your face in the center and tap to mark attendance',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white, fontSize: 14),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _cameraController?.dispose();
+    super.dispose();
+  }
+}
       backgroundColor: Colors.black,
       appBar: AppBar(
         title: const Text('Live Face Detection'),

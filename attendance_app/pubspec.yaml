@@ -45,6 +45,8 @@ dependencies:
   # QR Code (for attendance marking)
   qr_flutter: ^4.1.0
   mobile_scanner: ^5.0.0
+  camera: ^0.10.5
+  permission_handler: ^11.4.4
 
   # Image
   cached_network_image: ^3.3.1

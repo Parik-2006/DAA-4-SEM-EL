@@ -370,6 +370,302 @@ async def mark_attendance(request: MarkAttendanceRequest) -> MarkAttendanceRespo
         )
 
 
+@router.post(
+    "/mark",
+    response_model=MarkAttendanceResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Mark attendance with face recognition",
+    responses={
+        201: {"model": MarkAttendanceResponse},
+        400: {"model": ErrorResponse},
+        404: {"model": ErrorResponse}
+    }
+)
+async def mark_attendance_with_image(
+    student_id: str = Body(..., description="Student ID"),
+    image_base64: str = Body(..., description="Base64 encoded image")
+) -> MarkAttendanceResponse:
+    """
+    Mark attendance using face recognition from image.
+    
+    This endpoint:
+    1. Decodes the base64 image
+    2. Extracts face embedding from image
+    3. Matches against student's stored embeddings
+    4. Marks attendance if confidence > threshold
+    
+    Args:
+        student_id: Student ID
+        image_base64: Base64 encoded image
+    
+    Returns:
+        MarkAttendanceResponse with attendance status
+    
+    Raises:
+        400: Invalid image or no face detected
+        404: Student not found or no match
+    """
+    try:
+        firebase = get_firebase_service()
+        
+        if not firebase:
+            raise HTTPException(
+                status_code=503,
+                detail="Firebase service not initialized"
+            )
+        
+        # Verify student exists
+        student = firebase.get_student(student_id)
+        if not student:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Student {student_id} not found"
+            )
+        
+        # Decode image
+        import base64
+        import io
+        from PIL import Image
+        import numpy as np
+        
+        try:
+            image_data = base64.b64decode(image_base64)
+            image = Image.open(io.BytesIO(image_data))
+            image_array = np.array(image)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid image format: {str(e)}"
+            )
+        
+        # Extract face embedding
+        from models.facenet_extractor import FaceNetExtractor
+        
+        try:
+            extractor = FaceNetExtractor()
+            embedding = extractor.extract_embedding(image_array)
+            
+            if embedding is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No face detected in image"
+                )
+        except Exception as e:
+            logger.warning(f"Face extraction error: {e}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Face extraction failed: {str(e)}"
+            )
+        
+        # Get student's stored embeddings
+        student_embeddings = student.get("embeddings", [])
+        if not student_embeddings:
+            raise HTTPException(
+                status_code=404,
+                detail="Student has no registered face embeddings"
+            )
+        
+        # Compare embeddings
+        from scipy.spatial.distance import cosine
+        
+        CONFIDENCE_THRESHOLD = 0.6  # Cosine distance threshold
+        
+        best_distance = float('inf')
+        best_match = None
+        
+        for stored_emb in student_embeddings:
+            if isinstance(stored_emb, list):
+                stored_emb = np.array(stored_emb)
+            
+            distance = cosine(embedding, stored_emb)
+            if distance < best_distance:
+                best_distance = distance
+                best_match = distance
+        
+        # Convert distance to confidence (lower distance = higher confidence)
+        confidence = 1.0 - min(best_match, 1.0) if best_match is not None else 0.0
+        
+        if best_match > CONFIDENCE_THRESHOLD:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Face does not match student. Confidence: {confidence:.2f}"
+            )
+        
+        # Mark attendance
+        timestamp = datetime.now()
+        result = firebase.mark_attendance(
+            student_id=student_id,
+            timestamp=timestamp,
+            confidence=confidence,
+            track_id=None,
+            camera_id="mobile_app",
+            metadata={
+                "method": "face_recognition",
+                "threshold": CONFIDENCE_THRESHOLD,
+                "distance": float(best_match)
+            }
+        )
+        
+        logger.info(f"Attendance marked via face recognition: {student_id} (confidence: {confidence:.2f})")
+        
+        return MarkAttendanceResponse(
+            success=True,
+            record_id=result['record_id'],
+            student_id=student_id,
+            timestamp=timestamp.isoformat(),
+            message=f"Attendance marked successfully (confidence: {confidence:.2f})"
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error marking attendance with image: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to mark attendance: {str(e)}"
+        )
+
+
+@router.post(
+    "/mark-mobile",
+    response_model=MarkAttendanceResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Mark attendance with face recognition (Mobile App)",
+    responses={
+        201: {"model": MarkAttendanceResponse},
+        400: {"model": ErrorResponse},
+        404: {"model": ErrorResponse}
+    }
+)
+async def mark_attendance_mobile(
+    student_id: str = Query(..., description="Student ID"),
+    image_base64: str = Query(..., description="Base64 encoded image")
+) -> MarkAttendanceResponse:
+    """
+    Mark attendance using face recognition from mobile camera.
+    
+    This endpoint accepts query parameters for mobile app integration.
+    
+    Args:
+        student_id: Student ID
+        image_base64: Base64 encoded image
+    
+    Returns:
+        MarkAttendanceResponse with attendance status
+    """
+    try:
+        firebase = get_firebase_service()
+        
+        if not firebase:
+            raise HTTPException(
+                status_code=503,
+                detail="Firebase service not initialized"
+            )
+        
+        # Verify student exists
+        student = firebase.get_student(student_id)
+        if not student:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Student {student_id} not found"
+            )
+        
+        # Decode image
+        import base64
+        import io
+        from PIL import Image
+        import numpy as np
+        
+        try:
+            image_data = base64.b64decode(image_base64)
+            image = Image.open(io.BytesIO(image_data))
+            image_array = np.array(image)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid image format: {str(e)}"
+            )
+        
+        # Extract face embedding
+        from models.facenet_extractor import FaceNetExtractor
+        from scipy.spatial.distance import cosine
+        
+        CONFIDENCE_THRESHOLD = 0.6
+        
+        try:
+            extractor = FaceNetExtractor()
+            embedding = extractor.extract_embedding(image_array)
+            
+            if embedding is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No face detected in image"
+                )
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to extract face: {str(e)}"
+            )
+        
+        # Get stored embeddings
+        embeddings = student.get("embeddings", [])
+        if not embeddings:
+            raise HTTPException(
+                status_code=404,
+                detail="No face profile found for student. Please register face first."
+            )
+        
+        # Find best match
+        best_match = None
+        for stored_emb in embeddings:
+            distance = cosine(embedding, stored_emb)
+            if best_match is None or distance < best_match:
+                best_match = distance
+        
+        # Convert distance to confidence (lower distance = higher confidence)
+        confidence = 1.0 - min(best_match, 1.0) if best_match is not None else 0.0
+        
+        if best_match > CONFIDENCE_THRESHOLD:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Face does not match student. Confidence: {confidence:.2f}"
+            )
+        
+        # Mark attendance
+        timestamp = datetime.now()
+        result = firebase.mark_attendance(
+            student_id=student_id,
+            timestamp=timestamp,
+            confidence=confidence,
+            track_id=None,
+            camera_id="mobile_app",
+            metadata={
+                "method": "face_recognition_mobile",
+                "threshold": CONFIDENCE_THRESHOLD,
+                "distance": float(best_match)
+            }
+        )
+        
+        logger.info(f"Mobile attendance marked: {student_id} (confidence: {confidence:.2f})")
+        
+        return MarkAttendanceResponse(
+            success=True,
+            record_id=result['record_id'],
+            student_id=student_id,
+            timestamp=timestamp.isoformat(),
+            message=f"Attendance marked successfully (confidence: {confidence:.2f})"
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error marking mobile attendance: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to mark attendance: {str(e)}"
+        )
+
+
 @router.get(
     "/attendance",
     response_model=AttendanceListResponse,

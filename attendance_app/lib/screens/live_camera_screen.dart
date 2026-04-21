@@ -73,11 +73,7 @@ class _LiveCameraScreenState extends ConsumerState<LiveCameraScreen> {
       }
 
       final response = await Dio().post(
-        'http://localhost:8000/api/v1/attendance/mark',
-        data: {
-          'student_id': userId,
-          'image_base64': base64Image,
-        },
+        'http://localhost:8000/api/v1/attendance/mark-mobile?student_id=$userId&image_base64=$base64Image',
       );
 
       if (response.statusCode == 200) {
