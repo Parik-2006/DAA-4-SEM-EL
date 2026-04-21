@@ -20,9 +20,9 @@ import logging
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 
-from detection import FaceDetectionPipeline
-from recognition import FaceRecognitionPipeline
-from sorting_tracker import FaceTracker, TemporalVerification, TrackedFace
+from .detection import FaceDetectionPipeline
+from .recognition import FaceRecognitionPipeline
+from .sorting_tracker import FaceTracker, TemporalVerification, TrackedFace
 from utils.efficient_embedding_search import OptimizedEmbeddingSearch
 
 logger = logging.getLogger(__name__)

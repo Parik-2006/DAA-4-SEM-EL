@@ -11,7 +11,7 @@ from config.constants import (
     AttendanceStatus,
     ERROR_MESSAGES,
     SUCCESS_MESSAGES,
-    FACEBOOK_COLLECTIONS,
+    FIREBASE_COLLECTIONS,
     API_PREFIX,
 )
 
@@ -34,7 +34,6 @@ __all__ = [
     "SUCCESS_MESSAGES",
     
     # Constants - Database
-    "FACEBOOK_COLLECTIONS",
     
     # Constants - API
     "API_PREFIX",

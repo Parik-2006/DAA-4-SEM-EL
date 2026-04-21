@@ -32,6 +32,7 @@ FACE_MIN_PIXEL_SIZE: Final[int] = 20  # Minimum face size in pixels
 # FAISS distance metric thresholds
 FACE_SIMILARITY_THRESHOLD: Final[float] = 0.6  # Cosine similarity threshold (higher = more strict)
 FACE_EMBEDDING_DISTANCE_THRESHOLD: Final[float] = 0.6  # Euclidean distance threshold
+FACE_RECOGNITION_THRESHOLD: Final[float] = 0.6  # Face recognition threshold for matching
 
 # ============ Tracking Constants ============
 

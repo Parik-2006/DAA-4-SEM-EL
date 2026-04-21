@@ -33,6 +33,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from config.constants import FACE_EMBEDDING_DIM, FACE_SIMILARITY_THRESHOLD
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -100,9 +102,6 @@ class EmbeddingSearch:
         
         # KD-tree fallback
         self.kdtree: Optional[KDTree] = None
-        
-        # Initialize
-        self._init_backend()
         
         logger.info(f"Initialized embedding search with backend: {'FAISS' if use_faiss else 'KD-tree'}")
     

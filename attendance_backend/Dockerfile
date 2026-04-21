@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y \
     gfortran \
     libhdf5-dev \
     pkg-config \
+    libglib2.0-0 \
+    libglib2.0-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
@@ -38,14 +40,16 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxrender-dev \
     libgl1 \
+    libglib2.0-0 \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy wheels from builder
 COPY --from=builder /build/wheels /wheels
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache /wheels/*
+# Install Python dependencies with increased timeout and retries
+RUN pip install --no-cache --default-timeout=1000 --retries 5 /wheels/*
 
 # Copy application code
 COPY config ./config
@@ -53,6 +57,7 @@ COPY models ./models
 COPY services ./services
 COPY utils ./utils
 COPY database ./database
+COPY schemas ./schemas
 COPY api ./api
 COPY main.py .
 

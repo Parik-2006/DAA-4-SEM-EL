@@ -130,6 +130,22 @@ class AttendanceAPI {
     return response.data;
   }
 
+  // Detect and mark attendance
+  async detectAndMarkAttendance(formData: FormData) {
+    const response = await apiClient.post<{
+      matched: boolean;
+      message: string;
+      student_name?: string;
+      student_id?: string;
+      confidence?: number;
+    }>('/api/v1/attendance/detect', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  }
+
   // Health check
   async healthCheck() {
     try {

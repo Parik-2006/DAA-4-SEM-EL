@@ -13,8 +13,6 @@ Pillow==10.0.0
 # Face Detection & Recognition
 ultralytics==8.0.0  # YOLOv8 for face detection
 facenet-pytorch==2.5.0  # FaceNet implementation
-deepface==0.0.75  # Alternative to facenet-pytorch (includes RetinaFace)
-retinaface==1.1.1  # Face detector
 
 # Vector Search & Indexing
 faiss-cpu==1.7.4  # Facebook's similarity search library
@@ -38,6 +36,7 @@ python-json-logger==2.0.7
 # Utilities
 pydantic==2.4.2
 pydantic-settings==2.0.3
+email-validator==2.1.0
 requests==2.31.0
 
 # Development (Optional)

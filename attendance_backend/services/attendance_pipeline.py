@@ -18,8 +18,8 @@ from dataclasses import dataclass
 from datetime import datetime
 import json
 
-from detection import FaceDetectionPipeline
-from recognition import FaceRecognitionPipeline, FaceDatabase
+from .detection import FaceDetectionPipeline
+from .recognition import FaceRecognitionPipeline, FaceDatabase
 
 
 logger = logging.getLogger(__name__)

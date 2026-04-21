@@ -4,6 +4,7 @@ import { FirebaseAuthService } from './services/firebase/auth.service';
 import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ProfilePage } from './pages/ProfilePage';
+import { AttendancePage } from './pages/AttendancePage';
 
 const authService = FirebaseAuthService.getInstance();
 
@@ -44,6 +45,14 @@ export const AppRouter: React.FC = () => {
           element={
             <ProtectedRoute>
               <DashboardPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/attendance"
+          element={
+            <ProtectedRoute>
+              <AttendancePage />
             </ProtectedRoute>
           }
         />

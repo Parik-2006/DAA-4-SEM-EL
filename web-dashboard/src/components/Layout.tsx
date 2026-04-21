@@ -9,6 +9,7 @@ import {
   Menu,
   X,
   AlertCircle,
+  CheckCircle,
 } from 'lucide-react';
 import { Badge } from './UI';
 
@@ -20,6 +21,7 @@ interface NavLink {
 
 const navLinks: NavLink[] = [
   { label: 'Dashboard', path: '/dashboard', icon: <Home size={20} /> },
+  { label: 'Mark Attendance', path: '/attendance', icon: <CheckCircle size={20} /> },
   { label: 'History', path: '/history', icon: <Clock size={20} /> },
   { label: 'Students', path: '/students', icon: <Users size={20} /> },
   { label: 'Settings', path: '/settings', icon: <Settings size={20} /> },
