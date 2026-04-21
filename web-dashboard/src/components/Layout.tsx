@@ -41,8 +41,8 @@ const navLinks: NavLink[] = [
 
 interface LayoutProps {
   children: React.ReactNode;
-  systemRunning: boolean;
-  lastSyncTime: Date | null;
+  systemRunning?: boolean;
+  lastSyncTime?: Date | null;
 }
 
 export const Layout: React.FC<LayoutProps> = ({

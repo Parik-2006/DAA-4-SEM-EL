@@ -40,12 +40,12 @@ export const StudentsPage: React.FC = () => {
 
   const tableColumns = [
     {
-      key: 'student_id',
+      key: 'student_id' as keyof Student,
       label: 'Student ID',
       width: 'w-1/6',
     },
     {
-      key: 'name',
+      key: 'name' as keyof Student,
       label: 'Name',
       width: 'w-1/4',
       render: (value: string, row: Student) => (
@@ -69,12 +69,12 @@ export const StudentsPage: React.FC = () => {
       ),
     },
     {
-      key: 'department',
+      key: 'department' as keyof Student,
       label: 'Department',
       width: 'w-1/5',
     },
     {
-      key: 'semester',
+      key: 'semester' as keyof Student,
       label: 'Semester',
       render: (value: string | undefined) =>
         value ? (

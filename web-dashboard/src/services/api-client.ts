@@ -1,10 +1,10 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
-import { FirebaseAuthService } from './firebase/auth.service';
+import { FirebaseAuthService, IFirebaseAuthService } from './firebase/auth.service';
 
 export class ApiClient {
   private static instance: ApiClient;
   private axiosInstance: AxiosInstance;
-  private authService: FirebaseAuthService;
+  private authService: IFirebaseAuthService;
 
   private constructor() {
     this.authService = FirebaseAuthService.getInstance();

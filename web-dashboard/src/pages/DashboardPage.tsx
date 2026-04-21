@@ -45,7 +45,7 @@ export const DashboardPage: React.FC = () => {
         ]);
 
         setCourses(coursesData);
-        setSystemRunning(healthData.status === 'healthy');
+        setSystemRunning(healthData);
         await fetchAttendanceData();
         setIsPolling(true);
       } catch (err) {
@@ -88,7 +88,7 @@ export const DashboardPage: React.FC = () => {
       // Check system health
       try {
         const health = await attendanceAPI.healthCheck();
-        setSystemRunning(health.status === 'healthy');
+        setSystemRunning(health);
       } catch {
         setSystemRunning(false);
       }

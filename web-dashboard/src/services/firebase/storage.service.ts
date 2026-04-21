@@ -4,7 +4,7 @@ import {
   ref,
   uploadBytes,
   uploadBytesResumable,
-  downloadURL,
+  getDownloadURL,
   deleteObject,
   UploadTask,
 } from 'firebase/storage';
@@ -28,7 +28,7 @@ export const uploadFile = async (
   try {
     const storageRef = ref(storage, filePath);
     await uploadBytes(storageRef, file);
-    const downloadUrl = await downloadURL(storageRef);
+    const downloadUrl = await getDownloadURL(storageRef);
     return downloadUrl;
   } catch (error: any) {
     console.error('Error uploading file:', error);
@@ -65,7 +65,7 @@ export const uploadFileWithProgress = (
 export const getFileUrl = async (filePath: string): Promise<string> => {
   try {
     const storageRef = ref(storage, filePath);
-    return await downloadURL(storageRef);
+    return await getDownloadURL(storageRef);
   } catch (error: any) {
     console.error('Error getting file URL:', error);
     throw error;

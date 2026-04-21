@@ -2,11 +2,12 @@
 import {
   getAuth,
   signInWithEmailAndPassword,
-  signOutUser,
+  signOut as firebaseSignOut,
   createUserWithEmailAndPassword,
   setPersistence,
   browserLocalPersistence,
   onAuthStateChanged,
+  updateProfile as firebaseUpdateProfile,
   User,
 } from 'firebase/auth';
 import { app } from '@/firebase';
@@ -55,7 +56,7 @@ export const signIn = async (email: string, password: string) => {
  */
 export const signOut = async () => {
   try {
-    await signOutUser(auth);
+    await firebaseSignOut(auth);
     localStorage.removeItem('auth_token');
   } catch (error: any) {
     console.error('Sign-out error:', error.message);
@@ -84,6 +85,42 @@ export const getAuthToken = async (): Promise<string> => {
   const user = auth.currentUser;
   if (!user) throw new Error('User not authenticated');
   return user.getIdToken();
+};
+
+export interface IFirebaseAuthService {
+  onAuthChange: (callback: (user: User | null) => void) => import('firebase/auth').Unsubscribe;
+  signIn: (data: any) => Promise<User>;
+  signUp: (data: any) => Promise<User>;
+  updateProfile: (data: any) => Promise<void>;
+  currentUser: User | null;
+  getIdToken: () => Promise<string>;
+}
+
+export const FirebaseAuthService = {
+  getInstance: (): IFirebaseAuthService => ({
+    onAuthChange,
+    signIn: async (data: any) => signIn(data.email, data.password),
+    signUp: async (data: any) => {
+      const user = await signUp(data.email, data.password);
+      if (data.displayName) {
+        await firebaseUpdateProfile(user, { displayName: data.displayName });
+      }
+      return user;
+    },
+    updateProfile: async (data: any) => {
+      const user = auth.currentUser;
+      if (user) {
+        await firebaseUpdateProfile(user, { 
+          displayName: data.displayName, 
+          photoURL: data.photoUrl 
+        });
+      }
+    },
+    get currentUser() { return auth.currentUser; },
+    getIdToken: async () => {
+      return getAuthToken();
+    }
+  })
 };
 
 export default auth;

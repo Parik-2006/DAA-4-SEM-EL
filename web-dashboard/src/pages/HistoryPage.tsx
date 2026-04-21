@@ -83,7 +83,7 @@ export const HistoryPage: React.FC = () => {
     late: 'warning',
     absent: 'danger',
     excused: 'info',
-  };
+  } as const;
 
   const tableColumns = [
     {

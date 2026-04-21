@@ -1,50 +1,43 @@
-# ============ Python ============
+# ============ Git Configuration for Smart Attendance System ============
+
+# Environment Files (SENSITIVE - DO NOT COMMIT)
+.env
+.env.local
+.env.*.local
+.env.production
+
+# ============ Shared / General ============
+node_modules/
+.venv/
+venv/
+env/
+dist/
+build/
+.cache/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.log
+build.log
+tmp/
+temp/
+*.tmp
+
+# ============ Python (Backend) ============
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-attendance_backend/lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-.venv
-venv/
-ENV/
-env/
-env.bak/
-venv.bak/
+/attendance_backend/lib/
 
-# ============ Node.js / Frontend ============
-node_modules/
+# ============ Node.js (Web Dashboard) ============
 npm-debug.log*
 yarn-debug.log*
-yarn-error.log*
 .pnpm-debug.log*
-dist/
-build/
 .next/
 .nuxt/
-.cache/
-.vuepress/dist/
-.serverless/
-.fusebox/
-.dynamodb/
-.tern-port
 
 # ============ IDE / Editor ============
 .vscode/
@@ -52,35 +45,25 @@ build/
 *.swp
 *.swo
 *~
+*.iml
 .sublime-workspace
 .sublime-project
-.DS_Store
-*.iml
-.gradle
-.classpath
-*.jshintrc
 
-# ============ Environment Files (SENSITIVE - DO NOT COMMIT) ============
-.env
-attendance_backend/.env.local
-attendance_backend/.env.*.local
-.env.production
+# ============ Firebase & Secrets ============
 config/firebase-credentials.json
 firebase-credentials.json
+firebase-key.json
 attendance_backend/config/firebase-credentials.json
 attendance_app/android/app/google-services.json
-BACKEND_SETUP_GUIDE.txt
-FRONTEND_INTEGRATION_GUIDE.txt
+secrets/
+*.key
+*.pem
+credentials.json
 
-# ============ Logs & Temp ============
-logs/
-*.log
-tmp/
-temp/
-*.tmp
-
-# ============ Large Model Files (ML Models - Too Large) ============
+# ============ ML Models & Weights (Too large for git) ============
 weights/
+models/*.pt
+models/*.pth
 *.pt
 *.pth
 *.pkl
@@ -88,67 +71,26 @@ weights/
 *.h5
 *.onnx
 indexes/
+embeddings/
 *.index
-models/*.pt
-models/*.pth
 
-# ============ Database Files ============
+# ============ Database ============
 *.db
 *.sqlite
 *.sqlite3
+attendance_records/
 
-# ============ OS Files ============
-.DS_Store
-Thumbs.db
-Desktop.ini
-# ============ Docker ============
-.docker/
-Docker containers/
-.dockerignore
-
-# ============ Build & Cache ============
+# ============ Flutter / Mobile ============
 .flutter-plugins
 .dart_tool/
-.graddle/
-build/
-.cache/
-.buildlog/
 .gradle/
 local.properties
 *.apk
 *.ipa
 
-# ============ Firebase ============
-config/firebase-credentials.json
-firebase-credentials.json
-firebase-key.json
-
-# ============ Sensitive/Private ============
-.env
-.env.local
-.env.*.local
-.env.production
-config/private/
-secrets/
-*.key
-*.pem
-credentials.json
-
-# ============ Unnecessary Documentation (Use README.md only) ============
-*.backup.md
-*.old.md
-DEV_*.md
-TEST_*.md
-DRAFT_*.md
-# ============ Coverage & Testing ============
-.coverage
-htmlcov/
-.pytest_cache/
-.mocha_output/
-coverage/
-.nyc_output/
-
 # ============ Docker ============
+.docker/
+.dockerignore
 docker-compose.override.yml
 
 # ============ Project Specific ============
@@ -156,6 +98,3 @@ docker-compose.override.yml
 /output
 *.csv
 *.xlsx
-*.csv.bak
-attendance_records/
-embeddings/
