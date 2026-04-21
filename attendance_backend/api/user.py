@@ -9,13 +9,15 @@ from schemas.user_schemas import (
 )
 from database.user_repository import UserRepository
 from services.auth_service import AuthService
+from services.email_service import EmailService
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/user", tags=["user"])
 user_repo = UserRepository()
 auth_service = AuthService()
+email_service = EmailService()
 
 @router.post("/register", response_model=UserRegistrationResponse, status_code=201)
 def register_user(request: UserRegistrationRequest):
@@ -151,3 +153,95 @@ def get_users_by_role(role: str):
     except Exception as e:
         logger.error(f"Error fetching users by role: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/forgot-password")
+def forgot_password(email: str):
+    """Generate password reset token and send email."""
+    try:
+        user = user_repo.get_user_by_email(email)
+        # Always return success to prevent email enumeration
+        if not user:
+            return {
+                "success": True,
+                "message": "If email exists, password reset link will be sent"
+            }
+        
+        reset_token = str(uuid.uuid4())
+        reset_expires = (datetime.utcnow() + timedelta(hours=24)).isoformat()
+        
+        user_repo.update_user(user.get("user_id"), {
+            "reset_token": reset_token,
+            "reset_expires": reset_expires
+        })
+        
+        # Send email (async would be better but keeping simple for now)
+        email_service.send_password_reset(email, reset_token)
+        
+        logger.info(f"Password reset requested for: {email}")
+        return {
+            "success": True,
+            "message": "If email exists, password reset link will be sent"
+        }
+    except Exception as e:
+        logger.error(f"Forgot password error: {e}")
+        # Still return success to prevent email enumeration
+        return {
+            "success": True,
+            "message": "If email exists, password reset link will be sent"
+        }
+
+
+@router.post("/reset-password")
+def reset_password(token: str, new_password: str):
+    """Reset password using token."""
+    try:
+        from database.firebase_client import FirebaseClient
+        
+        if len(new_password) < 6:
+            raise HTTPException(
+                status_code=400,
+                detail="Password must be at least 6 characters"
+            )
+        
+        fb = FirebaseClient()
+        ref = fb.db.reference("users")
+        users_data = ref.get() or {}
+        
+        user_id = None
+        for uid, user_data in users_data.items():
+            if isinstance(user_data, dict):
+                if user_data.get("reset_token") == token:
+                    reset_expires = user_data.get("reset_expires")
+                    if reset_expires:
+                        try:
+                            expires_dt = datetime.fromisoformat(reset_expires)
+                            if expires_dt > datetime.utcnow():
+                                user_id = uid
+                                break
+                        except:
+                            pass
+        
+        if not user_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid or expired reset token"
+            )
+        
+        hashed_password = auth_service.hash_password(new_password)
+        user_repo.update_user(user_id, {
+            "password_hash": hashed_password,
+            "reset_token": None,
+            "reset_expires": None
+        })
+        
+        logger.info(f"Password reset successful for user: {user_id}")
+        return {
+            "success": True,
+            "message": "Password reset successfully. You can now login with your new password."
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Reset password error: {e}")
+        raise HTTPException(status_code=400, detail="Password reset failed")

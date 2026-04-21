@@ -18,9 +18,11 @@ from config.logging_config import setup_logging
 from models.model_manager import ModelManager
 from api import health
 from api import attendance
+from api import user
+from api import admin
+from api import student
 from services.firebase_service import initialize_firebase
 from services.rtsp_stream_handler import get_stream_manager
-from api import user
 
 
 # Setup logging
@@ -166,6 +168,12 @@ app.include_router(attendance.router, prefix=API_PREFIX, tags=["attendance"])
 
 # Include user routes
 app.include_router(user.router, prefix=API_PREFIX, tags=["user"])
+
+# Include admin routes
+app.include_router(admin.router, tags=["admin"])
+
+# Include student routes
+app.include_router(student.router, tags=["student"])
 
 
 # ============ Error Handlers ============
