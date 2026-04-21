@@ -21,6 +21,9 @@ from api import attendance
 from api import user
 from api import admin
 from api import student
+from api import admin_students
+from api import courses
+from api import qr_attendance
 from services.firebase_service import initialize_firebase
 from services.rtsp_stream_handler import get_stream_manager
 
@@ -174,6 +177,15 @@ app.include_router(admin.router, tags=["admin"])
 
 # Include student routes
 app.include_router(student.router, tags=["student"])
+
+# Include admin student management routes
+app.include_router(admin_students.router, prefix=API_PREFIX, tags=["admin-students"])
+
+# Include course management routes
+app.include_router(courses.router, prefix=API_PREFIX, tags=["admin-courses"])
+
+# Include QR attendance routes
+app.include_router(qr_attendance.router, prefix=API_PREFIX, tags=["qr-attendance"])
 
 
 # ============ Error Handlers ============

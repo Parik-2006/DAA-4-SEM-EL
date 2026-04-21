@@ -1,12 +1,15 @@
 import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { FirebaseAuthService } from './services/firebase/auth.service';
+import { onAuthChange } from './services/firebase/auth.service';
 import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ProfilePage } from './pages/ProfilePage';
 import { AttendancePage } from './pages/AttendancePage';
-
-const authService = FirebaseAuthService.getInstance();
+import FaceRegistrationPage from './pages/FaceRegistrationPage';
+import QRCodePage from './pages/QRCodePage';
+import BatchImportPage from './pages/BatchImportPage';
+import StudentManagementPage from './pages/StudentManagementPage';
+import CourseManagementPage from './pages/CourseManagementPage';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -18,7 +21,7 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
   );
 
   useEffect(() => {
-    const unsubscribe = authService.onAuthChange((user) => {
+    const unsubscribe = onAuthChange((user: unknown) => {
       setIsAuthenticated(!!user);
     });
     return () => unsubscribe();
@@ -61,6 +64,46 @@ export const AppRouter: React.FC = () => {
           element={
             <ProtectedRoute>
               <ProfilePage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/face-registration"
+          element={
+            <ProtectedRoute>
+              <FaceRegistrationPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/qr-attendance"
+          element={
+            <ProtectedRoute>
+              <QRCodePage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/batch-import"
+          element={
+            <ProtectedRoute>
+              <BatchImportPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/student-management"
+          element={
+            <ProtectedRoute>
+              <StudentManagementPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/course-management"
+          element={
+            <ProtectedRoute>
+              <CourseManagementPage />
             </ProtectedRoute>
           }
         />

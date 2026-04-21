@@ -10,6 +10,10 @@ import {
   X,
   AlertCircle,
   CheckCircle,
+  QrCode,
+  Upload,
+  BookOpen,
+  User,
 } from 'lucide-react';
 import { Badge } from './UI';
 
@@ -17,13 +21,21 @@ interface NavLink {
   label: string;
   path: string;
   icon: React.ReactNode;
+  group?: string;
 }
 
 const navLinks: NavLink[] = [
   { label: 'Dashboard', path: '/dashboard', icon: <Home size={20} /> },
   { label: 'Mark Attendance', path: '/attendance', icon: <CheckCircle size={20} /> },
   { label: 'History', path: '/history', icon: <Clock size={20} /> },
-  { label: 'Students', path: '/students', icon: <Users size={20} /> },
+  
+  // Admin Section
+  { label: 'Face Registration', path: '/face-registration', icon: <User size={20} />, group: 'Admin' },
+  { label: 'QR Attendance', path: '/qr-attendance', icon: <QrCode size={20} />, group: 'Admin' },
+  { label: 'Batch Import', path: '/batch-import', icon: <Upload size={20} />, group: 'Admin' },
+  { label: 'Student Management', path: '/student-management', icon: <Users size={20} />, group: 'Admin' },
+  { label: 'Course Management', path: '/course-management', icon: <BookOpen size={20} />, group: 'Admin' },
+  
   { label: 'Settings', path: '/settings', icon: <Settings size={20} /> },
 ];
 
@@ -74,23 +86,36 @@ export const Layout: React.FC<LayoutProps> = ({
 
         {/* Navigation */}
         <nav className="flex-1 px-4 py-6 space-y-2 overflow-y-auto">
-          {navLinks.map((link) => (
-            <Link
-              key={link.path}
-              to={link.path}
-              className={`
-                flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
-                ${
-                  location.pathname === link.path
-                    ? 'bg-indigo-50 text-indigo-600'
-                    : 'text-gray-600 hover:bg-gray-50'
-                }
-              `}
-            >
-              {link.icon}
-              {sidebarOpen && <span className="font-medium">{link.label}</span>}
-            </Link>
-          ))}
+          {navLinks.map((link, index) => {
+            const prevLink = index > 0 ? navLinks[index - 1] : null;
+            const showGroupHeader = link.group && (!prevLink || prevLink.group !== link.group);
+
+            return (
+              <div key={link.path}>
+                {showGroupHeader && sidebarOpen && (
+                  <div className="px-4 py-2 mt-4 mb-2">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                      {link.group}
+                    </p>
+                  </div>
+                )}
+                <Link
+                  to={link.path}
+                  className={`
+                    flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
+                    ${
+                      location.pathname === link.path
+                        ? 'bg-indigo-50 text-indigo-600'
+                        : 'text-gray-600 hover:bg-gray-50'
+                    }
+                  `}
+                >
+                  {link.icon}
+                  {sidebarOpen && <span className="font-medium">{link.label}</span>}
+                </Link>
+              </div>
+            );
+          })}
         </nav>
 
         {/* Logout */}

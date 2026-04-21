@@ -3,3 +3,8 @@ export { DashboardPage } from './DashboardPage';
 export { HistoryPage } from './HistoryPage';
 export { StudentsPage } from './StudentsPage';
 export { SettingsPage } from './SettingsPage';
+export { default as FaceRegistrationPage } from './FaceRegistrationPage';
+export { default as QRCodePage } from './QRCodePage';
+export { default as BatchImportPage } from './BatchImportPage';
+export { default as StudentManagementPage } from './StudentManagementPage';
+export { default as CourseManagementPage } from './CourseManagementPage';
