@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:smart_attendance/providers/auth_provider.dart';
+import 'package:smart_attendance/screens/admin/admin_dashboard_screen.dart';
 import 'package:smart_attendance/screens/attendance/attendance_screen.dart';
 import 'package:smart_attendance/screens/attendance/dashboard_screen.dart';
 import 'package:smart_attendance/screens/attendance/live_camera_screen.dart';
 import 'package:smart_attendance/screens/attendance/qr_scan_screen.dart';
 import 'package:smart_attendance/screens/auth/login_screen.dart';
+import 'package:smart_attendance/screens/auth/login_type_screen.dart';
 import 'package:smart_attendance/screens/auth/register_screen.dart';
 import 'package:smart_attendance/screens/auth/student_registration_screen.dart';
 import 'package:smart_attendance/screens/history/enhanced_history_screen.dart';
@@ -15,16 +17,20 @@ import 'package:smart_attendance/screens/home/home_screen.dart';
 import 'package:smart_attendance/screens/profile/profile_screen.dart';
 import 'package:smart_attendance/screens/shell/main_shell.dart';
 import 'package:smart_attendance/screens/splash_screen.dart';
+import 'package:smart_attendance/screens/student/student_dashboard_screen.dart';
 
 // Route name constants
 class AppRoutes {
   static const splash = '/';
+  static const loginType = '/login-type';
   static const login = '/login';
   static const register = '/register';
   static const studentRegistration = '/student-registration';
   static const home = '/home';
   static const attendance = '/attendance';
   static const dashboard = '/dashboard';
+  static const adminDashboard = '/admin-dashboard';
+  static const studentDashboard = '/student-dashboard';
   static const liveCamera = '/live-camera';
   static const qrScan = '/qr-scan';
   static const history = '/history';
@@ -42,6 +48,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       final isLoading = authState.status == AuthStatus.initial ||
           authState.status == AuthStatus.loading;
       final isAuthenticated = authState.isAuthenticated;
+      final isAdmin = authState.isAdmin;
+      final isStudent = authState.isStudent;
       final currentPath = state.matchedLocation;
 
       // Wait while auth state initializes
@@ -49,19 +57,36 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         return AppRoutes.splash;
       }
 
-  final isOnAuthPage = currentPath == AppRoutes.login ||
+      final isOnAuthPage = currentPath == AppRoutes.login ||
+          currentPath == AppRoutes.loginType ||
           currentPath == AppRoutes.register ||
           currentPath == AppRoutes.studentRegistration;
 
-      // Redirect unauthenticated users to login
+      // Redirect unauthenticated users to login-type
       if (!isLoading && !isAuthenticated && !isOnAuthPage &&
           currentPath != AppRoutes.splash) {
-        return AppRoutes.login;
+        return AppRoutes.loginType;
       }
 
       // Redirect authenticated users away from auth pages
       if (!isLoading && isAuthenticated && isOnAuthPage) {
+        // Route to appropriate dashboard based on role
+        if (isAdmin) {
+          return AppRoutes.adminDashboard;
+        } else if (isStudent) {
+          return AppRoutes.studentDashboard;
+        }
         return AppRoutes.home;
+      }
+
+      // Role-based dashboard routing
+      if (!isLoading && isAuthenticated) {
+        if (isAdmin && currentPath != AppRoutes.adminDashboard) {
+          // Allow admins to visit all routes
+          return null;
+        } else if (isStudent && currentPath == AppRoutes.adminDashboard) {
+          return AppRoutes.studentDashboard;
+        }
       }
 
       return null;
@@ -72,10 +97,19 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => const SplashScreen(),
       ),
       GoRoute(
+        path: AppRoutes.loginType,
+        pageBuilder: (context, state) => _fadeTransition(
+          state,
+          const LoginTypeScreen(),
+        ),
+      ),
+      GoRoute(
         path: AppRoutes.login,
         pageBuilder: (context, state) => _fadeTransition(
           state,
-          const LoginScreen(),
+          LoginScreen(
+            role: state.extra as String?,
+          ),
         ),
       ),
       GoRoute(
@@ -90,6 +124,22 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         pageBuilder: (context, state) => _slideTransition(
           state,
           const StudentRegistrationScreen(),
+        ),
+      ),
+      // Admin Dashboard (full-screen)
+      GoRoute(
+        path: AppRoutes.adminDashboard,
+        pageBuilder: (context, state) => _noTransition(
+          state,
+          const AdminDashboardScreen(),
+        ),
+      ),
+      // Student Dashboard (full-screen)
+      GoRoute(
+        path: AppRoutes.studentDashboard,
+        pageBuilder: (context, state) => _noTransition(
+          state,
+          const StudentDashboardScreen(),
         ),
       ),
       // Main app shell with bottom nav
@@ -148,6 +198,35 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         pageBuilder: (context, state) => _slideUpTransition(
           state,
           const QrScanScreen(),
+        ),
+      ),
+      // Full-screen live camera (outside shell)
+      GoRoute(
+        path: AppRoutes.liveCamera,
+        pageBuilder: (context, state) => _slideUpTransition(
+          state,
+          const LiveCameraScreen(),
+        ),
+      ),
+    ],
+    errorBuilder: (context, state) => Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, size: 64, color: Colors.grey),
+            const SizedBox(height: 16),
+            Text('Page not found: ${state.error}'),
+            TextButton(
+              onPressed: () => context.go(AppRoutes.home),
+              child: const Text('Go Home'),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+});
         ),
       ),
       // Full-screen live camera (outside shell)

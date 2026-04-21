@@ -20,6 +20,7 @@ from api import health
 from api import attendance
 from services.firebase_service import initialize_firebase
 from services.rtsp_stream_handler import get_stream_manager
+from api import user
 
 
 # Setup logging
@@ -162,6 +163,9 @@ app.include_router(health.router, prefix=API_PREFIX, tags=["health"])
 
 # Include attendance routes
 app.include_router(attendance.router, prefix=API_PREFIX, tags=["attendance"])
+
+# Include user routes
+app.include_router(user.router, prefix=API_PREFIX, tags=["user"])
 
 
 # ============ Error Handlers ============

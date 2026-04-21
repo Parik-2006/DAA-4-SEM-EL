@@ -117,6 +117,7 @@ FIREBASE_COLLECTIONS = {
     "courses": "courses",
     "face_embeddings": "face_embeddings",
     "sessions": "sessions",
+    "users": "users",
 }
 
 # Database field names

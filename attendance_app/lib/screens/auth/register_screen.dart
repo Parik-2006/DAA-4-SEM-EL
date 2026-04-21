@@ -24,6 +24,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   final _confirmPasswordCtrl = TextEditingController();
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
+  String _selectedRole = 'student'; // Default role
 
   @override
   void dispose() {
@@ -43,6 +44,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
           name: _nameCtrl.text.trim(),
           email: _emailCtrl.text.trim(),
           password: _passwordCtrl.text,
+          role: _selectedRole,
           studentId: _studentIdCtrl.text.trim(),
           department: _departmentCtrl.text.trim().isEmpty
               ? null
@@ -157,6 +159,101 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                         label: 'Semester',
                         hint: '5th',
                         prefixIcon: Icons.calendar_today_outlined,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+
+                // Role Selection
+                Text(
+                  'Account Type',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: () => setState(() => _selectedRole = 'student'),
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              border: Border.all(
+                                color: _selectedRole == 'student'
+                                    ? AppColors.primary
+                                    : AppColors.textSecondary.withOpacity(0.2),
+                                width: _selectedRole == 'student' ? 2 : 1,
+                              ),
+                              borderRadius: BorderRadius.circular(8),
+                              color: _selectedRole == 'student'
+                                  ? AppColors.primary.withOpacity(0.05)
+                                  : Colors.transparent,
+                            ),
+                            child: Column(
+                              children: [
+                                Icon(
+                                  Icons.school,
+                                  color: _selectedRole == 'student'
+                                      ? AppColors.primary
+                                      : AppColors.textSecondary,
+                                  size: 24,
+                                ),
+                                const SizedBox(height: 4),
+                                const Text(
+                                  'Student',
+                                  style: TextStyle(fontSize: 12),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: () => setState(() => _selectedRole = 'admin'),
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              border: Border.all(
+                                color: _selectedRole == 'admin'
+                                    ? AppColors.primary
+                                    : AppColors.textSecondary.withOpacity(0.2),
+                                width: _selectedRole == 'admin' ? 2 : 1,
+                              ),
+                              borderRadius: BorderRadius.circular(8),
+                              color: _selectedRole == 'admin'
+                                  ? AppColors.primary.withOpacity(0.05)
+                                  : Colors.transparent,
+                            ),
+                            child: Column(
+                              children: [
+                                Icon(
+                                  Icons.admin_panel_settings,
+                                  color: _selectedRole == 'admin'
+                                      ? AppColors.primary
+                                      : AppColors.textSecondary,
+                                  size: 24,
+                                ),
+                                const SizedBox(height: 4),
+                                const Text(
+                                  'Admin',
+                                  style: TextStyle(fontSize: 12),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
                       ),
                     ),
                   ],

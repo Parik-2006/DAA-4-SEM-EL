@@ -8,7 +8,9 @@ import 'package:smart_attendance/router/app_router.dart';
 import 'package:smart_attendance/theme/app_theme.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
-  const LoginScreen({super.key});
+  final String? role; // 'admin' or 'student'
+
+  const LoginScreen({super.key, this.role});
 
   @override
   ConsumerState<LoginScreen> createState() => _LoginScreenState();
@@ -158,6 +160,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   Widget _buildHeader() {
+    final roleLabel = widget.role == 'admin' ? 'Admin' : 'Student';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -176,6 +179,26 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           ),
         ),
         const SizedBox(height: 24),
+        if (widget.role != null)
+          Container(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 6,
+            ),
+            decoration: BoxDecoration(
+              color: AppColors.primary.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              roleLabel,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: AppColors.primary,
+              ),
+            ),
+          ),
+        const SizedBox(height: 12),
         Text(
           'Welcome back 👋',
           style: Theme.of(context).textTheme.headlineLarge,

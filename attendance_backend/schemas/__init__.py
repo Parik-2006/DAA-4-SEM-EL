@@ -24,6 +24,14 @@ from .attendance_schemas import (
     SystemStatsResponse,
 )
 
+from .user_schemas import (
+    UserRegistrationRequest,
+    UserRegistrationResponse,
+    UserLoginRequest,
+    UserLoginResponse,
+    UserProfileResponse,
+)
+
 __all__ = [
     "StudentRegistrationRequest",
     "StudentRegistrationResponse",
@@ -44,4 +52,9 @@ __all__ = [
     "StreamHealth",
     "HealthCheckResponse",
     "SystemStatsResponse",
+    "UserRegistrationRequest",
+    "UserRegistrationResponse",
+    "UserLoginRequest",
+    "UserLoginResponse",
+    "UserProfileResponse",
 ]

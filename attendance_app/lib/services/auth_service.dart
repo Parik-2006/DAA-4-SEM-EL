@@ -1,65 +1,110 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:smart_attendance/models/course_model.dart';
 import 'package:smart_attendance/models/user_model.dart';
 import 'package:smart_attendance/services/api_service.dart';
+import 'package:dio/dio.dart';
 
-/// Handles all authentication operations with the FastAPI backend.
-///
-/// FastAPI endpoints expected:
-///   POST /api/v1/auth/login       → { access_token, token_type, expires_in }
-///   POST /api/v1/auth/logout
-///   POST /api/v1/auth/refresh     → { access_token }
-///   GET  /api/v1/auth/me          → UserModel JSON
-///   POST /api/v1/auth/register
 class AuthService {
   final _api = ApiService.instance;
   final _storage = const FlutterSecureStorage();
 
   static const _tokenKey = 'access_token';
-  static const _refreshKey = 'refresh_token';
-  static const _userKey = 'cached_user';
+  static const _userRoleKey = 'user_role';
+  static const _userIdKey = 'user_id';
 
-  /// Login with email + password (OAuth2 form submission for FastAPI)
-  Future<AuthResult> login({
+  /// Login with email + password (calls backend /api/v1/user/login)
+  Future<AuthLoginResult> login({
     required String email,
     required String password,
   }) async {
     try {
-      // FastAPI uses form data for OAuth2 token endpoint
       final response = await _api.post(
-        '${ApiConfig.authPrefix}/login',
+        '/api/v1/user/login',
         data: {
-          'username': email, // FastAPI OAuth2 uses 'username'
+          'email': email,
           'password': password,
         },
-        options: _formDataOptions(),
       );
 
-      final tokenData = AuthTokenModel.fromJson(
-        response.data as Map<String, dynamic>,
-      );
+      final userId = response.data['user_id'] as String;
+      final role = response.data['role'] as String;
+      final token = response.data['token'] as String?;
 
-      // Persist tokens securely
-      await _storage.write(key: _tokenKey, value: tokenData.accessToken);
-      if (tokenData.refreshToken != null) {
-        await _storage.write(key: _refreshKey, value: tokenData.refreshToken);
+      // Store token and role securely
+      await _storage.write(key: _tokenKey, value: token ?? '');
+      await _storage.write(key: _userRoleKey, value: role);
+      await _storage.write(key: _userIdKey, value: userId);
+
+      // Fetch full user profile
+      final userProfile = await getProfile(userId);
+
+      return AuthLoginResult(
+        userId: userId,
+        role: role,
+        token: token,
+        user: userProfile,
+      );
+    } catch (e) {
+      if (e is DioException) {
+        throw ApiException(
+          message: e.response?.data['detail'] ?? 'Login failed',
+          data: e.toString(),
+        );
       }
-
-      // Fetch user profile
-      final user = await getMe();
-      return AuthResult(token: tokenData, user: user);
-    } on Exception catch (e) {
-      if (e is ApiException) rethrow;
-      throw ApiException.fromDioException(e as dynamic);
+      throw ApiException(
+        message: 'Login failed. Please try again.',
+        data: e.toString(),
+      );
     }
   }
 
-  /// Fetch the current authenticated user's profile
-  Future<UserModel> getMe() async {
+  /// Register a new user (admin or student)
+  Future<AuthRegisterResult> register({
+    required String name,
+    required String email,
+    required String password,
+    required String role, // 'admin' or 'student'
+  }) async {
     try {
-      final response = await _api.get('${ApiConfig.authPrefix}/me');
-      return UserModel.fromJson(response.data as Map<String, dynamic>);
-    } on Exception catch (e) {
+      final response = await _api.post(
+        '/api/v1/user/register',
+        data: {
+          'email': email,
+          'password': password,
+          'name': name,
+          'role': role,
+        },
+      );
+
+      final userId = response.data['user_id'] as String;
+
+      return AuthRegisterResult(
+        userId: userId,
+        message: response.data['message'] as String? ?? 'Registration successful',
+      );
+    } catch (e) {
+      if (e is DioException) {
+        throw ApiException(
+          message: e.response?.data['detail'] ?? 'Registration failed',
+          data: e.toString(),
+        );
+      }
+      throw ApiException(
+        message: 'Registration failed. Please try again.',
+        data: e.toString(),
+      );
+    }
+  }
+
+  /// Fetch user profile by user ID
+  Future<UserModel> getProfile(String userId) async {
+    try {
+      final response = await _api.get(
+        '/api/v1/user/profile/$userId',
+      );
+
+      final userData = response.data as Map<String, dynamic>;
+      return UserModel.fromJson(userData);
+    } catch (e) {
       throw ApiException(
         message: 'Failed to load profile.',
         data: e.toString(),
@@ -67,40 +112,10 @@ class AuthService {
     }
   }
 
-  /// Register a new student account
-  Future<UserModel> register({
-    required String name,
-    required String email,
-    required String password,
-    required String studentId,
-    String? department,
-    String? semester,
-  }) async {
-    try {
-      final response = await _api.post(
-        '${ApiConfig.authPrefix}/register',
-        data: {
-          'name': name,
-          'email': email,
-          'password': password,
-          'student_id': studentId,
-          'department': department,
-          'semester': semester,
-          'role': 'student',
-        },
-      );
-      return UserModel.fromJson(response.data as Map<String, dynamic>);
-    } on Exception catch (e) {
-      if (e is ApiException) rethrow;
-      throw const ApiException(message: 'Registration failed. Try again.');
-    }
-  }
-
-  /// Clear all stored tokens (logout)
+  /// Clear all stored tokens and data (logout)
   Future<void> logout() async {
     try {
-      // Notify backend (best-effort)
-      await _api.post('${ApiConfig.authPrefix}/logout');
+      await _api.post('/api/v1/user/logout');
     } catch (_) {
       // Don't block logout if server call fails
     } finally {
@@ -117,30 +132,51 @@ class AuthService {
   /// Retrieve stored access token
   Future<String?> getStoredToken() => _storage.read(key: _tokenKey);
 
-  // Form-data options required by FastAPI OAuth2 token endpoint
-  static _formDataOptions() {
-    return _DioOptionsHelper.formData();
-  }
+  /// Get stored user role
+  Future<String?> getStoredRole() => _storage.read(key: _userRoleKey);
+
+  /// Get stored user ID
+  Future<String?> getStoredUserId() => _storage.read(key: _userIdKey);
 }
 
-class _DioOptionsHelper {
-  static formData() {
-    return import('package:dio/dio.dart').Options(
-      contentType: 'application/x-www-form-urlencoded',
-    );
-  }
-}
-
-// ignore: non_constant_identifier_names
-dynamic import(String _) => throw UnimplementedError();
-
-// ---- Use this actual import pattern in your service ----
-// import 'package:dio/dio.dart';
-// options: Options(contentType: 'application/x-www-form-urlencoded'),
-
-class AuthResult {
-  final AuthTokenModel token;
+class AuthLoginResult {
+  final String userId;
+  final String role;
+  final String? token;
   final UserModel user;
 
-  const AuthResult({required this.token, required this.user});
+  const AuthLoginResult({
+    required this.userId,
+    required this.role,
+    required this.token,
+    required this.user,
+  });
+}
+
+class AuthRegisterResult {
+  final String userId;
+  final String message;
+
+  const AuthRegisterResult({
+    required this.userId,
+    required this.message,
+  
+  final UserModel user;
+
+  const AuthLoginResult({
+    required this.userId,
+    required this.role,
+    required this.token,
+    required this.user,
+  });
+}
+
+class AuthRegisterResult {
+  final String userId;
+  final String message;
+
+  const AuthRegisterResult({
+    required this.userId,
+    required this.message,
+  });
 }

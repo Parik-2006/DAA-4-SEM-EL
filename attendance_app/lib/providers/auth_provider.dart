@@ -10,33 +10,48 @@ enum AuthStatus { initial, authenticated, unauthenticated, loading, error }
 class AuthState {
   final AuthStatus status;
   final UserModel? user;
+  final String? role; // 'admin' or 'student'
+  final String? userId;
   final String? errorMessage;
 
   const AuthState({
     required this.status,
     this.user,
+    this.role,
+    this.userId,
     this.errorMessage,
   });
 
   const AuthState.initial() : this(status: AuthStatus.initial);
   const AuthState.loading() : this(status: AuthStatus.loading);
-  const AuthState.authenticated(UserModel user)
-      : this(status: AuthStatus.authenticated, user: user);
+  const AuthState.authenticated(UserModel user, {String? role, String? userId})
+      : this(
+          status: AuthStatus.authenticated,
+          user: user,
+          role: role,
+          userId: userId,
+        );
   const AuthState.unauthenticated() : this(status: AuthStatus.unauthenticated);
   AuthState.error(String message)
       : this(status: AuthStatus.error, errorMessage: message);
 
   bool get isAuthenticated => status == AuthStatus.authenticated;
   bool get isLoading => status == AuthStatus.loading;
+  bool get isAdmin => role?.toLowerCase() == 'admin';
+  bool get isStudent => role?.toLowerCase() == 'student';
 
   AuthState copyWith({
     AuthStatus? status,
     UserModel? user,
+    String? role,
+    String? userId,
     String? errorMessage,
   }) {
     return AuthState(
       status: status ?? this.status,
       user: user ?? this.user,
+      role: role ?? this.role,
+      userId: userId ?? this.userId,
       errorMessage: errorMessage ?? this.errorMessage,
     );
   }
@@ -77,11 +92,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
         email: email,
         password: password,
       );
-      state = AuthState.authenticated(result.user);
+      state = AuthState.authenticated(
+        result.user,
+        role: result.role,
+        userId: result.userId,
+      );
     } on DioException catch (e) {
       state = AuthState.error(e.message ?? 'Login failed');
-    } catch (_) {
-      state = AuthState.error('Login failed. Please try again.');
+    } catch (e) {
+      state = AuthState.error(e.toString());
     }
   }
 
@@ -89,7 +108,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
     required String name,
     required String email,
     required String password,
-    required String studentId,
+    required String role, // 'admin' or 'student'
+    String? studentId,
     String? department,
     String? semester,
   }) async {
@@ -99,16 +119,14 @@ class AuthNotifier extends StateNotifier<AuthState> {
         name: name,
         email: email,
         password: password,
-        studentId: studentId,
-        department: department,
-        semester: semester,
+        role: role,
       );
       // Auto-login after registration
       await login(email: email, password: password);
     } on DioException catch (e) {
       state = AuthState.error(e.message ?? 'Registration failed');
-    } catch (_) {
-      state = AuthState.error('Registration failed. Please try again.');
+    } catch (e) {
+      state = AuthState.error(e.toString());
     }
   }
 

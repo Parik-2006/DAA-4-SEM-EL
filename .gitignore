@@ -67,6 +67,10 @@ attendance_backend/.env.*.local
 .env.production
 config/firebase-credentials.json
 firebase-credentials.json
+attendance_backend/config/firebase-credentials.json
+attendance_app/android/app/google-services.json
+BACKEND_SETUP_GUIDE.txt
+FRONTEND_INTEGRATION_GUIDE.txt
 
 # ============ Logs & Temp ============
 logs/
