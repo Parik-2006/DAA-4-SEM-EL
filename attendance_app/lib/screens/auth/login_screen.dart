@@ -116,9 +116,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 Align(
                   alignment: Alignment.centerRight,
                   child: TextButton(
-                    onPressed: () {
-                      // TODO: Navigate to forgot password
-                    },
+                    onPressed: () => context.push(AppRoutes.forgotPassword),
                     child: const Text('Forgot password?'),
                   ),
                 ),

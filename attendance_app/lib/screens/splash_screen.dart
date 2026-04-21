@@ -48,10 +48,17 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
     // Listen for auth status to navigate
     ref.listen(authProvider, (prev, next) {
       if (next.status == AuthStatus.authenticated) {
-        context.go(AppRoutes.home);
+        // Route to appropriate dashboard based on role
+        if (next.isAdmin) {
+          context.go(AppRoutes.adminDashboard);
+        } else if (next.isStudent) {
+          context.go(AppRoutes.studentDashboard);
+        } else {
+          context.go(AppRoutes.home);
+        }
       } else if (next.status == AuthStatus.unauthenticated ||
           next.status == AuthStatus.error) {
-        context.go(AppRoutes.login);
+        context.go(AppRoutes.loginType);
       }
     });
 

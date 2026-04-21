@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:smart_attendance/providers/auth_provider.dart';
+import 'package:smart_attendance/providers/admin_provider.dart';
 import 'package:smart_attendance/theme/app_theme.dart';
 
 class AdminDashboardScreen extends ConsumerWidget {
@@ -146,45 +147,58 @@ class AdminDashboardScreen extends ConsumerWidget {
             ),
             const SizedBox(height: 16),
 
-            Row(
-              children: [
-                Expanded(
-                  child: _StatCard(
-                    title: 'Total Students',
-                    value: '--',
-                    icon: Icons.people,
+            ref.watch(adminTodayStatsProvider).when(
+              loading: () => Row(
+                children: [
+                  Expanded(child: _LoadingSkeleton()),
+                  const SizedBox(width: 12),
+                  Expanded(child: _LoadingSkeleton()),
+                ],
+              ),
+              error: (err, stack) => const Text('Failed to load stats'),
+              data: (stats) => Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _StatCard(
+                          title: 'Total Students',
+                          value: stats.totalStudents.toString(),
+                          icon: Icons.people,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _StatCard(
+                          title: 'Present Today',
+                          value: stats.presentToday.toString(),
+                          icon: Icons.check_circle,
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _StatCard(
-                    title: 'Present Today',
-                    value: '--',
-                    icon: Icons.check_circle,
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _StatCard(
+                          title: 'Absent Today',
+                          value: stats.absentToday.toString(),
+                          icon: Icons.cancel,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _StatCard(
+                          title: 'Attendance Rate',
+                          value: '${stats.attendanceRate.toStringAsFixed(1)}%',
+                          icon: Icons.trending_up,
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-
-            Row(
-              children: [
-                Expanded(
-                  child: _StatCard(
-                    title: 'Absent Today',
-                    value: '--',
-                    icon: Icons.cancel,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _StatCard(
-                    title: 'Attendance Rate',
-                    value: '--%',
-                    icon: Icons.trending_up,
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
             const SizedBox(height: 32),
           ],
@@ -312,6 +326,32 @@ class _StatCard extends StatelessWidget {
               color: AppColors.textSecondary,
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LoadingSkeleton extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        border: Border.all(
+          color: AppColors.primary.withOpacity(0.2),
+        ),
+        borderRadius: BorderRadius.circular(12),
+        color: Colors.grey.withOpacity(0.1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(width: 24, height: 24, color: Colors.grey.withOpacity(0.3)),
+          const SizedBox(height: 8),
+          Container(width: 60, height: 18, color: Colors.grey.withOpacity(0.3)),
+          const SizedBox(height: 8),
+          Container(width: 100, height: 12, color: Colors.grey.withOpacity(0.3)),
         ],
       ),
     );

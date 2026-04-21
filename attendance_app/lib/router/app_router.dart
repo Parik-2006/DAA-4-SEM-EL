@@ -18,6 +18,7 @@ import 'package:smart_attendance/screens/profile/profile_screen.dart';
 import 'package:smart_attendance/screens/shell/main_shell.dart';
 import 'package:smart_attendance/screens/splash_screen.dart';
 import 'package:smart_attendance/screens/student/student_dashboard_screen.dart';
+import 'package:smart_attendance/screens/auth/forgot_password_screen.dart';
 
 // Route name constants
 class AppRoutes {
@@ -25,6 +26,7 @@ class AppRoutes {
   static const loginType = '/login-type';
   static const login = '/login';
   static const register = '/register';
+  static const forgotPassword = '/forgot-password';
   static const studentRegistration = '/student-registration';
   static const home = '/home';
   static const attendance = '/attendance';
@@ -117,6 +119,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         pageBuilder: (context, state) => _slideTransition(
           state,
           const RegisterScreen(),
+        ),
+      ),
+      GoRoute(
+        path: AppRoutes.forgotPassword,
+        pageBuilder: (context, state) => _slideTransition(
+          state,
+          const ForgotPasswordScreen(),
         ),
       ),
       GoRoute(
@@ -227,27 +236,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
     ),
   );
 });
-        ),
-      ),
-      // Full-screen live camera (outside shell)
-      GoRoute(
-        path: AppRoutes.liveCamera,
-        pageBuilder: (context, state) => _slideUpTransition(
-          state,
-          const LiveCameraScreen(),
-        ),
-      ),
-    ],
-    errorBuilder: (context, state) => Scaffold(
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.error_outline, size: 64, color: Colors.grey),
-            const SizedBox(height: 16),
-            Text('Page not found: ${state.error}'),
-            TextButton(
-              onPressed: () => context.go(AppRoutes.home),
               child: const Text('Go Home'),
             ),
           ],
