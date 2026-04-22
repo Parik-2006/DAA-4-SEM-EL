@@ -98,13 +98,13 @@ class Settings(BaseSettings):
     cache_embeddings: bool = Field(default=True, alias="CACHE_EMBEDDINGS")
     cache_ttl: int = Field(default=3600, alias="CACHE_TTL")
     
-    class Config:
-        """Pydantic configuration for Settings."""
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
-        # Allow both alias and field name
-        populate_by_name = True
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False,
+        "populate_by_name": True,
+        "extra": "ignore"
+    }
     
     # ============ Validators ============
     
