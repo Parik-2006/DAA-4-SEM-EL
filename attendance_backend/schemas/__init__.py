@@ -3,6 +3,7 @@ Schemas package for request/response models.
 """
 
 from .attendance_schemas import (
+    StudentCreateSchema,
     StudentRegistrationRequest,
     StudentRegistrationResponse,
     StudentInfo,
@@ -33,6 +34,7 @@ from .user_schemas import (
 )
 
 __all__ = [
+    "StudentCreateSchema",
     "StudentRegistrationRequest",
     "StudentRegistrationResponse",
     "StudentInfo",

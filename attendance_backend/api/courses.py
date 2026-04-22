@@ -5,7 +5,7 @@ from pydantic import BaseModel
 import uuid
 from datetime import datetime
 
-router = APIRouter(prefix="/admin", tags=["admin-courses"])
+router = APIRouter(tags=["admin-courses"])
 
 class CourseSchema(BaseModel):
     name: str
@@ -25,7 +25,7 @@ async def get_all_courses(
 ) -> dict:
     """Get all courses"""
     try:
-        courses_ref = db.db.reference("courses")
+        courses_ref = db.get_reference("courses")
         courses_data = courses_ref.get()
         
         if not courses_data:
@@ -77,7 +77,7 @@ async def create_course(
             "updated_at": datetime.now().isoformat()
         }
         
-        courses_ref = db.db.reference("courses").child(course_id)
+        courses_ref = db.get_reference("courses").child(course_id)
         courses_ref.set(course_data)
         
         return {
@@ -96,7 +96,7 @@ async def get_course(
 ) -> dict:
     """Get specific course details"""
     try:
-        course_ref = db.db.reference("courses").child(course_id)
+        course_ref = db.get_reference("courses").child(course_id)
         course = course_ref.get()
         
         if not course.val():
@@ -119,7 +119,7 @@ async def update_course(
 ) -> dict:
     """Update course details"""
     try:
-        course_ref = db.db.reference("courses").child(course_id)
+        course_ref = db.get_reference("courses").child(course_id)
         existing = course_ref.get()
         
         if not existing.val():
@@ -154,7 +154,7 @@ async def toggle_course(
 ) -> dict:
     """Toggle course active status"""
     try:
-        course_ref = db.db.reference("courses").child(course_id)
+        course_ref = db.get_reference("courses").child(course_id)
         existing = course_ref.get()
         
         if not existing.val():
@@ -180,7 +180,7 @@ async def delete_course(
 ) -> dict:
     """Delete a course"""
     try:
-        course_ref = db.db.reference("courses").child(course_id)
+        course_ref = db.get_reference("courses").child(course_id)
         existing = course_ref.get()
         
         if not existing.val():
@@ -205,7 +205,7 @@ async def get_enrolled_students(
 ) -> dict:
     """Get students enrolled in a course"""
     try:
-        enrollments_ref = db.db.reference("course_enrollments").child(course_id)
+        enrollments_ref = db.get_reference("course_enrollments").child(course_id)
         enrollments = enrollments_ref.get()
         
         students = []
@@ -234,19 +234,19 @@ async def enroll_student(
     """Enroll a student in a course"""
     try:
         # Check course exists
-        course_ref = db.db.reference("courses").child(course_id)
+        course_ref = db.get_reference("courses").child(course_id)
         if not course_ref.get().val():
             raise HTTPException(status_code=404, detail="Course not found")
         
         # Add enrollment
-        enrollment_ref = db.db.reference("course_enrollments").child(course_id).child(student_id)
+        enrollment_ref = db.get_reference("course_enrollments").child(course_id).child(student_id)
         enrollment_ref.set({
             "enrolled_at": datetime.now().isoformat()
         })
         
         # Update enrollment count
         course_ref.update({
-            "enrolled_students": db.db.reference("course_enrollments").child(course_id).get().count()
+            "enrolled_students": db.get_reference("course_enrollments").child(course_id).get().count()
         })
         
         return {
@@ -267,13 +267,13 @@ async def unenroll_student(
 ) -> dict:
     """Remove a student from a course"""
     try:
-        enrollment_ref = db.db.reference("course_enrollments").child(course_id).child(student_id)
+        enrollment_ref = db.get_reference("course_enrollments").child(course_id).child(student_id)
         enrollment_ref.delete()
         
         # Update enrollment count
-        course_ref = db.db.reference("courses").child(course_id)
+        course_ref = db.get_reference("courses").child(course_id)
         course_ref.update({
-            "enrolled_students": db.db.reference("course_enrollments").child(course_id).get().count()
+            "enrolled_students": db.get_reference("course_enrollments").child(course_id).get().count()
         })
         
         return {

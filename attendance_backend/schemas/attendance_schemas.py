@@ -12,6 +12,12 @@ import numpy as np
 
 # ==================== Student Registration ====================
 
+class StudentCreateSchema(BaseModel):
+    """Schema for creating a new student (simple version)."""
+    name: str = Field(..., min_length=2, max_length=100, description="Student full name")
+    email: EmailStr = Field(..., description="Student email address")
+    courses: Optional[List[str]] = Field(default_factory=list, description="List of course IDs")
+
 class StudentRegistrationRequest(BaseModel):
     """Request to register a new student."""
     

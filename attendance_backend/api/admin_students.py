@@ -1,12 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
-from models import UserModel
 from schemas.attendance_schemas import StudentCreateSchema
 from database.student_repository import StudentRepository
 from database.firebase_client import FirebaseClient
 from services.firebase_service import FirebaseService
 
-router = APIRouter(prefix="/admin", tags=["admin-students"])
+router = APIRouter(tags=["admin-students"])
 
 def get_db():
     return FirebaseClient()

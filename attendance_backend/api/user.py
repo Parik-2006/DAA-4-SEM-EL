@@ -205,7 +205,7 @@ def reset_password(token: str, new_password: str):
             )
         
         fb = FirebaseClient()
-        ref = fb.db.reference("users")
+        ref = fb.get_reference("users")
         users_data = ref.get() or {}
         
         user_id = None

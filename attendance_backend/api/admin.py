@@ -1,10 +1,9 @@
 from fastapi import APIRouter, HTTPException, Query
 from typing import List, Optional
 from datetime import datetime
-from ..database.user_repository import UserRepository
-from ..database.student_repository import StudentRepository
-from ..models import UserModel
-from ..database.firebase_client import FirebaseClient
+from database.user_repository import UserRepository
+from database.student_repository import StudentRepository
+from database.firebase_client import FirebaseClient
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
@@ -29,7 +28,7 @@ async def get_today_attendance_stats():
         fb = FirebaseClient()
         today = datetime.now().strftime("%Y-%m-%d")
         
-        ref = fb.db.reference(f"attendance/{today}")
+        ref = fb.get_reference(f"attendance/{today}")
         today_data = ref.get() or {}
         
         present_count = sum(1 for v in today_data.values() if isinstance(v, dict) and v.get("status") == "present")
@@ -69,7 +68,7 @@ async def get_attendance_records(
     """Get attendance records for date with pagination"""
     try:
         fb = FirebaseClient()
-        ref = fb.db.reference(f"attendance/{date}")
+        ref = fb.get_reference(f"attendance/{date}")
         records = ref.get() or {}
         
         record_list = []
@@ -118,7 +117,7 @@ async def register_student_face(student_id: str, face_image_base64: str):
             raise HTTPException(status_code=400, detail="Invalid base64 image")
         
         # Save to Firebase (simplified - embedding extraction requires ML model)
-        ref = fb.db.reference(f"students/{student_id}")
+        ref = fb.get_reference(f"students/{student_id}")
         ref.update({
             "face_image_base64": face_image_base64[:100],  # Store small portion as proof
             "registered_at": datetime.now().isoformat(),

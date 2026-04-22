@@ -25,7 +25,7 @@ async def generate_qr_code(
         expiry = datetime.now() + timedelta(minutes=5)
         
         # Store token in Firebase with expiry
-        qr_ref = db.db.reference("qr_tokens").child(token)
+        qr_ref = db.get_reference("qr_tokens").child(token)
         qr_ref.set({
             "created_at": datetime.now().isoformat(),
             "expires_at": expiry.isoformat(),
@@ -71,7 +71,7 @@ async def scan_qr_code(
             raise HTTPException(status_code=400, detail="Missing token or student_id")
         
         # Verify token
-        qr_ref = db.db.reference("qr_tokens").child(token)
+        qr_ref = db.get_reference("qr_tokens").child(token)
         qr_data = qr_ref.get()
         
         if not qr_data.val():
@@ -86,7 +86,7 @@ async def scan_qr_code(
         
         # Check if already marked today
         today = datetime.now().strftime("%Y-%m-%d")
-        attendance_ref = db.db.reference("attendance").child(today).child(student_id)
+        attendance_ref = db.get_reference("attendance").child(today).child(student_id)
         existing = attendance_ref.get()
         
         if existing.val():
@@ -125,7 +125,7 @@ async def validate_qr_token(
 ) -> dict:
     """Validate QR token"""
     try:
-        qr_ref = db.db.reference("qr_tokens").child(token)
+        qr_ref = db.get_reference("qr_tokens").child(token)
         qr_data = qr_ref.get()
         
         if not qr_data.val():
@@ -157,7 +157,7 @@ async def cleanup_expired_tokens(
 ) -> dict:
     """Remove expired QR tokens (admin task)"""
     try:
-        qr_ref = db.db.reference("qr_tokens")
+        qr_ref = db.get_reference("qr_tokens")
         all_tokens = qr_ref.get()
         
         if not all_tokens.val():
@@ -192,7 +192,7 @@ async def get_qr_statistics(
 ) -> dict:
     """Get QR attendance statistics"""
     try:
-        qr_ref = db.db.reference("qr_tokens")
+        qr_ref = db.get_reference("qr_tokens")
         all_tokens = qr_ref.get()
         
         if not all_tokens.val():
