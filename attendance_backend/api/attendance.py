@@ -3,16 +3,18 @@ REST API endpoints for attendance system.
 
 Provides endpoints for:
 - Student registration and management
-- Attendance marking and retrieval
+- Attendance marking and retrieval (including file-upload face detection)
 - Stream management
 - System health and statistics
 """
 
 import logging
+import base64
+import io
 from datetime import datetime, timedelta
 from typing import Optional, List
 
-from fastapi import APIRouter, HTTPException, Query, Body, status
+from fastapi import APIRouter, HTTPException, Query, Body, File, UploadFile, status
 from fastapi.responses import JSONResponse
 
 from schemas.attendance_schemas import (
@@ -34,7 +36,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/attendance", tags=["attendance"])
 
 
-# ==================== Error Handlers ====================
+# ==================== Error Helpers ====================
 
 def error_response(
     error: str,
@@ -42,18 +44,6 @@ def error_response(
     status_code: int = 400,
     details: Optional[dict] = None
 ) -> JSONResponse:
-    """
-    Create standardized error response.
-    
-    Args:
-        error: Error message
-        error_code: Error code
-        status_code: HTTP status code
-        details: Error details
-    
-    Returns:
-        JSONResponse
-    """
     return JSONResponse(
         status_code=status_code,
         content={
@@ -66,6 +56,172 @@ def error_response(
     )
 
 
+# ==================== Face Detection / Attendance via File Upload ====================
+
+@router.post(
+    "/detect-face",
+    status_code=status.HTTP_200_OK,
+    summary="Detect face from uploaded image and mark attendance",
+    responses={
+        200: {"description": "Face detected and matched"},
+        400: {"description": "No face detected or invalid image"},
+        404: {"description": "No matching student found"},
+    }
+)
+async def detect_face_and_mark(
+    file: UploadFile = File(..., description="JPEG or PNG image containing a face"),
+):
+    """
+    Accept a multipart image file, extract face embedding, match against
+    all registered students, and mark attendance for the best match.
+
+    Returns JSON:
+        {
+          "matched": true/false,
+          "message": "...",
+          "student_name": "...",   # if matched
+          "student_id": "...",     # if matched
+          "confidence": 0.95       # if matched
+        }
+    """
+    # ── 1. Read uploaded bytes ──────────────────────────────────────────────
+    try:
+        contents = await file.read()
+        if not contents:
+            raise HTTPException(status_code=400, detail="Empty file received")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+
+    # ── 2. Decode image ─────────────────────────────────────────────────────
+    try:
+        from PIL import Image
+        import numpy as np
+
+        image = Image.open(io.BytesIO(contents)).convert("RGB")
+        image_array = np.array(image)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid image format: {str(e)}")
+
+    # ── 3. Extract face embedding ────────────────────────────────────────────
+    try:
+        from models.facenet_extractor import FaceNetExtractor
+        extractor = FaceNetExtractor()
+        embedding = extractor.extract_embedding(image_array)
+        if embedding is None:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "matched": False,
+                    "message": "No face detected in the image. Ensure your face is clearly visible and well-lit.",
+                }
+            )
+    except ImportError:
+        # FaceNet not installed – fall back to a simple "no model" response
+        logger.warning("FaceNetExtractor not available; returning unmatched")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "matched": False,
+                "message": "Face recognition model not loaded on server. Contact admin.",
+            }
+        )
+    except Exception as e:
+        logger.error(f"Embedding extraction error: {e}")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "matched": False,
+                "message": f"Could not process face: {str(e)}",
+            }
+        )
+
+    # ── 4. Match against all registered students ─────────────────────────────
+    firebase = get_firebase_service()
+    if not firebase:
+        raise HTTPException(status_code=503, detail="Firebase service not initialised")
+
+    try:
+        from scipy.spatial.distance import cosine
+        import numpy as np
+
+        THRESHOLD = 0.55  # lower = stricter
+
+        all_students = firebase.get_all_students()
+        best_distance = float("inf")
+        best_student = None
+
+        for student in all_students:
+            stored_embs = student.get("embeddings", [])
+            for stored_emb in stored_embs:
+                arr = np.array(stored_emb)
+                if arr.shape != embedding.shape:
+                    continue
+                dist = float(cosine(embedding, arr))
+                if dist < best_distance:
+                    best_distance = dist
+                    best_student = student
+
+        if best_student is None or best_distance > THRESHOLD:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "matched": False,
+                    "message": (
+                        "Face not recognised. "
+                        f"Best similarity score: {1 - best_distance:.2f}. "
+                        "Please register your face or try with better lighting."
+                    ),
+                }
+            )
+
+        confidence = float(1.0 - best_distance)
+        student_id = best_student.get("student_id", "")
+        student_name = best_student.get("name", "Unknown")
+
+    except ImportError:
+        logger.warning("scipy not installed – cannot compare embeddings")
+        return JSONResponse(
+            status_code=200,
+            content={"matched": False, "message": "Server missing scipy library for face matching."}
+        )
+    except Exception as e:
+        logger.error(f"Matching error: {e}")
+        raise HTTPException(status_code=500, detail=f"Face matching failed: {str(e)}")
+
+    # ── 5. Mark attendance ────────────────────────────────────────────────────
+    try:
+        timestamp = datetime.now()
+        result = firebase.mark_attendance(
+            student_id=student_id,
+            timestamp=timestamp,
+            confidence=confidence,
+            track_id=None,
+            camera_id="web_upload",
+            metadata={
+                "method": "face_recognition_upload",
+                "threshold": THRESHOLD,
+                "distance": best_distance,
+            }
+        )
+        logger.info(f"Attendance marked via upload: {student_id} ({student_name}) conf={confidence:.2f}")
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "matched": True,
+                "message": f"Attendance marked successfully for {student_name}",
+                "student_name": student_name,
+                "student_id": student_id,
+                "confidence": round(confidence, 4),
+                "record_id": result.get("record_id", ""),
+                "timestamp": timestamp.isoformat(),
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to save attendance: {e}")
+        raise HTTPException(status_code=500, detail=f"Attendance recording failed: {str(e)}")
+
+
 # ==================== Student Management ====================
 
 @router.post(
@@ -73,53 +229,19 @@ def error_response(
     response_model=StudentRegistrationResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Register a new student",
-    responses={
-        201: {"model": StudentRegistrationResponse},
-        400: {"model": ErrorResponse},
-        409: {"model": ErrorResponse}
-    }
 )
 async def register_student(request: StudentRegistrationRequest) -> StudentRegistrationResponse:
-    """
-    Register a new student with face embeddings.
-    
-    This endpoint:
-    1. Validates student information and embeddings
-    2. Stores embeddings in Firebase
-    3. Creates student record with metadata
-    
-    Args:
-        request: Student registration request
-    
-    Returns:
-        StudentRegistrationResponse with student ID
-    
-    Raises:
-        400: Invalid request data
-        409: Student already registered
-    """
     try:
         firebase = get_firebase_service()
-        
         if not firebase:
-            raise HTTPException(
-                status_code=503,
-                detail="Firebase service not initialized"
-            )
-        
-        # Check if student already exists
+            raise HTTPException(status_code=503, detail="Firebase service not initialized")
+
         existing = firebase.get_student(request.student_id)
         if existing:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Student {request.student_id} already registered"
-            )
-        
-        # Convert embeddings to numpy array
+            raise HTTPException(status_code=409, detail=f"Student {request.student_id} already registered")
+
         import numpy as np
-        embeddings_array = np.array(request.embeddings[0])  # Use first embedding
-        
-        # Register student
+        embeddings_array = np.array(request.embeddings[0])
         firebase.register_student(
             student_id=request.student_id,
             name=request.name,
@@ -128,73 +250,34 @@ async def register_student(request: StudentRegistrationRequest) -> StudentRegist
             phone=request.phone,
             metadata=request.metadata
         )
-        
-        # Store additional embeddings
         for emb in request.embeddings[1:]:
             firebase.store_embedding(request.student_id, np.array(emb))
-        
+
         logger.info(f"Student registered: {request.student_id}")
-        
         return StudentRegistrationResponse(
             success=True,
             student_id=request.student_id,
             message="Student registered successfully"
         )
-    
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error registering student: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to register student: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to register student: {str(e)}")
 
 
-@router.get(
-    "/students",
-    response_model=StudentListResponse,
-    summary="Get list of all registered students",
-    responses={
-        200: {"model": StudentListResponse},
-        500: {"model": ErrorResponse}
-    }
-)
+@router.get("/students", response_model=StudentListResponse, summary="Get list of all registered students")
 async def get_students(
-    limit: int = Query(1000, ge=1, le=10000, description="Max students to return"),
-    offset: int = Query(0, ge=0, description="Offset for pagination")
+    limit: int = Query(1000, ge=1, le=10000),
+    offset: int = Query(0, ge=0),
 ) -> StudentListResponse:
-    """
-    Retrieve list of all registered students.
-    
-    Supports pagination with limit and offset.
-    
-    Args:
-        limit: Maximum students to return
-        offset: Pagination offset
-    
-    Returns:
-        StudentListResponse with student list
-    
-    Raises:
-        500: Database error
-    """
     try:
         firebase = get_firebase_service()
-        
         if not firebase:
-            raise HTTPException(
-                status_code=503,
-                detail="Firebase service not initialized"
-            )
-        
-        # Get all students
+            raise HTTPException(status_code=503, detail="Firebase service not initialized")
+
         all_students = firebase.get_all_students()
-        
-        # Apply pagination
-        paginated = all_students[offset:offset+limit]
-        
-        # Convert to StudentInfo objects
+        paginated = all_students[offset:offset + limit]
         students_info = [
             StudentInfo(
                 student_id=s.get("student_id", ""),
@@ -209,64 +292,25 @@ async def get_students(
             )
             for s in paginated
         ]
-        
-        logger.info(f"Retrieved {len(students_info)} students")
-        
-        return StudentListResponse(
-            success=True,
-            count=len(students_info),
-            students=students_info
-        )
-    
+        return StudentListResponse(success=True, count=len(students_info), students=students_info)
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error retrieving students: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve students: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve students: {str(e)}")
 
 
-@router.get(
-    "/students/{student_id}",
-    response_model=StudentInfo,
-    summary="Get specific student",
-    responses={
-        200: {"model": StudentInfo},
-        404: {"model": ErrorResponse}
-    }
-)
+@router.get("/students/{student_id}", response_model=StudentInfo, summary="Get specific student")
 async def get_student(student_id: str) -> StudentInfo:
-    """
-    Get details for a specific student.
-    
-    Args:
-        student_id: Student ID
-    
-    Returns:
-        StudentInfo object
-    
-    Raises:
-        404: Student not found
-    """
     try:
         firebase = get_firebase_service()
-        
         if not firebase:
-            raise HTTPException(
-                status_code=503,
-                detail="Firebase service not initialized"
-            )
-        
+            raise HTTPException(status_code=503, detail="Firebase service not initialized")
+
         student = firebase.get_student(student_id)
-        
         if not student:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Student {student_id} not found"
-            )
-        
+            raise HTTPException(status_code=404, detail=f"Student {student_id} not found")
+
         return StudentInfo(
             student_id=student.get("student_id", ""),
             name=student.get("name", ""),
@@ -278,69 +322,27 @@ async def get_student(student_id: str) -> StudentInfo:
             status=student.get("status", "active"),
             metadata=student.get("metadata")
         )
-    
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error getting student: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get student: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to get student: {str(e)}")
 
 
 # ==================== Attendance Management ====================
 
-@router.post(
-    "/mark-attendance",
-    response_model=MarkAttendanceResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Mark student attendance",
-    responses={
-        201: {"model": MarkAttendanceResponse},
-        400: {"model": ErrorResponse},
-        404: {"model": ErrorResponse}
-    }
-)
+@router.post("/mark-attendance", response_model=MarkAttendanceResponse, status_code=status.HTTP_201_CREATED)
 async def mark_attendance(request: MarkAttendanceRequest) -> MarkAttendanceResponse:
-    """
-    Mark attendance for a recognized student.
-    
-    This endpoint:
-    1. Validates student exists
-    2. Creates attendance record with timestamp
-    3. Updates student's last_seen and attendance_count
-    
-    Args:
-        request: Attendance marking request
-    
-    Returns:
-        MarkAttendanceResponse with record ID
-    
-    Raises:
-        400: Invalid request
-        404: Student not found
-    """
     try:
         firebase = get_firebase_service()
-        
         if not firebase:
-            raise HTTPException(
-                status_code=503,
-                detail="Firebase service not initialized"
-            )
-        
-        # Verify student exists
+            raise HTTPException(status_code=503, detail="Firebase service not initialized")
+
         student = firebase.get_student(request.student_id)
         if not student:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Student {request.student_id} not found"
-            )
-        
-        # Mark attendance
+            raise HTTPException(status_code=404, detail=f"Student {request.student_id} not found")
+
         timestamp = request.timestamp or datetime.now()
-        
         result = firebase.mark_attendance(
             student_id=request.student_id,
             timestamp=timestamp,
@@ -349,9 +351,6 @@ async def mark_attendance(request: MarkAttendanceRequest) -> MarkAttendanceRespo
             camera_id=request.camera_id,
             metadata=request.metadata
         )
-        
-        logger.info(f"Attendance marked for {request.student_id}: {result['record_id']}")
-        
         return MarkAttendanceResponse(
             success=True,
             record_id=result['record_id'],
@@ -359,155 +358,82 @@ async def mark_attendance(request: MarkAttendanceRequest) -> MarkAttendanceRespo
             timestamp=timestamp.isoformat(),
             message="Attendance marked successfully"
         )
-    
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error marking attendance: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to mark attendance: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to mark attendance: {str(e)}")
 
 
 @router.post(
     "/mark",
     response_model=MarkAttendanceResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Mark attendance with face recognition",
-    responses={
-        201: {"model": MarkAttendanceResponse},
-        400: {"model": ErrorResponse},
-        404: {"model": ErrorResponse}
-    }
+    summary="Mark attendance with face recognition (JSON body)",
 )
 async def mark_attendance_with_image(
-    student_id: str = Body(..., description="Student ID"),
-    image_base64: str = Body(..., description="Base64 encoded image")
+    student_id: str = Body(...),
+    image_base64: str = Body(...)
 ) -> MarkAttendanceResponse:
-    """
-    Mark attendance using face recognition from image.
-    
-    This endpoint:
-    1. Decodes the base64 image
-    2. Extracts face embedding from image
-    3. Matches against student's stored embeddings
-    4. Marks attendance if confidence > threshold
-    
-    Args:
-        student_id: Student ID
-        image_base64: Base64 encoded image
-    
-    Returns:
-        MarkAttendanceResponse with attendance status
-    
-    Raises:
-        400: Invalid image or no face detected
-        404: Student not found or no match
-    """
     try:
         firebase = get_firebase_service()
-        
         if not firebase:
-            raise HTTPException(
-                status_code=503,
-                detail="Firebase service not initialized"
-            )
-        
-        # Verify student exists
+            raise HTTPException(status_code=503, detail="Firebase service not initialized")
+
         student = firebase.get_student(student_id)
         if not student:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Student {student_id} not found"
-            )
-        
-        # Decode image
-        import base64
-        import io
-        from PIL import Image
+            raise HTTPException(status_code=404, detail=f"Student {student_id} not found")
+
         import numpy as np
-        
+        from PIL import Image
+
         try:
             image_data = base64.b64decode(image_base64)
-            image = Image.open(io.BytesIO(image_data))
+            image = Image.open(io.BytesIO(image_data)).convert("RGB")
             image_array = np.array(image)
         except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid image format: {str(e)}"
-            )
-        
-        # Extract face embedding
-        from models.facenet_extractor import FaceNetExtractor
-        
+            raise HTTPException(status_code=400, detail=f"Invalid image format: {str(e)}")
+
         try:
+            from models.facenet_extractor import FaceNetExtractor
+            from scipy.spatial.distance import cosine
+
             extractor = FaceNetExtractor()
             embedding = extractor.extract_embedding(image_array)
-            
             if embedding is None:
+                raise HTTPException(status_code=400, detail="No face detected in image")
+
+            student_embeddings = student.get("embeddings", [])
+            if not student_embeddings:
+                raise HTTPException(status_code=404, detail="Student has no registered face embeddings")
+
+            THRESHOLD = 0.6
+            best_match = None
+            for stored_emb in student_embeddings:
+                dist = float(cosine(embedding, np.array(stored_emb)))
+                if best_match is None or dist < best_match:
+                    best_match = dist
+
+            confidence = float(1.0 - min(best_match, 1.0)) if best_match is not None else 0.0
+            if best_match > THRESHOLD:
                 raise HTTPException(
-                    status_code=400,
-                    detail="No face detected in image"
+                    status_code=404,
+                    detail=f"Face does not match student. Confidence: {confidence:.2f}"
                 )
+        except (ImportError, HTTPException):
+            raise
         except Exception as e:
-            logger.warning(f"Face extraction error: {e}")
-            raise HTTPException(
-                status_code=400,
-                detail=f"Face extraction failed: {str(e)}"
-            )
-        
-        # Get student's stored embeddings
-        student_embeddings = student.get("embeddings", [])
-        if not student_embeddings:
-            raise HTTPException(
-                status_code=404,
-                detail="Student has no registered face embeddings"
-            )
-        
-        # Compare embeddings
-        from scipy.spatial.distance import cosine
-        
-        CONFIDENCE_THRESHOLD = 0.6  # Cosine distance threshold
-        
-        best_distance = float('inf')
-        best_match = None
-        
-        for stored_emb in student_embeddings:
-            if isinstance(stored_emb, list):
-                stored_emb = np.array(stored_emb)
-            
-            distance = cosine(embedding, stored_emb)
-            if distance < best_distance:
-                best_distance = distance
-                best_match = distance
-        
-        # Convert distance to confidence (lower distance = higher confidence)
-        confidence = 1.0 - min(best_match, 1.0) if best_match is not None else 0.0
-        
-        if best_match > CONFIDENCE_THRESHOLD:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Face does not match student. Confidence: {confidence:.2f}"
-            )
-        
-        # Mark attendance
+            raise HTTPException(status_code=400, detail=f"Face processing failed: {str(e)}")
+
         timestamp = datetime.now()
         result = firebase.mark_attendance(
             student_id=student_id,
             timestamp=timestamp,
             confidence=confidence,
             track_id=None,
-            camera_id="mobile_app",
-            metadata={
-                "method": "face_recognition",
-                "threshold": CONFIDENCE_THRESHOLD,
-                "distance": float(best_match)
-            }
+            camera_id="web_json",
+            metadata={"method": "face_recognition_json"}
         )
-        
-        logger.info(f"Attendance marked via face recognition: {student_id} (confidence: {confidence:.2f})")
-        
         return MarkAttendanceResponse(
             success=True,
             record_id=result['record_id'],
@@ -515,123 +441,70 @@ async def mark_attendance_with_image(
             timestamp=timestamp.isoformat(),
             message=f"Attendance marked successfully (confidence: {confidence:.2f})"
         )
-    
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error marking attendance with image: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to mark attendance: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to mark attendance: {str(e)}")
 
 
 @router.post(
     "/mark-mobile",
     response_model=MarkAttendanceResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Mark attendance with face recognition (Mobile App)",
-    responses={
-        201: {"model": MarkAttendanceResponse},
-        400: {"model": ErrorResponse},
-        404: {"model": ErrorResponse}
-    }
+    summary="Mark attendance from mobile app (query-param base64)",
 )
 async def mark_attendance_mobile(
-    student_id: str = Query(..., description="Student ID"),
-    image_base64: str = Query(..., description="Base64 encoded image")
+    student_id: str = Query(...),
+    image_base64: str = Query(...)
 ) -> MarkAttendanceResponse:
-    """
-    Mark attendance using face recognition from mobile camera.
-    
-    This endpoint accepts query parameters for mobile app integration.
-    
-    Args:
-        student_id: Student ID
-        image_base64: Base64 encoded image
-    
-    Returns:
-        MarkAttendanceResponse with attendance status
-    """
     try:
         firebase = get_firebase_service()
-        
         if not firebase:
-            raise HTTPException(
-                status_code=503,
-                detail="Firebase service not initialized"
-            )
-        
-        # Verify student exists
+            raise HTTPException(status_code=503, detail="Firebase service not initialized")
+
         student = firebase.get_student(student_id)
         if not student:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Student {student_id} not found"
-            )
-        
-        # Decode image
-        import base64
-        import io
-        from PIL import Image
+            raise HTTPException(status_code=404, detail=f"Student {student_id} not found")
+
         import numpy as np
-        
+        from PIL import Image
+
         try:
             image_data = base64.b64decode(image_base64)
-            image = Image.open(io.BytesIO(image_data))
+            image = Image.open(io.BytesIO(image_data)).convert("RGB")
             image_array = np.array(image)
         except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid image format: {str(e)}"
-            )
-        
-        # Extract face embedding
-        from models.facenet_extractor import FaceNetExtractor
-        from scipy.spatial.distance import cosine
-        
-        CONFIDENCE_THRESHOLD = 0.6
-        
+            raise HTTPException(status_code=400, detail=f"Invalid image format: {str(e)}")
+
         try:
+            from models.facenet_extractor import FaceNetExtractor
+            from scipy.spatial.distance import cosine
+
+            THRESHOLD = 0.6
             extractor = FaceNetExtractor()
             embedding = extractor.extract_embedding(image_array)
-            
             if embedding is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="No face detected in image"
-                )
+                raise HTTPException(status_code=400, detail="No face detected")
+
+            embeddings = student.get("embeddings", [])
+            if not embeddings:
+                raise HTTPException(status_code=404, detail="No face profile found for student")
+
+            best_match = None
+            for stored_emb in embeddings:
+                dist = float(cosine(embedding, np.array(stored_emb)))
+                if best_match is None or dist < best_match:
+                    best_match = dist
+
+            confidence = float(1.0 - min(best_match, 1.0)) if best_match is not None else 0.0
+            if best_match > THRESHOLD:
+                raise HTTPException(status_code=404, detail=f"Face does not match. Confidence: {confidence:.2f}")
+        except (ImportError, HTTPException):
+            raise
         except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Failed to extract face: {str(e)}"
-            )
-        
-        # Get stored embeddings
-        embeddings = student.get("embeddings", [])
-        if not embeddings:
-            raise HTTPException(
-                status_code=404,
-                detail="No face profile found for student. Please register face first."
-            )
-        
-        # Find best match
-        best_match = None
-        for stored_emb in embeddings:
-            distance = cosine(embedding, stored_emb)
-            if best_match is None or distance < best_match:
-                best_match = distance
-        
-        # Convert distance to confidence (lower distance = higher confidence)
-        confidence = 1.0 - min(best_match, 1.0) if best_match is not None else 0.0
-        
-        if best_match > CONFIDENCE_THRESHOLD:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Face does not match student. Confidence: {confidence:.2f}"
-            )
-        
-        # Mark attendance
+            raise HTTPException(status_code=400, detail=str(e))
+
         timestamp = datetime.now()
         result = firebase.mark_attendance(
             student_id=student_id,
@@ -639,116 +512,58 @@ async def mark_attendance_mobile(
             confidence=confidence,
             track_id=None,
             camera_id="mobile_app",
-            metadata={
-                "method": "face_recognition_mobile",
-                "threshold": CONFIDENCE_THRESHOLD,
-                "distance": float(best_match)
-            }
+            metadata={"method": "face_recognition_mobile"}
         )
-        
-        logger.info(f"Mobile attendance marked: {student_id} (confidence: {confidence:.2f})")
-        
         return MarkAttendanceResponse(
             success=True,
             record_id=result['record_id'],
             student_id=student_id,
             timestamp=timestamp.isoformat(),
-            message=f"Attendance marked successfully (confidence: {confidence:.2f})"
+            message=f"Attendance marked (confidence: {confidence:.2f})"
         )
-    
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error marking mobile attendance: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to mark attendance: {str(e)}"
-        )
+        logger.error(f"Mobile attendance error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to mark attendance: {str(e)}")
 
 
-@router.get(
-    "/attendance",
-    response_model=AttendanceListResponse,
-    summary="Get attendance records",
-    responses={
-        200: {"model": AttendanceListResponse},
-        400: {"model": ErrorResponse}
-    }
-)
+@router.get("/attendance", response_model=AttendanceListResponse, summary="Get attendance records")
 async def get_attendance(
-    student_id: Optional[str] = Query(None, description="Filter by student ID"),
-    date_from: Optional[str] = Query(None, description="Start date (ISO format)"),
-    date_to: Optional[str] = Query(None, description="End date (ISO format)"),
-    limit: int = Query(100, ge=1, le=1000, description="Max records to return"),
-    offset: int = Query(0, ge=0, description="Pagination offset")
+    student_id: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
 ) -> AttendanceListResponse:
-    """
-    Retrieve attendance records with optional filtering.
-    
-    Supports filtering by:
-    - Student ID
-    - Date range
-    - Pagination
-    
-    Args:
-        student_id: Optional student ID filter
-        date_from: Optional start date
-        date_to: Optional end date
-        limit: Maximum records to return
-        offset: Pagination offset
-    
-    Returns:
-        AttendanceListResponse with records
-    
-    Raises:
-        400: Invalid date format
-    """
     try:
         firebase = get_firebase_service()
-        
         if not firebase:
-            raise HTTPException(
-                status_code=503,
-                detail="Firebase service not initialized"
-            )
-        
-        # Parse dates
+            raise HTTPException(status_code=503, detail="Firebase service not initialized")
+
         from_date = None
         to_date = None
-        
         if date_from:
             try:
                 from_date = datetime.fromisoformat(date_from)
             except ValueError:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Invalid date_from format (use ISO format)"
-                )
-        
+                raise HTTPException(status_code=400, detail="Invalid date_from format")
         if date_to:
             try:
                 to_date = datetime.fromisoformat(date_to)
             except ValueError:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Invalid date_to format (use ISO format)"
-                )
-        
-        # Get records
+                raise HTTPException(status_code=400, detail="Invalid date_to format")
+
         records = firebase.get_attendance_records(
             student_id=student_id,
             date_from=from_date,
             date_to=to_date,
-            limit=limit + offset  # Get extra for offset
+            limit=limit + offset
         )
-        
-        # Apply offset
-        paginated = records[offset:offset+limit]
-        
-        # Convert to AttendanceRecord objects
+        paginated = records[offset:offset + limit]
         attendance_records = [
             AttendanceRecord(
-                record_id=str(r.get("timestamp", "")),  # Use timestamp as ID
+                record_id=str(r.get("timestamp", "")),
                 student_id=r.get("student_id", ""),
                 timestamp=r.get("timestamp", ""),
                 date=r.get("date", ""),
@@ -761,108 +576,51 @@ async def get_attendance(
             )
             for r in paginated
         ]
-        
-        logger.info(f"Retrieved {len(attendance_records)} attendance records")
-        
-        return AttendanceListResponse(
-            success=True,
-            count=len(attendance_records),
-            records=attendance_records
-        )
-    
+        return AttendanceListResponse(success=True, count=len(attendance_records), records=attendance_records)
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error retrieving attendance: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to retrieve attendance: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve attendance: {str(e)}")
 
 
-@router.get(
-    "/attendance/daily-report",
-    response_model=DailyReportResponse,
-    summary="Get daily attendance report"
-)
-async def get_daily_report(
-    date: Optional[str] = Query(None, description="Report date (ISO format, default: today)")
-) -> DailyReportResponse:
-    """
-    Get attendance report for a specific date.
-    
-    Args:
-        date: Date for report (ISO format)
-    
-    Returns:
-        DailyReportResponse
-    """
+@router.get("/attendance/daily-report", response_model=DailyReportResponse, summary="Daily attendance report")
+async def get_daily_report(date: Optional[str] = Query(None)) -> DailyReportResponse:
     try:
         firebase = get_firebase_service()
-        
         if not firebase:
-            raise HTTPException(
-                status_code=503,
-                detail="Firebase service not initialized"
-            )
-        
-        # Parse date
+            raise HTTPException(status_code=503, detail="Firebase service not initialized")
+
         report_date = None
         if date:
             try:
                 report_date = datetime.fromisoformat(date)
             except ValueError:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Invalid date format (use ISO format)"
-                )
-        
+                raise HTTPException(status_code=400, detail="Invalid date format")
+
         report = firebase.get_daily_report(report_date)
-        
         if "error" in report:
-            raise HTTPException(
-                status_code=500,
-                detail=report["error"]
-            )
-        
+            raise HTTPException(status_code=500, detail=report["error"])
+
         return DailyReportResponse(
             date=report["date"],
             total_records=report["total_records"],
             unique_students=report["unique_students"],
-            records=[]  # TODO: Convert to proper format
+            records=[]
         )
-    
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error generating daily report: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to generate report: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to generate report: {str(e)}")
 
 
 # ==================== Stream Management ====================
 
-@router.post(
-    "/streams",
-    response_model=StreamHealth,
-    status_code=status.HTTP_201_CREATED,
-    summary="Add RTSP stream"
-)
+@router.post("/streams", response_model=StreamHealth, status_code=status.HTTP_201_CREATED)
 async def add_stream(request: StreamConfig) -> StreamHealth:
-    """
-    Add new RTSP stream for processing.
-    
-    Args:
-        request: Stream configuration
-    
-    Returns:
-        Stream health status
-    """
     try:
         manager = get_stream_manager()
-        
         handler = manager.add_stream(
             stream_id=request.stream_id,
             rtsp_url=request.rtsp_url,
@@ -870,19 +628,11 @@ async def add_stream(request: StreamConfig) -> StreamHealth:
             min_consecutive_frames=request.min_consecutive_frames,
             confidence_threshold=request.confidence_threshold
         )
-        
         if not handler:
-            raise HTTPException(
-                status_code=400,
-                detail="Failed to add stream"
-            )
-        
-        # Start stream
+            raise HTTPException(status_code=400, detail="Failed to add stream")
         if request.enabled:
             manager.start_stream(request.stream_id)
-        
         metrics = handler.get_metrics()
-        
         return StreamHealth(
             stream_id=request.stream_id,
             status=metrics["status"],
@@ -891,164 +641,86 @@ async def add_stream(request: StreamConfig) -> StreamHealth:
             fps=0.0,
             errors=0
         )
-    
     except Exception as e:
-        logger.error(f"Error adding stream: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to add stream: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to add stream: {str(e)}")
 
 
-@router.get(
-    "/streams",
-    summary="Get all streams"
-)
+@router.get("/streams", summary="Get all streams")
 async def get_streams():
-    """Get status of all RTSP streams."""
     try:
         manager = get_stream_manager()
         streams = manager.get_all_streams()
-        
-        return {
-            "success": True,
-            "count": len(streams),
-            "streams": streams
-        }
-    
+        return {"success": True, "count": len(streams), "streams": streams}
     except Exception as e:
-        logger.error(f"Error getting streams: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get streams: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to get streams: {str(e)}")
 
 
-@router.post(
-    "/streams/{stream_id}/start",
-    summary="Start stream"
-)
+@router.post("/streams/{stream_id}/start")
 async def start_stream(stream_id: str):
-    """Start a stream."""
     try:
         manager = get_stream_manager()
-        
         if not manager.start_stream(stream_id):
-            raise HTTPException(
-                status_code=404,
-                detail=f"Stream {stream_id} not found"
-            )
-        
+            raise HTTPException(status_code=404, detail=f"Stream {stream_id} not found")
         return {"success": True, "message": f"Stream {stream_id} started"}
-    
     except Exception as e:
-        logger.error(f"Error starting stream: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to start stream: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to start stream: {str(e)}")
 
 
-@router.post(
-    "/streams/{stream_id}/stop",
-    summary="Stop stream"
-)
+@router.post("/streams/{stream_id}/stop")
 async def stop_stream(stream_id: str):
-    """Stop a stream."""
     try:
         manager = get_stream_manager()
-        
         if not manager.stop_stream(stream_id):
-            raise HTTPException(
-                status_code=404,
-                detail=f"Stream {stream_id} not found"
-            )
-        
+            raise HTTPException(status_code=404, detail=f"Stream {stream_id} not found")
         return {"success": True, "message": f"Stream {stream_id} stopped"}
-    
     except Exception as e:
-        logger.error(f"Error stopping stream: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to stop stream: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to stop stream: {str(e)}")
 
 
-# ==================== System Health ====================
+# ==================== System Health / Stats ====================
 
-@router.get(
-    "/health",
-    response_model=HealthCheckResponse,
-    summary="Health check"
-)
+@router.get("/health", response_model=HealthCheckResponse, summary="Health check")
 async def health_check() -> HealthCheckResponse:
-    """
-    System health check.
-    
-    Returns:
-        HealthCheckResponse status
-    """
     try:
         firebase = get_firebase_service()
         manager = get_stream_manager()
-        
         services = {
             "firebase": "healthy" if firebase else "unavailable",
             "streams": "healthy" if manager else "unavailable"
         }
-        
-        return HealthCheckResponse(
-            status="healthy",
-            services=services,
-            uptime_seconds=0  # TODO: Calculate uptime
-        )
-    
+        return HealthCheckResponse(status="healthy", services=services, uptime_seconds=0)
     except Exception as e:
         logger.error(f"Health check error: {e}")
-        return HealthCheckResponse(
-            status="error",
-            services={"error": str(e)},
-            uptime_seconds=0
-        )
+        return HealthCheckResponse(status="error", services={"error": str(e)}, uptime_seconds=0)
 
 
-@router.get(
-    "/stats",
-    response_model=SystemStatsResponse,
-    summary="System statistics"
-)
+@router.get("/stats", response_model=SystemStatsResponse, summary="System statistics")
 async def get_stats() -> SystemStatsResponse:
-    """Get system statistics."""
     try:
         firebase = get_firebase_service()
-        
         if not firebase:
             return SystemStatsResponse()
-        
-        # Get statistics
+
         all_students = firebase.get_all_students()
         attendance_records = firebase.get_attendance_records(limit=10000)
-        
-        # Calculate stats
         today = datetime.now().date()
-        today_records = [
-            r for r in attendance_records
-            if datetime.fromisoformat(r.get("date", "")).date() == today
-        ]
-        
+        today_records = []
+        for r in attendance_records:
+            try:
+                if datetime.fromisoformat(str(r.get("date", ""))).date() == today:
+                    today_records.append(r)
+            except Exception:
+                pass
+
         return SystemStatsResponse(
             total_students=len(all_students),
             total_attendance_records=len(attendance_records),
             total_detections_today=len(today_records),
             average_confidence=(
-                sum(r.get("confidence", 0) for r in attendance_records) / 
+                sum(r.get("confidence", 0) for r in attendance_records) /
                 len(attendance_records) if attendance_records else 0
             )
         )
-    
     except Exception as e:
         logger.error(f"Error getting stats: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get stats: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")

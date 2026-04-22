@@ -71,7 +71,6 @@ export interface Course {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-/** Safely extract an array from various API response shapes */
 function toArray<T>(data: unknown): T[] {
   if (Array.isArray(data)) return data as T[];
   if (data && typeof data === 'object') {
@@ -83,7 +82,6 @@ function toArray<T>(data: unknown): T[] {
   return [];
 }
 
-/** Map backend attendance record fields to the frontend shape */
 function normaliseRecord(r: Record<string, unknown>): AttendanceRecord {
   return {
     id: String(r.record_id ?? r.id ?? ''),
@@ -102,14 +100,10 @@ function normaliseRecord(r: Record<string, unknown>): AttendanceRecord {
 // ── API class ──────────────────────────────────────────────────────────────────
 
 class AttendanceAPI {
-  // Live attendance — backend route: GET /api/v1/attendance/attendance
   async getLiveAttendance(courseId?: string, limit = 50): Promise<AttendanceRecord[]> {
     try {
       const response = await apiClient.get('/api/v1/attendance/attendance', {
-        params: {
-          ...(courseId ? { student_id: courseId } : {}),
-          limit,
-        },
+        params: { ...(courseId ? { student_id: courseId } : {}), limit },
       });
       return toArray<Record<string, unknown>>(response.data).map(normaliseRecord);
     } catch {
@@ -117,7 +111,6 @@ class AttendanceAPI {
     }
   }
 
-  // Statistics — backend route: GET /api/v1/attendance/stats
   async getAttendanceStats(courseId?: string, date?: string): Promise<AttendanceStats> {
     try {
       const response = await apiClient.get('/api/v1/attendance/stats', {
@@ -132,17 +125,10 @@ class AttendanceAPI {
         last_updated: String(d.last_updated ?? new Date().toISOString()),
       };
     } catch {
-      return {
-        total_present: 0,
-        total_late: 0,
-        total_absent: 0,
-        total_excused: 0,
-        last_updated: new Date().toISOString(),
-      };
+      return { total_present: 0, total_late: 0, total_absent: 0, total_excused: 0, last_updated: new Date().toISOString() };
     }
   }
 
-  // History — backend route: GET /api/v1/attendance/attendance (with date params)
   async getAttendanceHistory(
     courseId?: string,
     startDate?: string,
@@ -166,21 +152,15 @@ class AttendanceAPI {
     }
   }
 
-  // Summary — backend route: GET /api/v1/attendance/attendance/daily-report
   async getAttendanceSummary(
     courseId?: string,
     startDate?: string,
     endDate?: string
   ): Promise<Record<string, number>> {
     try {
-      const response = await apiClient.get(
-        '/api/v1/attendance/attendance/daily-report',
-        {
-          params: {
-            ...(startDate ? { date: startDate } : {}),
-          },
-        }
-      );
+      const response = await apiClient.get('/api/v1/attendance/attendance/daily-report', {
+        params: { ...(startDate ? { date: startDate } : {}) },
+      });
       const d = response.data as Record<string, unknown>;
       return {
         total_records: Number(d.total_records ?? 0),
@@ -191,7 +171,6 @@ class AttendanceAPI {
     }
   }
 
-  // Students — backend route: GET /api/v1/attendance/students
   async getStudents(courseId?: string): Promise<Student[]> {
     try {
       const response = await apiClient.get('/api/v1/attendance/students', {
@@ -202,7 +181,7 @@ class AttendanceAPI {
         name: String(s.name ?? ''),
         student_id: String(s.student_id ?? ''),
         email: String(s.email ?? ''),
-        department: String(s.department ?? s.metadata?.department ?? ''),
+        department: String(s.department ?? ''),
         semester: s.semester ? String(s.semester) : undefined,
         avatar_url: s.avatar_url ? String(s.avatar_url) : undefined,
       }));
@@ -211,7 +190,6 @@ class AttendanceAPI {
     }
   }
 
-  // Courses — the backend may not have a /courses endpoint yet; return [] gracefully
   async getCourses(): Promise<Course[]> {
     try {
       const response = await apiClient.get('/api/v1/courses');
@@ -223,26 +201,95 @@ class AttendanceAPI {
         students_count: Number(c.students_count ?? c.total_students ?? 0),
       }));
     } catch {
-      // If endpoint doesn't exist yet, return empty array instead of crashing
       return [];
     }
   }
 
-  // Detect and mark attendance
-  async detectAndMarkAttendance(formData: FormData) {
-    const response = await apiClient.post<{
-      matched: boolean;
-      message: string;
-      student_name?: string;
-      student_id?: string;
-      confidence?: number;
-    }>('/api/v1/attendance/detect', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-    return response.data;
+  /**
+   * Detect face in uploaded image/frame and mark attendance.
+   *
+   * Backend endpoint priority (tries each in order until one works):
+   *   1. POST /api/v1/attendance/detect-face   ← new clean endpoint (see attendance.py fix)
+   *   2. POST /api/v1/attendance/mark          ← existing mark endpoint with image_base64 body
+   *
+   * The FormData must contain a field named "file" (JPEG/PNG).
+   */
+  async detectAndMarkAttendance(formData: FormData): Promise<{
+    matched: boolean;
+    message: string;
+    student_name?: string;
+    student_id?: string;
+    confidence?: number;
+  }> {
+    // Try the dedicated detect-face endpoint first
+    try {
+      const response = await apiClient.post<{
+        matched: boolean;
+        message: string;
+        student_name?: string;
+        student_id?: string;
+        confidence?: number;
+      }>('/api/v1/attendance/detect-face', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 20000, // face recognition can be slow
+      });
+      return response.data;
+    } catch (err: any) {
+      // If endpoint does not exist (404) try legacy mark-mobile via base64 conversion
+      if (err?.response?.status === 404 || err?.response?.status === 405) {
+        return this._detectViaBase64(formData);
+      }
+      throw err;
+    }
   }
 
-  // Face Registration
+  /** Fallback: converts the blob to base64 and calls mark-mobile query-param endpoint */
+  private async _detectViaBase64(formData: FormData): Promise<{
+    matched: boolean;
+    message: string;
+    student_name?: string;
+    student_id?: string;
+    confidence?: number;
+  }> {
+    const file = formData.get('file') as Blob | null;
+    if (!file) throw new Error('No file in FormData');
+
+    // Read blob → base64
+    const base64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        resolve(result.split(',')[1]); // strip data:...;base64, prefix
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+    // Use a placeholder student_id; the backend matches by face embedding
+    const studentId = localStorage.getItem('student_id') || 'auto';
+
+    try {
+      const response = await apiClient.post(
+        `/api/v1/attendance/mark-mobile?student_id=${encodeURIComponent(studentId)}&image_base64=${encodeURIComponent(base64)}`,
+        null,
+        { timeout: 20000 }
+      );
+      const d = response.data as Record<string, unknown>;
+      return {
+        matched: true,
+        message: String(d.message ?? 'Attendance marked'),
+        student_name: d.student_name ? String(d.student_name) : undefined,
+        student_id: String(d.student_id ?? studentId),
+        confidence: d.confidence != null ? Number(d.confidence) : undefined,
+      };
+    } catch (err: any) {
+      return {
+        matched: false,
+        message: err?.response?.data?.detail || 'Face not recognised. Please try again.',
+      };
+    }
+  }
+
   async registerStudentFace(studentId: string, faceImageBase64: string) {
     const response = await apiClient.post('/api/v1/admin/register-face', {
       student_id: studentId,
@@ -251,7 +298,6 @@ class AttendanceAPI {
     return response.data;
   }
 
-  // QR Code
   async generateQRCode() {
     const response = await apiClient.post('/api/v1/qr/generate', {});
     return response.data;
@@ -267,22 +313,22 @@ class AttendanceAPI {
     return response.data;
   }
 
-  async getQRStatistics() {
-    const response = await apiClient.get('/api/v1/qr/stats');
-    return response.data;
+  async healthCheck(): Promise<boolean> {
+    try {
+      const response = await apiClient.get('/api/v1/attendance/health');
+      return response.status === 200;
+    } catch {
+      return false;
+    }
   }
 
-  // Admin — Student Management
+  // ── Admin helpers ──────────────────────────────────────────────────────────
+
   async getAllStudents(page = 1, limit = 50) {
     const response = await apiClient.get('/api/v1/attendance/students', {
       params: { limit, offset: (page - 1) * limit },
     });
     return toArray(response.data);
-  }
-
-  async getStudent(studentId: string) {
-    const response = await apiClient.get(`/api/v1/attendance/students/${studentId}`);
-    return response.data;
   }
 
   async createStudent(name: string, email: string, courses: string[]) {
@@ -291,9 +337,7 @@ class AttendanceAPI {
   }
 
   async updateStudent(studentId: string, name: string, email: string, courses: string[]) {
-    const response = await apiClient.put(`/api/v1/admin/students/${studentId}`, {
-      name, email, courses,
-    });
+    const response = await apiClient.put(`/api/v1/admin/students/${studentId}`, { name, email, courses });
     return response.data;
   }
 
@@ -307,17 +351,9 @@ class AttendanceAPI {
     return response.data;
   }
 
-  // Admin — Course Management
   async getAllCourses(page = 1, limit = 50) {
-    const response = await apiClient.get('/api/v1/admin/courses', {
-      params: { page, limit },
-    });
+    const response = await apiClient.get('/api/v1/admin/courses', { params: { page, limit } });
     return toArray(response.data);
-  }
-
-  async getCourseById(courseId: string) {
-    const response = await apiClient.get(`/api/v1/admin/courses/${courseId}`);
-    return response.data;
   }
 
   async createCourse(name: string, code: string, schedule: string, room: string) {
@@ -326,9 +362,7 @@ class AttendanceAPI {
   }
 
   async updateCourse(courseId: string, name: string, code: string, schedule: string, room: string) {
-    const response = await apiClient.put(`/api/v1/admin/courses/${courseId}`, {
-      name, code, schedule, room,
-    });
+    const response = await apiClient.put(`/api/v1/admin/courses/${courseId}`, { name, code, schedule, room });
     return response.data;
   }
 
@@ -340,38 +374,6 @@ class AttendanceAPI {
   async deleteCourse(courseId: string) {
     const response = await apiClient.delete(`/api/v1/admin/courses/${courseId}`);
     return response.data;
-  }
-
-  async getEnrolledStudents(courseId: string) {
-    const response = await apiClient.get(
-      `/api/v1/admin/courses/${courseId}/enrolled-students`
-    );
-    return response.data;
-  }
-
-  async enrollStudent(courseId: string, studentId: string) {
-    const response = await apiClient.post(
-      `/api/v1/admin/courses/${courseId}/enroll/${studentId}`,
-      {}
-    );
-    return response.data;
-  }
-
-  async unenrollStudent(courseId: string, studentId: string) {
-    const response = await apiClient.delete(
-      `/api/v1/admin/courses/${courseId}/unenroll/${studentId}`
-    );
-    return response.data;
-  }
-
-  // Health check
-  async healthCheck(): Promise<boolean> {
-    try {
-      const response = await apiClient.get('/api/v1/attendance/health');
-      return response.status === 200;
-    } catch {
-      return false;
-    }
   }
 }
 

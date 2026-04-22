@@ -1,5 +1,5 @@
-import React, { useRef, useState, useEffect } from 'react';
-import { Play, StopCircle, Loader } from 'lucide-react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
+import { Play, StopCircle, Loader, AlertCircle, Camera } from 'lucide-react';
 import { attendanceAPI } from '@/services/api';
 import { Card, Button } from '@/components';
 
@@ -16,100 +16,14 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [isStreamActive, setIsStreamActive] = useState(false);
+  const streamRef = useRef<MediaStream | null>(null);
+  const detectionIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const processingRef = useRef(false);
+
+  const [cameraState, setCameraState] = useState<'idle' | 'requesting' | 'active' | 'error'>('idle');
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [stream, setStream] = useState<MediaStream | null>(null);
-  const detectionIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Start camera
-  const startCamera = async () => {
-    try {
-      setCameraError(null);
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      });
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-        setStream(mediaStream);
-        setIsStreamActive(true);
-
-        // Start auto-detection
-        startAutoDetection();
-      }
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Failed to access camera';
-      setCameraError(errorMsg);
-      onAttendanceMarked({
-        status: 'error',
-        message: errorMsg,
-      });
-    }
-  };
-
-  // Stop camera
-  const stopCamera = () => {
-    if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
-      setStream(null);
-      setIsStreamActive(false);
-
-      if (detectionIntervalRef.current) {
-        clearInterval(detectionIntervalRef.current);
-      }
-    }
-  };
-
-  // Auto-detection every 2 seconds
-  const startAutoDetection = () => {
-    detectionIntervalRef.current = setInterval(async () => {
-      if (!videoRef.current || !canvasRef.current) return;
-
-      try {
-        // Draw video frame to canvas
-        const ctx = canvasRef.current.getContext('2d');
-        if (!ctx) return;
-
-        canvasRef.current.width = videoRef.current.videoWidth;
-        canvasRef.current.height = videoRef.current.videoHeight;
-        ctx.drawImage(videoRef.current, 0, 0);
-
-        // Convert canvas to blob
-        canvasRef.current.toBlob(async (blob) => {
-          if (!blob) return;
-
-          try {
-            onProcessing(true);
-            const formData = new FormData();
-            formData.append('file', blob, 'frame.jpg');
-
-            const result = await attendanceAPI.detectAndMarkAttendance(formData);
-
-            if (result.matched) {
-              onAttendanceMarked({
-                status: 'success',
-                message: `Attendance marked for ${result.student_name}`,
-                student_name: result.student_name,
-                student_id: result.student_id,
-                confidence: result.confidence,
-              });
-
-              // Stop camera after successful detection
-              stopCamera();
-            }
-          } catch (err) {
-            // Silently continue detection, don't show error on every failed frame
-            console.log('Detection frame processed');
-          } finally {
-            onProcessing(false);
-          }
-        }, 'image/jpeg', 0.8);
-      } catch (err) {
-        console.error('Auto-detection error:', err);
-      }
-    }, 2000); // Every 2 seconds
-  };
+  const [permissionDenied, setPermissionDenied] = useState(false);
+  const [frameCount, setFrameCount] = useState(0);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -118,72 +32,273 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
     };
   }, []);
 
+  const stopCamera = useCallback(() => {
+    if (detectionIntervalRef.current) {
+      clearInterval(detectionIntervalRef.current);
+      detectionIntervalRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    processingRef.current = false;
+    setCameraState('idle');
+    setFrameCount(0);
+  }, []);
+
+  const startCamera = async () => {
+    setCameraError(null);
+    setPermissionDenied(false);
+    setCameraState('requesting');
+
+    // Check if getUserMedia is available
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setCameraError('Camera API is not available. Please use a modern browser (Chrome, Firefox, Edge) over HTTPS or localhost.');
+      setCameraState('error');
+      return;
+    }
+
+    try {
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'user',
+          width: { ideal: 1280, min: 640 },
+          height: { ideal: 720, min: 480 },
+        },
+        audio: false,
+      });
+
+      streamRef.current = mediaStream;
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = mediaStream;
+        // Wait for video to be ready
+        await new Promise<void>((resolve, reject) => {
+          if (!videoRef.current) { reject(new Error('No video element')); return; }
+          videoRef.current.onloadedmetadata = () => resolve();
+          videoRef.current.onerror = () => reject(new Error('Video element error'));
+          setTimeout(() => resolve(), 3000); // fallback timeout
+        });
+        await videoRef.current.play().catch(() => {/* autoplay may fail silently */ });
+      }
+
+      setCameraState('active');
+      startAutoDetection();
+
+    } catch (err: any) {
+      const name = err?.name || '';
+      let message = 'Failed to access camera.';
+
+      if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+        message = 'Camera permission denied. Please allow camera access in your browser settings and try again.';
+        setPermissionDenied(true);
+      } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+        message = 'No camera found. Please connect a camera and try again.';
+      } else if (name === 'NotReadableError' || name === 'TrackStartError') {
+        message = 'Camera is already in use by another application. Please close other apps using the camera.';
+      } else if (name === 'OverconstrainedError') {
+        // Retry with looser constraints
+        try {
+          const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+          streamRef.current = fallbackStream;
+          if (videoRef.current) {
+            videoRef.current.srcObject = fallbackStream;
+            await videoRef.current.play().catch(() => { });
+          }
+          setCameraState('active');
+          startAutoDetection();
+          return;
+        } catch {
+          message = 'Camera constraints not supported. Try a different browser.';
+        }
+      } else if (err?.message) {
+        message = `Camera error: ${err.message}`;
+      }
+
+      setCameraError(message);
+      setCameraState('error');
+      stopCamera();
+    }
+  };
+
+  const captureFrame = (): Promise<Blob | null> => {
+    return new Promise((resolve) => {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      if (!video || !canvas || video.videoWidth === 0) {
+        resolve(null);
+        return;
+      }
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { resolve(null); return; }
+      ctx.drawImage(video, 0, 0);
+      canvas.toBlob(resolve, 'image/jpeg', 0.85);
+    });
+  };
+
+  const startAutoDetection = () => {
+    detectionIntervalRef.current = setInterval(async () => {
+      if (processingRef.current) return;
+
+      const blob = await captureFrame();
+      if (!blob) return;
+
+      setFrameCount((c) => c + 1);
+
+      try {
+        processingRef.current = true;
+        onProcessing(true);
+
+        const formData = new FormData();
+        formData.append('file', blob, 'frame.jpg');
+
+        const result = await attendanceAPI.detectAndMarkAttendance(formData);
+
+        if (result.matched) {
+          onAttendanceMarked({
+            status: 'success',
+            message: `Attendance marked for ${result.student_name}`,
+            student_name: result.student_name,
+            student_id: result.student_id,
+            confidence: result.confidence,
+          });
+          stopCamera();
+        }
+      } catch (err: any) {
+        // Silently skip detection errors (face not found, etc.)
+        // Only report real network/server errors
+        if (err?.response?.status && err.response.status >= 500) {
+          onAttendanceMarked({
+            status: 'error',
+            message: 'Server error during face detection. Please try again.',
+          });
+        }
+      } finally {
+        processingRef.current = false;
+        onProcessing(false);
+      }
+    }, 2500);
+  };
+
+  const isActive = cameraState === 'active';
+  const isRequesting = cameraState === 'requesting';
+
   return (
     <Card>
       <div className="space-y-4">
         {/* Camera Feed */}
-        <div className="relative bg-black rounded-lg overflow-hidden">
+        <div className="relative bg-gray-900 rounded-xl overflow-hidden" style={{ minHeight: '320px' }}>
+          {/* Video element — always in DOM so ref is stable */}
           <video
             ref={videoRef}
             autoPlay
             playsInline
-            className="w-full aspect-video object-cover"
+            muted
+            className={`w-full aspect-video object-cover ${isActive ? 'block' : 'hidden'}`}
+            style={{ transform: 'scaleX(-1)' }} /* Mirror for selfie */
           />
           <canvas ref={canvasRef} className="hidden" />
 
-          {/* Loading Overlay */}
-          {isLoading && (
-            <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+          {/* Placeholder when camera off */}
+          {!isActive && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-400 gap-4">
+              <div className="w-20 h-20 rounded-full bg-gray-800 flex items-center justify-center">
+                <Camera size={36} className="text-gray-500" />
+              </div>
+              <p className="text-sm font-medium text-gray-500">
+                {isRequesting ? 'Requesting camera access…' : 'Camera is off'}
+              </p>
+            </div>
+          )}
+
+          {/* Processing overlay */}
+          {isLoading && isActive && (
+            <div className="absolute inset-0 bg-black bg-opacity-40 flex items-center justify-center">
               <div className="flex flex-col items-center gap-2">
                 <Loader className="animate-spin text-white" size={32} />
-                <p className="text-white text-sm">Processing frame...</p>
+                <p className="text-white text-sm font-medium">Detecting face…</p>
               </div>
             </div>
           )}
 
-          {/* Status Indicator */}
-          {isStreamActive && (
-            <div className="absolute top-4 right-4 flex items-center gap-2 bg-red-600 text-white px-3 py-1 rounded-full text-sm font-medium">
-              <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+          {/* LIVE badge */}
+          {isActive && (
+            <div className="absolute top-3 right-3 flex items-center gap-1.5 bg-red-600 text-white px-2.5 py-1 rounded-full text-xs font-semibold shadow">
+              <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
               LIVE
+            </div>
+          )}
+
+          {/* Frame counter */}
+          {isActive && frameCount > 0 && (
+            <div className="absolute bottom-3 left-3 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+              Scanned {frameCount} frames
             </div>
           )}
         </div>
 
         {/* Error Message */}
         {cameraError && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-800 text-sm">
-            {cameraError}
+          <div className="flex items-start gap-3 bg-red-50 border border-red-200 rounded-lg p-4">
+            <AlertCircle size={18} className="text-red-500 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm text-red-800 font-medium">Camera Error</p>
+              <p className="text-sm text-red-700 mt-0.5">{cameraError}</p>
+              {permissionDenied && (
+                <p className="text-xs text-red-600 mt-2">
+                  💡 In Chrome: click the camera icon in the address bar → Allow. Then refresh and try again.
+                </p>
+              )}
+            </div>
           </div>
         )}
 
         {/* Controls */}
         <div className="flex gap-3">
-          {!isStreamActive ? (
-            <Button
+          {!isActive ? (
+            <button
               onClick={startCamera}
-              className="flex-1 bg-green-600 hover:bg-green-700"
-              disabled={isLoading}
+              disabled={isRequesting || isLoading}
+              className="flex-1 flex items-center justify-center gap-2 py-3 px-4 bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white rounded-lg font-semibold transition-colors"
             >
-              <Play size={18} className="mr-2" />
-              Start Camera
-            </Button>
+              {isRequesting ? (
+                <>
+                  <Loader size={18} className="animate-spin" />
+                  Requesting permission…
+                </>
+              ) : (
+                <>
+                  <Play size={18} />
+                  Start Camera
+                </>
+              )}
+            </button>
           ) : (
-            <Button
+            <button
               onClick={stopCamera}
-              className="flex-1 bg-red-600 hover:bg-red-700"
               disabled={isLoading}
+              className="flex-1 flex items-center justify-center gap-2 py-3 px-4 bg-red-600 hover:bg-red-700 disabled:bg-red-400 text-white rounded-lg font-semibold transition-colors"
             >
-              <StopCircle size={18} className="mr-2" />
+              <StopCircle size={18} />
               Stop Camera
-            </Button>
+            </button>
           )}
         </div>
 
         {/* Info */}
-        <div className="bg-gray-50 rounded-lg p-3 text-sm text-gray-700">
-          <p className="font-medium mb-1">Auto-Detection Active</p>
-          <p>Face will be detected automatically every 2 seconds. Keep your face visible in the camera frame.</p>
+        <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 text-sm text-blue-800">
+          <p className="font-semibold mb-1">How it works</p>
+          <ul className="space-y-1 text-xs text-blue-700">
+            <li>✓ Click <strong>Start Camera</strong> and allow browser permission</li>
+            <li>✓ Position your face clearly in the frame (good lighting helps)</li>
+            <li>✓ Face is scanned automatically every ~2.5 seconds</li>
+            <li>✓ Attendance is marked when a registered face is detected</li>
+          </ul>
         </div>
       </div>
     </Card>
