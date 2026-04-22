@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Play, StopCircle, Loader, AlertCircle, Camera } from 'lucide-react';
-import { attendanceAPI } from '@/services/api';
+import { attendanceAPI, DetectFaceResponse } from '@/services/api';
 import { Card, Button } from '@/components';
 
 interface LiveCameraProps {
@@ -19,11 +19,14 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
   const streamRef = useRef<MediaStream | null>(null);
   const detectionIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const processingRef = useRef(false);
+  const consecutiveNoFaceRef = useRef(0);
 
   const [cameraState, setCameraState] = useState<'idle' | 'requesting' | 'active' | 'error'>('idle');
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
+  const [lastFeedback, setLastFeedback] = useState<string | null>(null);
+  const [feedbackType, setFeedbackType] = useState<'info' | 'warn' | 'error'>('info');
 
   // Cleanup on unmount
   useEffect(() => {
@@ -47,6 +50,8 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
     processingRef.current = false;
     setCameraState('idle');
     setFrameCount(0);
+    setLastFeedback(null);
+    consecutiveNoFaceRef.current = 0;
   }, []);
 
   const startCamera = async () => {
@@ -54,7 +59,6 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
     setPermissionDenied(false);
     setCameraState('requesting');
 
-    // Check if getUserMedia is available
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setCameraError('Camera API is not available. Please use a modern browser (Chrome, Firefox, Edge) over HTTPS or localhost.');
       setCameraState('error');
@@ -75,12 +79,11 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
 
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
-        // Wait for video to be ready
         await new Promise<void>((resolve, reject) => {
           if (!videoRef.current) { reject(new Error('No video element')); return; }
           videoRef.current.onloadedmetadata = () => resolve();
           videoRef.current.onerror = () => reject(new Error('Video element error'));
-          setTimeout(() => resolve(), 3000); // fallback timeout
+          setTimeout(() => resolve(), 3000);
         });
         await videoRef.current.play().catch(() => {/* autoplay may fail silently */ });
       }
@@ -98,9 +101,8 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
       } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
         message = 'No camera found. Please connect a camera and try again.';
       } else if (name === 'NotReadableError' || name === 'TrackStartError') {
-        message = 'Camera is already in use by another application. Please close other apps using the camera.';
+        message = 'Camera is already in use by another application.';
       } else if (name === 'OverconstrainedError') {
-        // Retry with looser constraints
         try {
           const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
           streamRef.current = fallbackStream;
@@ -145,6 +147,10 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
     detectionIntervalRef.current = setInterval(async () => {
       if (processingRef.current) return;
 
+      // Don't capture if video hasn't loaded yet
+      const video = videoRef.current;
+      if (!video || video.readyState < 2) return;
+
       const blob = await captureFrame();
       if (!blob) return;
 
@@ -157,9 +163,13 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
         const formData = new FormData();
         formData.append('file', blob, 'frame.jpg');
 
-        const result = await attendanceAPI.detectAndMarkAttendance(formData);
+        const result: DetectFaceResponse =
+          await attendanceAPI.detectAndMarkAttendance(formData);
 
         if (result.matched) {
+          consecutiveNoFaceRef.current = 0;
+          setLastFeedback(`✅ Recognised: ${result.student_name}`);
+          setFeedbackType('info');
           onAttendanceMarked({
             status: 'success',
             message: `Attendance marked for ${result.student_name}`,
@@ -168,14 +178,54 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
             confidence: result.confidence,
           });
           stopCamera();
+        } else {
+          // Surface unmatched/no-face feedback inline without stopping the camera
+          consecutiveNoFaceRef.current += 1;
+          const msg = result.message || 'No matching face found.';
+
+          // Categorise the feedback message
+          const isNoFace =
+            msg.toLowerCase().includes('no face') ||
+            msg.toLowerCase().includes('not detected');
+          const isNoEmbedding =
+            msg.toLowerCase().includes('embedding') ||
+            msg.toLowerCase().includes('not registered') ||
+            msg.toLowerCase().includes('no face profile');
+          const isServerErr =
+            msg.toLowerCase().includes('server error') ||
+            msg.toLowerCase().includes('model not loaded');
+
+          if (isServerErr) {
+            setFeedbackType('error');
+            setLastFeedback(`⚠️ ${msg}`);
+            // On persistent server errors, stop scanning to avoid hammering
+            if (consecutiveNoFaceRef.current >= 3) {
+              onAttendanceMarked({ status: 'error', message: msg });
+              stopCamera();
+            }
+          } else if (isNoEmbedding) {
+            setFeedbackType('error');
+            setLastFeedback('❌ No face profile registered. Ask admin to register your face.');
+          } else if (isNoFace && consecutiveNoFaceRef.current <= 2) {
+            setFeedbackType('info');
+            setLastFeedback('👁 Centre your face in the frame…');
+          } else if (!isNoFace) {
+            setFeedbackType('warn');
+            setLastFeedback(`🔍 ${msg}`);
+          }
+          // else: repeated "no face" → keep current message, don't spam state
         }
-      } catch (err: any) {
-        // Silently skip detection errors (face not found, etc.)
-        // Only report real network/server errors
-        if (err?.response?.status && err.response.status >= 500) {
+      } catch (err: unknown) {
+        // This path should rarely fire now that detectAndMarkAttendance catches
+        // all errors internally, but handle just in case.
+        const message =
+          err instanceof Error ? err.message : 'Unexpected camera error.';
+        setFeedbackType('error');
+        setLastFeedback(`❌ ${message}`);
+        if (consecutiveNoFaceRef.current >= 5) {
           onAttendanceMarked({
             status: 'error',
-            message: 'Server error during face detection. Please try again.',
+            message,
           });
         }
       } finally {
@@ -200,7 +250,7 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
             playsInline
             muted
             className={`w-full aspect-video object-cover ${isActive ? 'block' : 'hidden'}`}
-            style={{ transform: 'scaleX(-1)' }} /* Mirror for selfie */
+            style={{ transform: 'scaleX(-1)' }}
           />
           <canvas ref={canvasRef} className="hidden" />
 
@@ -242,7 +292,27 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
           )}
         </div>
 
-        {/* Error Message */}
+        {/* Inline feedback banner — shown while camera is running */}
+        {isActive && lastFeedback && (
+          <div
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+              feedbackType === 'error'
+                ? 'bg-red-50 text-red-800 border border-red-200'
+                : feedbackType === 'warn'
+                ? 'bg-yellow-50 text-yellow-800 border border-yellow-200'
+                : 'bg-blue-50 text-blue-800 border border-blue-200'
+            }`}
+          >
+            <span className="flex-1">{lastFeedback}</span>
+            {frameCount > 0 && (
+              <span className="text-xs opacity-60 ml-2 flex-shrink-0">
+                frame {frameCount}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Camera Error */}
         {cameraError && (
           <div className="flex items-start gap-3 bg-red-50 border border-red-200 rounded-lg p-4">
             <AlertCircle size={18} className="text-red-500 flex-shrink-0 mt-0.5" />

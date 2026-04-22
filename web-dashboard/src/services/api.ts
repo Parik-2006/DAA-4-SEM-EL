@@ -3,7 +3,7 @@
 import axios, { AxiosError, AxiosInstance } from 'axios';
 
 const apiClient: AxiosInstance = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000',
+  baseURL: (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, ''),
   timeout: parseInt(import.meta.env.VITE_API_TIMEOUT || '15000'),
   headers: {
     'Content-Type': 'application/json',
@@ -67,6 +67,17 @@ export interface Course {
   name: string;
   instructor: string;
   students_count: number;
+}
+
+// ── Detect-face response ──────────────────────────────────────────────────────
+export interface DetectFaceResponse {
+  matched: boolean;
+  message: string;
+  student_name?: string;
+  student_id?: string;
+  confidence?: number;
+  record_id?: string;
+  timestamp?: string;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -207,88 +218,52 @@ class AttendanceAPI {
 
   /**
    * Detect face in uploaded image/frame and mark attendance.
+   * Sends multipart/form-data POST to /api/v1/attendance/detect-face.
+   * FormData MUST contain a field named "file" (JPEG/PNG Blob).
    *
-   * Backend endpoint priority (tries each in order until one works):
-   *   1. POST /api/v1/attendance/detect-face   ← new clean endpoint (see attendance.py fix)
-   *   2. POST /api/v1/attendance/mark          ← existing mark endpoint with image_base64 body
-   *
-   * The FormData must contain a field named "file" (JPEG/PNG).
+   * Returns a DetectFaceResponse regardless of match outcome so callers can
+   * surface both "matched" and "not matched" states to the user.
    */
-  async detectAndMarkAttendance(formData: FormData): Promise<{
-    matched: boolean;
-    message: string;
-    student_name?: string;
-    student_id?: string;
-    confidence?: number;
-  }> {
-    // Try the dedicated detect-face endpoint first
+  async detectAndMarkAttendance(formData: FormData): Promise<DetectFaceResponse> {
     try {
-      const response = await apiClient.post<{
-        matched: boolean;
-        message: string;
-        student_name?: string;
-        student_id?: string;
-        confidence?: number;
-      }>('/api/v1/attendance/detect-face', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        timeout: 20000, // face recognition can be slow
-      });
-      return response.data;
-    } catch (err: any) {
-      // If endpoint does not exist (404) try legacy mark-mobile via base64 conversion
-      if (err?.response?.status === 404 || err?.response?.status === 405) {
-        return this._detectViaBase64(formData);
-      }
-      throw err;
-    }
-  }
-
-  /** Fallback: converts the blob to base64 and calls mark-mobile query-param endpoint */
-  private async _detectViaBase64(formData: FormData): Promise<{
-    matched: boolean;
-    message: string;
-    student_name?: string;
-    student_id?: string;
-    confidence?: number;
-  }> {
-    const file = formData.get('file') as Blob | null;
-    if (!file) throw new Error('No file in FormData');
-
-    // Read blob → base64
-    const base64 = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result as string;
-        resolve(result.split(',')[1]); // strip data:...;base64, prefix
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-
-    // Use a placeholder student_id; the backend matches by face embedding
-    const studentId = localStorage.getItem('student_id') || 'auto';
-
-    try {
-      const response = await apiClient.post(
-        `/api/v1/attendance/mark-mobile?student_id=${encodeURIComponent(studentId)}&image_base64=${encodeURIComponent(base64)}`,
-        null,
-        { timeout: 20000 }
+      const response = await apiClient.post<DetectFaceResponse>(
+        '/api/v1/attendance/detect-face',
+        formData,
+        {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: 25000, // face recognition can be slow on first load
+        }
       );
-      const d = response.data as Record<string, unknown>;
-      return {
-        matched: true,
-        message: String(d.message ?? 'Attendance marked'),
-        student_name: d.student_name ? String(d.student_name) : undefined,
-        student_id: String(d.student_id ?? studentId),
-        confidence: d.confidence != null ? Number(d.confidence) : undefined,
-      };
-    } catch (err: any) {
+      return response.data;
+    } catch (err: unknown) {
+      const axiosErr = err as AxiosError<{ detail?: string; message?: string }>;
+      const status = axiosErr.response?.status;
+      const detail =
+        axiosErr.response?.data?.detail ||
+        axiosErr.response?.data?.message ||
+        axiosErr.message ||
+        'Unknown error';
+
+      // 4xx from backend → face not recognised, no network issue
+      if (status && status >= 400 && status < 500) {
+        return {
+          matched: false,
+          message: detail,
+        };
+      }
+
+      // Network / 5xx → propagate as structured error
       return {
         matched: false,
-        message: err?.response?.data?.detail || 'Face not recognised. Please try again.',
+        message: `Server error (${status ?? 'network'}): ${detail}. Check backend logs.`,
       };
     }
   }
+
+  // NOTE: _detectViaBase64 / mark-mobile fallback intentionally removed.
+  // Sending large base64 blobs as URL query parameters causes 414 Request-URI
+  // Too Long errors, leaks image data in server logs, and breaks URL length
+  // limits in proxies. Use the multipart detect-face endpoint exclusively.
 
   async registerStudentFace(studentId: string, faceImageBase64: string) {
     const response = await apiClient.post('/api/v1/admin/register-face', {
