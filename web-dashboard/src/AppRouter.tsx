@@ -16,9 +16,7 @@ interface ProtectedRouteProps {
 }
 
 const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
-  const [isAuthenticated, setIsAuthenticated] = React.useState<boolean | null>(
-    null
-  );
+  const [isAuthenticated, setIsAuthenticated] = React.useState<boolean | null>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthChange((user: unknown) => {
@@ -30,7 +28,7 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
   if (isAuthenticated === null) {
     return (
       <div className="flex items-center justify-center h-screen">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600" />
       </div>
     );
   }
@@ -40,9 +38,16 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
 
 export const AppRouter: React.FC = () => {
   return (
-    <BrowserRouter>
+    // future flags silence the v6 → v7 upgrade warnings
+    <BrowserRouter
+      future={{
+        v7_startTransition: true,
+        v7_relativeSplatPath: true,
+      }}
+    >
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+
         <Route
           path="/dashboard"
           element={
@@ -107,6 +112,8 @@ export const AppRouter: React.FC = () => {
             </ProtectedRoute>
           }
         />
+
+        {/* Default redirect */}
         <Route path="/" element={<Navigate to="/dashboard" />} />
       </Routes>
     </BrowserRouter>
