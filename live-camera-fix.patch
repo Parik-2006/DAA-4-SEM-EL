@@ -1,0 +1,1006 @@
+diff --git a/web-dashboard/src/services/api.ts b/web-dashboard/src/services/api.ts
+--- a/web-dashboard/src/services/api.ts
++++ b/web-dashboard/src/services/api.ts
+@@ -1,7 +1,7 @@
+ /// <reference types="vite/client" />
+ 
+-import axios, { AxiosError, AxiosInstance } from 'axios';
++import axios, { AxiosError, AxiosInstance, AxiosResponse } from 'axios';
+ 
+-const apiClient: AxiosInstance = axios.create({
++export const apiClient: AxiosInstance = axios.create({
+   baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000',
+   timeout: parseInt(import.meta.env.VITE_API_TIMEOUT || '15000'),
+   headers: {
+@@ -10,6 +10,14 @@ const apiClient: AxiosInstance = axios.create({
+   },
+ });
+ 
++// ── CORS / base-URL safeguard ─────────────────────────────────────────────────
++// Vite exposes env at build time; at dev time the browser is on localhost:3000
++// while the FastAPI server is on localhost:8000. The proxy is NOT used here so
++// the VITE_API_BASE_URL must be the full origin including port.
++// Default falls back to localhost:8000 which matches docker-compose / local run.
++const _base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
++apiClient.defaults.baseURL = _base.replace(/\/$/, ''); // strip trailing slash
++
+ // Auth token injection
+ apiClient.interceptors.request.use((config) => {
+   const token = localStorage.getItem('auth_token');
+@@ -58,6 +66,16 @@ export interface Course {
+   students_count: number;
+ }
+ 
++// ── Detect-face response ──────────────────────────────────────────────────────
++export interface DetectFaceResponse {
++  matched: boolean;
++  message: string;
++  student_name?: string;
++  student_id?: string;
++  confidence?: number;
++  record_id?: string;
++  timestamp?: string;
++}
++
+ // ── Helpers ────────────────────────────────────────────────────────────────────
+ 
+ function toArray<T>(data: unknown): T[] {
+@@ -179,87 +197,63 @@ class AttendanceAPI {
+   }
+ 
+   /**
+-   * Detect face in uploaded image/frame and mark attendance.
+-   *
+-   * Backend endpoint priority (tries each in order until one works):
+-   *   1. POST /api/v1/attendance/detect-face   ← new clean endpoint (see attendance.py fix)
+-   *   2. POST /api/v1/attendance/mark          ← existing mark endpoint with image_base64 body
+-   *
+-   * The FormData must contain a field named "file" (JPEG/PNG).
++   * Detect face in uploaded image/frame and mark attendance.
++   * Sends multipart/form-data POST to /api/v1/attendance/detect-face.
++   * FormData MUST contain a field named "file" (JPEG/PNG Blob).
++   *
++   * Returns a DetectFaceResponse regardless of match outcome so callers can
++   * surface both "matched" and "not matched" states to the user.
+    */
+-  async detectAndMarkAttendance(formData: FormData): Promise<{
+-    matched: boolean;
+-    message: string;
+-    student_name?: string;
+-    student_id?: string;
+-    confidence?: number;
+-  }> {
+-    // Try the dedicated detect-face endpoint first
++  async detectAndMarkAttendance(formData: FormData): Promise<DetectFaceResponse> {
+     try {
+-      const response = await apiClient.post<{
+-        matched: boolean;
+-        message: string;
+-        student_name?: string;
+-        student_id?: string;
+-        confidence?: number;
+-      }>('/api/v1/attendance/detect-face', formData, {
++      const response = await apiClient.post<DetectFaceResponse>(
++        '/api/v1/attendance/detect-face',
++        formData,
++        {
+         headers: { 'Content-Type': 'multipart/form-data' },
+-        timeout: 20000, // face recognition can be slow
++        timeout: 25000, // face recognition can be slow on first load
+       });
+       return response.data;
+-    } catch (err: any) {
+-      // If endpoint does not exist (404) try legacy mark-mobile via base64 conversion
+-      if (err?.response?.status === 404 || err?.response?.status === 405) {
+-        return this._detectViaBase64(formData);
++    } catch (err: unknown) {
++      const axiosErr = err as AxiosError<{ detail?: string; message?: string }>;
++      const status = axiosErr.response?.status;
++      const detail =
++        axiosErr.response?.data?.detail ||
++        axiosErr.response?.data?.message ||
++        axiosErr.message ||
++        'Unknown error';
++
++      // 4xx from backend → face not recognised, no network issue
++      if (status && status >= 400 && status < 500) {
++        return {
++          matched: false,
++          message: detail,
++        };
+       }
+-      throw err;
++
++      // Network / 5xx → propagate as structured error
++      return {
++        matched: false,
++        message: `Server error (${status ?? 'network'}): ${detail}. Check backend logs.`,
++      };
+     }
+   }
+ 
+-  /** Fallback: converts the blob to base64 and calls mark-mobile query-param endpoint */
+-  private async _detectViaBase64(formData: FormData): Promise<{
+-    matched: boolean;
+-    message: string;
+-    student_name?: string;
+-    student_id?: string;
+-    confidence?: number;
+-  }> {
+-    const file = formData.get('file') as Blob | null;
+-    if (!file) throw new Error('No file in FormData');
+-
+-    // Read blob → base64
+-    const base64 = await new Promise<string>((resolve, reject) => {
+-      const reader = new FileReader();
+-      reader.onload = () => {
+-        const result = reader.result as string;
+-        resolve(result.split(',')[1]); // strip data:...;base64, prefix
+-      };
+-      reader.onerror = reject;
+-      reader.readAsDataURL(file);
+-    });
+-
+-    // Use a placeholder student_id; the backend matches by face embedding
+-    const studentId = localStorage.getItem('student_id') || 'auto';
+-
+-    try {
+-      const response = await apiClient.post(
+-        `/api/v1/attendance/mark-mobile?student_id=${encodeURIComponent(studentId)}&image_base64=${encodeURIComponent(base64)}`,
+-        null,
+-        { timeout: 20000 }
+-      );
+-      const d = response.data as Record<string, unknown>;
+-      return {
+-        matched: true,
+-        message: String(d.message ?? 'Attendance marked'),
+-        student_name: d.student_name ? String(d.student_name) : undefined,
+-        student_id: String(d.student_id ?? studentId),
+-        confidence: d.confidence != null ? Number(d.confidence) : undefined,
+-      };
+-    } catch (err: any) {
+-      return {
+-        matched: false,
+-        message: err?.response?.data?.detail || 'Face not recognised. Please try again.',
+-      };
+-    }
+-  }
++  // NOTE: _detectViaBase64 / mark-mobile fallback intentionally removed.
++  // Sending large base64 blobs as URL query parameters causes 414 Request-URI
++  // Too Long errors, leaks image data in server logs, and breaks URL length
++  // limits in proxies. Use the multipart detect-face endpoint exclusively.
+
+diff --git a/web-dashboard/src/components/LiveCamera.tsx b/web-dashboard/src/components/LiveCamera.tsx
+--- a/web-dashboard/src/components/LiveCamera.tsx
++++ b/web-dashboard/src/components/LiveCamera.tsx
+@@ -1,7 +1,7 @@
+ import React, { useRef, useState, useEffect, useCallback } from 'react';
+ import { Play, StopCircle, Loader, AlertCircle, Camera } from 'lucide-react';
+-import { attendanceAPI } from '@/services/api';
++import { attendanceAPI, DetectFaceResponse } from '@/services/api';
+ import { Card, Button } from '@/components';
+ 
+ interface LiveCameraProps {
+@@ -14,6 +14,20 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
+   onAttendanceMarked,
+   onProcessing,
+   isLoading,
++}) => {
++  return <LiveCameraInner
++    onAttendanceMarked={onAttendanceMarked}
++    onProcessing={onProcessing}
++    isLoading={isLoading}
++  />;
++};
++
++// ── Internal implementation ───────────────────────────────────────────────────
++
++const LiveCameraInner: React.FC<LiveCameraProps> = ({
++  onAttendanceMarked,
++  onProcessing,
++  isLoading,
+ }) => {
+   const videoRef = useRef<HTMLVideoElement>(null);
+   const canvasRef = useRef<HTMLCanvasElement>(null);
+@@ -24,6 +38,9 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
+   const [cameraError, setCameraError] = useState<string | null>(null);
+   const [permissionDenied, setPermissionDenied] = useState(false);
+   const [frameCount, setFrameCount] = useState(0);
++  const [lastFeedback, setLastFeedback] = useState<string | null>(null);
++  const [feedbackType, setFeedbackType] = useState<'info' | 'warn' | 'error'>('info');
++  const consecutiveNoFaceRef = useRef(0);
+ 
+   // Cleanup on unmount
+   useEffect(() => {
+@@ -47,6 +64,7 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
+     processingRef.current = false;
+     setCameraState('idle');
+     setFrameCount(0);
++    setLastFeedback(null);
+   }, []);
+ 
+   const startCamera = async () => {
+@@ -119,28 +137,60 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
+   const startAutoDetection = () => {
+     detectionIntervalRef.current = setInterval(async () => {
+       if (processingRef.current) return;
++
++      // Don't capture if video hasn't loaded yet
++      const video = videoRef.current;
++      if (!video || video.readyState < 2) return;
+ 
+       const blob = await captureFrame();
+       if (!blob) return;
+ 
+       setFrameCount((c) => c + 1);
+ 
+       try {
+         processingRef.current = true;
+         onProcessing(true);
+ 
+         const formData = new FormData();
+         formData.append('file', blob, 'frame.jpg');
+ 
+-        const result = await attendanceAPI.detectAndMarkAttendance(formData);
++        const result: DetectFaceResponse =
++          await attendanceAPI.detectAndMarkAttendance(formData);
+ 
+         if (result.matched) {
++          consecutiveNoFaceRef.current = 0;
++          setLastFeedback(`✅ Recognised: ${result.student_name}`);
++          setFeedbackType('info');
+           onAttendanceMarked({
+             status: 'success',
+             message: `Attendance marked for ${result.student_name}`,
+             student_name: result.student_name,
+             student_id: result.student_id,
+             confidence: result.confidence,
+           });
+           stopCamera();
+-        }
+-      } catch (err: any) {
+-        // Silently skip detection errors (face not found, etc.)
+-        // Only report real network/server errors
+-        if (err?.response?.status && err.response.status >= 500) {
++        } else {
++          // Surface unmatched/no-face feedback inline without stopping the camera
++          consecutiveNoFaceRef.current += 1;
++          const msg = result.message || 'No matching face found.';
++
++          // Categorise the feedback message
++          const isNoFace =
++            msg.toLowerCase().includes('no face') ||
++            msg.toLowerCase().includes('not detected');
++          const isNoEmbedding =
++            msg.toLowerCase().includes('embedding') ||
++            msg.toLowerCase().includes('not registered') ||
++            msg.toLowerCase().includes('no face profile');
++          const isServerErr =
++            msg.toLowerCase().includes('server error') ||
++            msg.toLowerCase().includes('model not loaded');
++
++          if (isServerErr) {
++            setFeedbackType('error');
++            setLastFeedback(`⚠️ ${msg}`);
++            // On persistent server errors, stop scanning to avoid hammering
++            if (consecutiveNoFaceRef.current >= 3) {
++              onAttendanceMarked({ status: 'error', message: msg });
++              stopCamera();
++            }
++          } else if (isNoEmbedding) {
++            setFeedbackType('error');
++            setLastFeedback('❌ No face profile registered. Ask admin to register your face.');
++          } else if (isNoFace && consecutiveNoFaceRef.current <= 2) {
++            setFeedbackType('info');
++            setLastFeedback('👁 Centre your face in the frame…');
++          } else if (!isNoFace) {
++            setFeedbackType('warn');
++            setLastFeedback(`🔍 ${msg}`);
++          }
++          // else: repeated "no face" → keep current message, don't spam state
++        }
++      } catch (err: unknown) {
++        // This path should rarely fire now that detectAndMarkAttendance catches
++        // all errors internally, but handle just in case.
++        const message =
++          err instanceof Error ? err.message : 'Unexpected camera error.';
++        setFeedbackType('error');
++        setLastFeedback(`❌ ${message}`);
++        if (consecutiveNoFaceRef.current >= 5) {
+           onAttendanceMarked({
+             status: 'error',
+-            message: 'Server error during face detection. Please try again.',
++            message,
+           });
+         }
+       } finally {
+@@ -177,6 +227,26 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
+       }
+     </div>
+ 
++    {/* Inline feedback banner ─ shown while camera is running */}
++    {isActive && lastFeedback && (
++      <div
++        className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
++          feedbackType === 'error'
++            ? 'bg-red-50 text-red-800 border border-red-200'
++            : feedbackType === 'warn'
++            ? 'bg-yellow-50 text-yellow-800 border border-yellow-200'
++            : 'bg-blue-50 text-blue-800 border border-blue-200'
++        }`}
++      >
++        <span className="flex-1">{lastFeedback}</span>
++        {frameCount > 0 && (
++          <span className="text-xs opacity-60 ml-2 flex-shrink-0">
++            frame {frameCount}
++          </span>
++        )}
++      </div>
++    )}
++
+
+diff --git a/attendance_backend/services/firebase_service.py b/attendance_backend/services/firebase_service.py
+--- a/attendance_backend/services/firebase_service.py
++++ b/attendance_backend/services/firebase_service.py
+@@ -1,6 +1,7 @@
+ import logging
+ import json
+ from datetime import datetime, timedelta
+-from typing import List, Dict, Optional, Any
++from typing import List, Dict, Optional, Any, Union
+ import numpy as np
+ 
+ logger = logging.getLogger(__name__)
+@@ -97,6 +98,7 @@ class FirebaseService:
+             embedding_list = embeddings.tolist() if isinstance(embeddings, np.ndarray) else embeddings
+ 
+             student_data = {
+                 "student_id": student_id,
+                 "name": name,
+                 "email": email,
+                 "phone": phone or "",
+-                "embedding": embedding_list,        # single vector (legacy)
++                # Store BOTH canonical forms so old and new code both work:
++                # • embedding  → single numpy vector (legacy consumers)
++                # • embeddings → list of vectors (multi-shot registration)
++                "embedding": embedding_list,
++                "embeddings": [embedding_list],
+                 "registered_at": datetime.now().isoformat(),
+                 "last_seen": None,
+                 "attendance_count": 0,
+@@ -130,6 +132,32 @@ class FirebaseService:
+     def get_student(self, student_id: str) -> Optional[Dict[str, Any]]:
+         ...
+ 
++    # ── NEW: canonical helper ─────────────────────────────────────────────────
++
++    @staticmethod
++    def get_all_embeddings(student: Dict[str, Any]) -> List[np.ndarray]:
++        """
++        Return all face embeddings for *student* as a list of numpy arrays.
++
++        Handles three storage layouts that exist in the wild:
++          1. {"embeddings": [[…], […]]}     ← multi-shot (new)
++          2. {"embedding": […]}             ← single-shot (legacy)
++          3. {"embeddings": [[…]]} and also {"embedding": […]}  ← both
++
++        Always returns a non-empty list or raises ValueError so callers
++        can give a clear 404 rather than a silent miss.
++        """
++        embs: List[np.ndarray] = []
++
++        # Multi-shot list
++        raw_list = student.get("embeddings") or []
++        for item in raw_list:
++            if item:
++                embs.append(np.array(item, dtype=np.float32))
++
++        # Legacy single vector (add only if not already present via embeddings)
++        raw_single = student.get("embedding")
++        if raw_single and len(embs) == 0:
++            embs.append(np.array(raw_single, dtype=np.float32))
++
++        return embs
++
++    def store_embedding(
++        self,
++        student_id: str,
++        embedding: np.ndarray,
++        timestamp: Optional[datetime] = None,
++    ) -> bool:
++        """
++        Append *embedding* to the student's embeddings list and update the
++        legacy ``embedding`` field so both storage layouts stay in sync.
++        """
++        timestamp = timestamp or datetime.now()
++        embedding_list = embedding.tolist() if isinstance(embedding, np.ndarray) else embedding
++
++        try:
++            if self.db:  # Firestore
++                student_ref = self.db.collection("students").document(student_id)
++                doc = student_ref.get()
++                if doc.exists:
++                    existing = doc.to_dict() or {}
++                    current_list: list = existing.get("embeddings") or []
++                    if not isinstance(current_list, list):
++                        current_list = [current_list]
++                    current_list.append(embedding_list)
++                    student_ref.update({
++                        "embedding": embedding_list,   # keep legacy field current
++                        "embeddings": current_list,
++                    })
++                    logger.info(f"Embedding appended for {student_id} "
++                                f"(total: {len(current_list)})")
++                    return True
++
++            elif self.firebase_db:  # Realtime DB
++                path = f"students/{student_id}"
++                existing = self.firebase_db.child(path).get().val() or {}
++                current_list = existing.get("embeddings") or []
++                if not isinstance(current_list, list):
++                    current_list = [current_list]
++                current_list.append(embedding_list)
++                self.firebase_db.child(path).update({
++                    "embedding": embedding_list,
++                    "embeddings": current_list,
++                })
++                return True
++
++        except Exception as e:
++            logger.error(f"Failed to store embedding for {student_id}: {e}")
++            return False
++
++        return False
+
+diff --git a/attendance_backend/api/attendance.py b/attendance_backend/api/attendance.py
+--- a/attendance_backend/api/attendance.py
++++ b/attendance_backend/api/attendance.py
+@@ -60,7 +60,10 @@ async def detect_face_and_mark(
+     file: UploadFile = File(..., description="JPEG or PNG image containing a face"),
+ ):
+     """
+-    Accept a multipart image file, extract face embedding, match against
+-    all registered students, and mark attendance for the best match.
++    Accept a **multipart/form-data** image (field name ``file``), extract a
++    face embedding, match against all registered students, and mark attendance
++    for the best match.
++
++    This is the **canonical** endpoint for web/mobile face-based attendance.
++    Do NOT use query-param base64 (mark-mobile) for new integrations.
+ 
+     Returns JSON:
+         {
+@@ -71,6 +74,7 @@ async def detect_face_and_mark(
+         }
+     """
+     # ── 1. Read uploaded bytes ──────────────────────────────────────────────
++    MAX_BYTES = 10 * 1024 * 1024  # 10 MB guard
+     try:
+         contents = await file.read()
+         if not contents:
+             raise HTTPException(status_code=400, detail="Empty file received")
++        if len(contents) > MAX_BYTES:
++            raise HTTPException(status_code=413,
++                                detail="Image exceeds 10 MB limit")
+     except HTTPException:
+         raise
+     except Exception as e:
+@@ -105,18 +109,18 @@ async def detect_face_and_mark(
+ 
+     # ── 4. Match against all registered students ─────────────────────────────
+     firebase = get_firebase_service()
+     if not firebase:
+         raise HTTPException(status_code=503, detail="Firebase service not initialised")
+ 
+     try:
+         from scipy.spatial.distance import cosine
+-        import numpy as np
++        from services.firebase_service import FirebaseService
+ 
+         THRESHOLD = 0.55  # lower = stricter
+ 
+         all_students = firebase.get_all_students()
+         best_distance = float("inf")
+         best_student = None
+ 
+         for student in all_students:
+-            stored_embs = student.get("embeddings", [])
+-            for stored_emb in stored_embs:
+-                arr = np.array(stored_emb)
+-                if arr.shape != embedding.shape:
+-                    continue
++            stored_embs = FirebaseService.get_all_embeddings(student)
++            for arr in stored_embs:
++                if arr.shape != embedding.shape:   # dimension mismatch → skip
++                    logger.debug(
++                        f"Shape mismatch for {student.get('student_id')}: "
++                        f"{arr.shape} vs {embedding.shape}"
++                    )
++                    continue
+                 dist = float(cosine(embedding, arr))
+                 if dist < best_distance:
+                     best_distance = dist
+                     best_student = student
+ 
+         if best_student is None or best_distance > THRESHOLD:
+             return JSONResponse(
+                 status_code=200,
+                 content={
+                     "matched": False,
+                     "message": (
+                         "Face not recognised. "
+-                        f"Best similarity score: {1 - best_distance:.2f}. "
+-                        "Please register your face or try with better lighting."
++                        f"Best similarity: {max(0.0, 1 - best_distance):.2f} "
++                        f"(threshold: {1 - THRESHOLD:.2f}). "
++                        "Ensure your face is clearly visible and well-lit, "
++                        "or ask admin to register your face profile."
+                     ),
+                 }
+             )
+@@ -156,6 +160,7 @@ async def detect_face_and_mark(
+             content={
+                 "matched": True,
+                 "message": f"Attendance marked successfully for {student_name}",
++                "record_id": result.get("record_id", ""),
+                 "student_name": student_name,
+                 "student_id": student_id,
+                 "confidence": round(confidence, 4),
+-                "record_id": result.get("record_id", ""),
+                 "timestamp": timestamp.isoformat(),
+             }
+         )
+
+diff --git a/attendance_backend/scripts/bootstrap_embeddings.py b/attendance_backend/scripts/bootstrap_embeddings.py
+new file mode 100644
+--- /dev/null
++++ b/attendance_backend/scripts/bootstrap_embeddings.py
+@@ -0,0 +1,134 @@
++#!/usr/bin/env python3
++"""
++bootstrap_embeddings.py
++=======================
++One-time utility: scan ``student_photos/`` for JPEG/PNG files whose stem
++matches a student_id, extract FaceNet embeddings, and upsert them into
++Firebase (Firestore or Realtime DB).
++
++Usage
++-----
++    cd attendance_backend
++    python scripts/bootstrap_embeddings.py [--photos-dir student_photos] [--dry-run]
++
++Directory layout expected
++-------------------------
++    student_photos/
++        STU001.jpg
++        STU002.png
++        STU003.jpeg
++        …
++
++The filename stem (without extension) is treated as the student_id.
++The student record must already exist in Firebase.
++
++Environment
++-----------
++Same .env / environment variables used by the main FastAPI app.
++"""
++
++import argparse
++import io
++import logging
++import os
++import sys
++from pathlib import Path
++
++# Make sure project root is on the path so absolute imports work
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++
++import numpy as np
++from PIL import Image
++
++logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
++log = logging.getLogger("bootstrap")
++
++
++def load_image(path: Path) -> np.ndarray:
++    img = Image.open(path).convert("RGB")
++    return np.array(img)
++
++
++def extract_embedding(image_array: np.ndarray) -> np.ndarray:
++    from models.facenet_extractor import FaceNetExtractor
++    extractor = FaceNetExtractor()
++    emb = extractor.extract_embedding(image_array)
++    if emb is None:
++        raise ValueError("No face detected in image")
++    return emb
++
++
++def bootstrap(photos_dir: Path, dry_run: bool) -> None:
++    from services.firebase_service import get_firebase_service, FirebaseService
++    from config.settings import settings
++
++    firebase = get_firebase_service()
++    if firebase is None:
++        # Attempt lazy init using env vars
++        from services.firebase_service import initialize_firebase
++        creds = os.getenv("FIREBASE_CREDENTIALS_PATH", "config/firebase-credentials.json")
++        db_url = os.getenv("FIREBASE_DATABASE_URL")
++        bucket = os.getenv("FIREBASE_STORAGE_BUCKET")
++        use_fs = os.getenv("USE_FIRESTORE", "True").lower() == "true"
++        firebase = initialize_firebase(creds, db_url, bucket, use_fs)
++
++    extensions = {".jpg", ".jpeg", ".png", ".bmp"}
++    photos = sorted(
++        p for p in photos_dir.iterdir()
++        if p.suffix.lower() in extensions
++    )
++
++    if not photos:
++        log.warning("No images found in %s", photos_dir)
++        return
++
++    ok = failed = skipped = 0
++
++    for photo_path in photos:
++        student_id = photo_path.stem
++        log.info("Processing %s → student_id=%s", photo_path.name, student_id)
++
++        # Verify student exists
++        student = firebase.get_student(student_id)
++        if student is None:
++            log.warning("  Student %s not found in Firebase — skipping", student_id)
++            skipped += 1
++            continue
++
++        # Check if already has embeddings
++        existing = FirebaseService.get_all_embeddings(student)
++        if existing:
++            log.info("  Already has %d embedding(s) — skipping (use --force to overwrite)", len(existing))
++            skipped += 1
++            continue
++
++        try:
++            image_array = load_image(photo_path)
++            embedding = extract_embedding(image_array)
++            log.info("  Embedding shape: %s", embedding.shape)
++
++            if dry_run:
++                log.info("  [DRY RUN] Would write embedding for %s", student_id)
++            else:
++                firebase.store_embedding(student_id, embedding)
++                log.info("  ✅ Embedding stored for %s", student_id)
++            ok += 1
++        except ValueError as e:
++            log.error("  ❌ %s", e)
++            failed += 1
++        except Exception as e:
++            log.error("  ❌ Unexpected error: %s", e)
++            failed += 1
++
++    log.info("")
++    log.info("Bootstrap complete: %d stored, %d skipped, %d failed", ok, skipped, failed)
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(description="Bootstrap face embeddings from photos")
++    parser.add_argument("--photos-dir", default="student_photos",
++                        help="Directory containing <student_id>.<ext> photos")
++    parser.add_argument("--dry-run", action="store_true",
++                        help="Parse and extract but do not write to Firebase")
++    args = parser.parse_args()
++
++    photos_dir = Path(args.photos_dir)
++    if not photos_dir.exists():
++        log.error("Photos directory not found: %s", photos_dir)
++        sys.exit(1)
++
++    bootstrap(photos_dir, args.dry_run)
++
++
++if __name__ == "__main__":
++    main()
+
+diff --git a/attendance_backend/config/constants.py b/attendance_backend/config/constants.py
+--- a/attendance_backend/config/constants.py
++++ b/attendance_backend/config/constants.py
+@@ -149,8 +149,16 @@ CORS_ALLOWED_ORIGINS = [
+     "http://localhost:3000",      # React development
+     "http://localhost:3001",      # Vite fallback port
+     "http://localhost:5173",      # Vite development
+     "http://localhost:8080",      # Flutter web development
++    "http://127.0.0.1:3000",
++    "http://127.0.0.1:5173",
++    "http://127.0.0.1:8080",
++    # Add your ngrok / devtunnel URL here when doing remote device testing:
++    # "https://abc123.ngrok.io",
+ ]
+ 
++# Allow all localhost origins dynamically (useful when port is unpredictable).
++# Set CORS_ALLOW_ALL_LOCALHOST=true in .env to enable.
++import os as _os
++if _os.getenv("CORS_ALLOW_ALL_LOCALHOST", "false").lower() == "true":
++    import re as _re
++    CORS_ALLOWED_ORIGINS_PATTERN = _re.compile(r"^https?://localhost(:\d+)?$")
++else:
++    CORS_ALLOWED_ORIGINS_PATTERN = None
++
+ CORS_ALLOWED_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+-CORS_ALLOWED_HEADERS = ["Content-Type", "Authorization"]
++CORS_ALLOWED_HEADERS = ["Content-Type", "Authorization", "X-Requested-With"]
+ CORS_ALLOW_CREDENTIALS: Final[bool] = True
+
+diff --git a/attendance_backend/tests/test_detect_face.py b/attendance_backend/tests/test_detect_face.py
+new file mode 100644
+--- /dev/null
++++ b/attendance_backend/tests/test_detect_face.py
+@@ -0,0 +1,171 @@
++"""
++tests/test_detect_face.py
++=========================
++Verification tests for the /api/v1/attendance/detect-face endpoint and the
++FirebaseService.get_all_embeddings helper.
++
++Run:
++    cd attendance_backend
++    pytest tests/test_detect_face.py -v
++
++All external dependencies (Firebase, FaceNet) are mocked so no network
++access or GPU is required.
++"""
++
++import io
++import json
++import sys
++from pathlib import Path
++from unittest.mock import MagicMock, patch
++
++import numpy as np
++import pytest
++from PIL import Image
++
++# Ensure project root is importable
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++
++
++# ── Helpers ────────────────────────────────────────────────────────────────────
++
++def _make_jpeg_bytes(w=100, h=100) -> bytes:
++    """Create a minimal valid JPEG image in memory."""
++    img = Image.new("RGB", (w, h), color=(128, 128, 128))
++    buf = io.BytesIO()
++    img.save(buf, format="JPEG")
++    return buf.getvalue()
++
++
++def _rand_emb(dim=128) -> np.ndarray:
++    v = np.random.rand(dim).astype(np.float32)
++    return v / np.linalg.norm(v)
++
++
++# ── Unit: FirebaseService.get_all_embeddings ────────────────────────────────────
++
++class TestGetAllEmbeddings:
++    def test_new_format_multi_shot(self):
++        from services.firebase_service import FirebaseService
++        emb1, emb2 = _rand_emb(), _rand_emb()
++        student = {"embeddings": [emb1.tolist(), emb2.tolist()]}
++        result = FirebaseService.get_all_embeddings(student)
++        assert len(result) == 2
++        np.testing.assert_allclose(result[0], emb1, atol=1e-5)
++
++    def test_legacy_single_embedding_field(self):
++        from services.firebase_service import FirebaseService
++        emb = _rand_emb()
++        # Only legacy "embedding" key, no "embeddings"
++        student = {"embedding": emb.tolist()}
++        result = FirebaseService.get_all_embeddings(student)
++        assert len(result) == 1
++        np.testing.assert_allclose(result[0], emb, atol=1e-5)
++
++    def test_both_fields_deduplication(self):
++        from services.firebase_service import FirebaseService
++        emb = _rand_emb()
++        # Both present — embeddings takes precedence
++        student = {"embedding": emb.tolist(), "embeddings": [emb.tolist()]}
++        result = FirebaseService.get_all_embeddings(student)
++        # Should not double-count when embeddings is already populated
++        assert len(result) == 1
++
++    def test_empty_student_returns_empty(self):
++        from services.firebase_service import FirebaseService
++        result = FirebaseService.get_all_embeddings({})
++        assert result == []
++
++    def test_none_values_skipped(self):
++        from services.firebase_service import FirebaseService
++        emb = _rand_emb()
++        student = {"embeddings": [None, emb.tolist(), None]}
++        result = FirebaseService.get_all_embeddings(student)
++        assert len(result) == 1
++
++
++# ── Integration: detect-face endpoint ─────────────────────────────────────────
++
++@pytest.fixture
++def client():
++    """FastAPI test client with all external services mocked."""
++    from fastapi.testclient import TestClient
++    # We need to stub out Firebase initialisation before importing the app
++    mock_firebase = MagicMock()
++    mock_firebase.get_all_students.return_value = []
++    mock_firebase.mark_attendance.return_value = {"record_id": "test-rec-1"}
++
++    with patch("services.firebase_service.get_firebase_service",
++               return_value=mock_firebase):
++        import importlib, api.attendance as att_mod
++        importlib.reload(att_mod)
++        from main import app
++        yield TestClient(app), mock_firebase
++
++
++class TestDetectFaceEndpoint:
++
++    def test_empty_file_returns_400(self, client):
++        tc, _ = client
++        response = tc.post(
++            "/api/v1/attendance/detect-face",
++            files={"file": ("empty.jpg", b"", "image/jpeg")},
++        )
++        assert response.status_code == 400
++
++    def test_invalid_image_returns_400(self, client):
++        tc, _ = client
++        response = tc.post(
++            "/api/v1/attendance/detect-face",
++            files={"file": ("bad.jpg", b"not-an-image", "image/jpeg")},
++        )
++        assert response.status_code in (400, 200)  # 200 with matched=false is OK
++
++    def test_no_face_in_image_returns_matched_false(self, client):
++        tc, mock_fb = client
++        mock_fb.get_all_students.return_value = []
++
++        # Solid grey image → no face
++        img_bytes = _make_jpeg_bytes()
++
++        with patch("models.facenet_extractor.FaceNetExtractor") as MockExtractor:
++            MockExtractor.return_value.extract_embedding.return_value = None
++            response = tc.post(
++                "/api/v1/attendance/detect-face",
++                files={"file": ("face.jpg", img_bytes, "image/jpeg")},
++            )
++
++        assert response.status_code == 200
++        body = response.json()
++        assert body["matched"] is False
++        assert "face" in body["message"].lower() or "detect" in body["message"].lower()
++
++    def test_no_registered_students_returns_matched_false(self, client):
++        tc, mock_fb = client
++        mock_fb.get_all_students.return_value = []
++        img_bytes = _make_jpeg_bytes()
++        embedding = _rand_emb()
++
++        with patch("models.facenet_extractor.FaceNetExtractor") as MockExtractor:
++            MockExtractor.return_value.extract_embedding.return_value = embedding
++            response = tc.post(
++                "/api/v1/attendance/detect-face",
++                files={"file": ("face.jpg", img_bytes, "image/jpeg")},
++            )
++
++        assert response.status_code == 200
++        body = response.json()
++        assert body["matched"] is False
++
++    def test_matched_student_returns_matched_true(self, client):
++        tc, mock_fb = client
++        embedding = _rand_emb()
++        student_emb = embedding.copy()  # identical → cosine distance = 0
++
++        mock_fb.get_all_students.return_value = [{
++            "student_id": "STU001",
++            "name": "Alice Smith",
++            "embeddings": [student_emb.tolist()],
++        }]
++
++        img_bytes = _make_jpeg_bytes()
++        with patch("models.facenet_extractor.FaceNetExtractor") as MockExtractor:
++            MockExtractor.return_value.extract_embedding.return_value = embedding
++            response = tc.post(
++                "/api/v1/attendance/detect-face",
++                files={"file": ("face.jpg", img_bytes, "image/jpeg")},
++            )
++
++        assert response.status_code == 200
++        body = response.json()
++        assert body["matched"] is True
++        assert body["student_name"] == "Alice Smith"
++        assert body["student_id"] == "STU001"
++        assert body["confidence"] > 0.99
+
+diff --git a/attendance_backend/tests/test_embedding_bootstrap.py b/attendance_backend/tests/test_embedding_bootstrap.py
+new file mode 100644
+--- /dev/null
++++ b/attendance_backend/tests/test_embedding_bootstrap.py
+@@ -0,0 +1,67 @@
++"""
++tests/test_embedding_bootstrap.py
++==================================
++Verify that bootstrap_embeddings.py correctly skips already-processed
++students, handles missing students, and calls store_embedding for valid photos.
++"""
++
++import sys
++import tempfile
++from pathlib import Path
++from unittest.mock import MagicMock, patch
++
++import numpy as np
++import pytest
++from PIL import Image
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++
++
++def _write_photo(directory: Path, stem: str) -> Path:
++    img = Image.new("RGB", (100, 100), color=(100, 150, 200))
++    p = directory / f"{stem}.jpg"
++    img.save(p)
++    return p
++
++
++class TestBootstrapEmbeddings:
++    def test_skips_unknown_student(self, tmp_path):
++        _write_photo(tmp_path, "UNKNOWN999")
++        mock_firebase = MagicMock()
++        mock_firebase.get_student.return_value = None  # student not found
++
++        with patch("scripts.bootstrap_embeddings.get_firebase_service",
++                   return_value=mock_firebase), \
++             patch("scripts.bootstrap_embeddings.initialize_firebase",
++                   return_value=mock_firebase):
++            from scripts.bootstrap_embeddings import bootstrap
++            bootstrap(tmp_path, dry_run=False)
++
++        mock_firebase.store_embedding.assert_not_called()
++
++    def test_stores_embedding_for_valid_photo(self, tmp_path):
++        _write_photo(tmp_path, "STU001")
++        embedding = np.random.rand(128).astype(np.float32)
++        mock_firebase = MagicMock()
++        mock_firebase.get_student.return_value = {"student_id": "STU001", "name": "Bob"}
++
++        with patch("scripts.bootstrap_embeddings.get_firebase_service",
++                   return_value=mock_firebase), \
++             patch("scripts.bootstrap_embeddings.initialize_firebase",
++                   return_value=mock_firebase), \
++             patch("scripts.bootstrap_embeddings.extract_embedding",
++                   return_value=embedding), \
++             patch("services.firebase_service.FirebaseService.get_all_embeddings",
++                   return_value=[]):
++            from scripts.bootstrap_embeddings import bootstrap
++            bootstrap(tmp_path, dry_run=False)
++
++        mock_firebase.store_embedding.assert_called_once()
++        call_args = mock_firebase.store_embedding.call_args
++        assert call_args[0][0] == "STU001"
++        np.testing.assert_array_equal(call_args[0][1], embedding)
++
++    def test_dry_run_does_not_write(self, tmp_path):
++        _write_photo(tmp_path, "STU002")
++        mock_firebase = MagicMock()
++        mock_firebase.get_student.return_value = {"student_id": "STU002"}
++
++        with patch("scripts.bootstrap_embeddings.get_firebase_service",
++                   return_value=mock_firebase), \
++             patch("scripts.bootstrap_embeddings.initialize_firebase",
++                   return_value=mock_firebase), \
++             patch("scripts.bootstrap_embeddings.extract_embedding",
++                   return_value=np.random.rand(128).astype(np.float32)), \
++             patch("services.firebase_service.FirebaseService.get_all_embeddings",
++                   return_value=[]):
++            from scripts.bootstrap_embeddings import bootstrap
++            bootstrap(tmp_path, dry_run=True)
++
++        mock_firebase.store_embedding.assert_not_called()
