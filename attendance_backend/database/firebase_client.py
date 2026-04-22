@@ -161,13 +161,12 @@ class FirebaseClient:
         try:
             ref = self.get_reference(path)
             data = ref.get()
-            
-            if data.exists():
-                logger.debug(f"Read data from {path}")
-                return data.val()
-            else:
+            if data is None:
                 logger.debug(f"No data at {path}")
                 return None
+
+            logger.debug(f"Read data from {path}")
+            return data
         
         except FirebaseError as e:
             if retry < MAX_DATABASE_RETRIES:
@@ -235,11 +234,9 @@ class FirebaseClient:
         try:
             ref = self.get_reference(path)
             data = ref.get()
-            
-            if data.exists():
-                return list(data.val().keys())
-            else:
-                return []
+            if isinstance(data, dict):
+                return list(data.keys())
+            return []
         
         except Exception as e:
             logger.error(f"Error listing children at {path}: {e}")

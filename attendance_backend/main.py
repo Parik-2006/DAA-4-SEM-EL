@@ -183,6 +183,8 @@ app.include_router(admin_students.router, prefix=API_PREFIX, tags=["admin-studen
 
 # Include course management routes
 app.include_router(courses.router, prefix=API_PREFIX, tags=["admin-courses"])
+# Backward compatibility for frontend calls using /api/v1/admin/courses
+app.include_router(courses.router, prefix=f"{API_PREFIX}/admin", tags=["admin-courses"])
 
 # Include QR attendance routes
 app.include_router(qr_attendance.router, prefix=API_PREFIX, tags=["qr-attendance"])

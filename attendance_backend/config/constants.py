@@ -189,6 +189,7 @@ LOG_LEVELS = {
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",      # React development
+    "http://localhost:3001",      # Vite fallback port
     "http://localhost:5173",      # Vite development
     "http://localhost:8080",      # Flutter web development
 ]

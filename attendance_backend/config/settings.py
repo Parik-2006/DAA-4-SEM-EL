@@ -86,7 +86,7 @@ class Settings(BaseSettings):
     # ============ API Configuration ============
     api_prefix: str = Field(default="/api/v1", alias="API_PREFIX")
     cors_origins: List[str] = Field(
-        default=["http://localhost:3000", "http://localhost:5173", "http://localhost:8080"],
+        default=["http://localhost:3000", "http://localhost:3001", "http://localhost:5173", "http://localhost:8080"],
         alias="CORS_ORIGINS"
     )
     

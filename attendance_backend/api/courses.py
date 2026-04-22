@@ -1,11 +1,15 @@
+import logging
+from datetime import datetime
+from typing import Any, Dict, Optional
+from uuid import uuid4
+
 from fastapi import APIRouter, Depends, HTTPException, Query
-from typing import List, Optional
+from firebase_admin.exceptions import NotFoundError
 from database.firebase_client import FirebaseClient
 from pydantic import BaseModel
-import uuid
-from datetime import datetime
 
 router = APIRouter(tags=["admin-courses"])
+logger = logging.getLogger(__name__)
 
 class CourseSchema(BaseModel):
     name: str
@@ -17,6 +21,21 @@ class CourseSchema(BaseModel):
 def get_db():
     return FirebaseClient()
 
+
+def _safe_get(reference) -> Any:
+    """Read Firebase path and degrade gracefully if the RTDB is not configured."""
+    try:
+        return reference.get()
+    except NotFoundError as exc:
+        logger.warning("Firebase RTDB path not found: %s", exc)
+        return None
+
+
+def _ensure_dict(data: Any) -> Dict[str, Any]:
+    if isinstance(data, dict):
+        return data
+    return {}
+
 @router.get("/courses")
 async def get_all_courses(
     page: int = Query(1, ge=1),
@@ -24,38 +43,24 @@ async def get_all_courses(
     db: FirebaseClient = Depends(get_db)
 ) -> dict:
     """Get all courses"""
-    try:
-        courses_ref = db.get_reference("courses")
-        courses_data = courses_ref.get()
-        
-        if not courses_data:
-            return {
-                "data": [],
-                "total": 0,
-                "page": page,
-                "limit": limit,
-                "total_pages": 0
-            }
-        
-        courses = []
-        for course_id, course_info in courses_data.items():
-            course_info['id'] = course_id
-            courses.append(course_info)
-        
-        # Paginate
-        start = (page - 1) * limit
-        end = start + limit
-        paginated = courses[start:end]
-        
-        return {
-            "data": paginated,
-            "total": len(courses),
-            "page": page,
-            "limit": limit,
-            "total_pages": (len(courses) + limit - 1) // limit
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    courses_data = _ensure_dict(_safe_get(db.get_reference("courses")))
+    courses = []
+    for course_id, course_info in courses_data.items():
+        info = course_info if isinstance(course_info, dict) else {}
+        info["id"] = course_id
+        courses.append(info)
+
+    start = (page - 1) * limit
+    end = start + limit
+    paginated = courses[start:end]
+
+    return {
+        "data": paginated,
+        "total": len(courses),
+        "page": page,
+        "limit": limit,
+        "total_pages": (len(courses) + limit - 1) // limit if courses else 0,
+    }
 
 
 @router.post("/courses")
@@ -65,7 +70,7 @@ async def create_course(
 ) -> dict:
     """Create a new course"""
     try:
-        course_id = str(uuid.uuid4())
+        course_id = str(uuid4())
         course_data = {
             "name": course.name,
             "code": course.code,
@@ -85,6 +90,8 @@ async def create_course(
             "id": course_id,
             "message": "Course created successfully"
         }
+    except NotFoundError:
+        raise HTTPException(status_code=503, detail="Realtime database is not configured")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -95,20 +102,13 @@ async def get_course(
     db: FirebaseClient = Depends(get_db)
 ) -> dict:
     """Get specific course details"""
-    try:
-        course_ref = db.get_reference("courses").child(course_id)
-        course = course_ref.get()
-        
-        if not course.val():
-            raise HTTPException(status_code=404, detail="Course not found")
-        
-        course_data = course.val()
-        course_data['id'] = course_id
-        return course_data
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    course_ref = db.get_reference("courses").child(course_id)
+    course = _safe_get(course_ref)
+    if not isinstance(course, dict):
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    course["id"] = course_id
+    return course
 
 
 @router.put("/courses/{course_id}")
@@ -120,9 +120,8 @@ async def update_course(
     """Update course details"""
     try:
         course_ref = db.get_reference("courses").child(course_id)
-        existing = course_ref.get()
-        
-        if not existing.val():
+        existing = _safe_get(course_ref)
+        if not isinstance(existing, dict):
             raise HTTPException(status_code=404, detail="Course not found")
         
         update_data = {
@@ -140,8 +139,8 @@ async def update_course(
             "success": True,
             "message": "Course updated successfully"
         }
-    except HTTPException:
-        raise
+    except NotFoundError:
+        raise HTTPException(status_code=503, detail="Realtime database is not configured")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -155,9 +154,8 @@ async def toggle_course(
     """Toggle course active status"""
     try:
         course_ref = db.get_reference("courses").child(course_id)
-        existing = course_ref.get()
-        
-        if not existing.val():
+        existing = _safe_get(course_ref)
+        if not isinstance(existing, dict):
             raise HTTPException(status_code=404, detail="Course not found")
         
         active = data.get("active", True)
@@ -167,8 +165,8 @@ async def toggle_course(
             "success": True,
             "message": f"Course {'activated' if active else 'deactivated'}"
         }
-    except HTTPException:
-        raise
+    except NotFoundError:
+        raise HTTPException(status_code=503, detail="Realtime database is not configured")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -181,9 +179,8 @@ async def delete_course(
     """Delete a course"""
     try:
         course_ref = db.get_reference("courses").child(course_id)
-        existing = course_ref.get()
-        
-        if not existing.val():
+        existing = _safe_get(course_ref)
+        if not isinstance(existing, dict):
             raise HTTPException(status_code=404, detail="Course not found")
         
         course_ref.delete()
@@ -192,8 +189,8 @@ async def delete_course(
             "success": True,
             "message": "Course deleted successfully"
         }
-    except HTTPException:
-        raise
+    except NotFoundError:
+        raise HTTPException(status_code=503, detail="Realtime database is not configured")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -206,21 +203,21 @@ async def get_enrolled_students(
     """Get students enrolled in a course"""
     try:
         enrollments_ref = db.get_reference("course_enrollments").child(course_id)
-        enrollments = enrollments_ref.get()
-        
+        enrollments = _ensure_dict(_safe_get(enrollments_ref))
         students = []
-        if enrollments.val():
-            for student_id, enrollment_data in enrollments.val().items():
-                students.append({
-                    "student_id": student_id,
-                    "enrolled_at": enrollment_data.get("enrolled_at")
-                })
+        for student_id, enrollment_data in enrollments.items():
+            students.append({
+                "student_id": student_id,
+                "enrolled_at": (enrollment_data or {}).get("enrolled_at")
+            })
         
         return {
             "course_id": course_id,
             "students": students,
             "total": len(students)
         }
+    except NotFoundError:
+        return {"course_id": course_id, "students": [], "total": 0}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -235,7 +232,7 @@ async def enroll_student(
     try:
         # Check course exists
         course_ref = db.get_reference("courses").child(course_id)
-        if not course_ref.get().val():
+        if not isinstance(_safe_get(course_ref), dict):
             raise HTTPException(status_code=404, detail="Course not found")
         
         # Add enrollment
@@ -245,16 +242,15 @@ async def enroll_student(
         })
         
         # Update enrollment count
-        course_ref.update({
-            "enrolled_students": db.get_reference("course_enrollments").child(course_id).get().count()
-        })
+        enrollments = _ensure_dict(_safe_get(db.get_reference("course_enrollments").child(course_id)))
+        course_ref.update({"enrolled_students": len(enrollments)})
         
         return {
             "success": True,
             "message": f"Student {student_id} enrolled in course {course_id}"
         }
-    except HTTPException:
-        raise
+    except NotFoundError:
+        raise HTTPException(status_code=503, detail="Realtime database is not configured")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -272,13 +268,14 @@ async def unenroll_student(
         
         # Update enrollment count
         course_ref = db.get_reference("courses").child(course_id)
-        course_ref.update({
-            "enrolled_students": db.get_reference("course_enrollments").child(course_id).get().count()
-        })
+        enrollments = _ensure_dict(_safe_get(db.get_reference("course_enrollments").child(course_id)))
+        course_ref.update({"enrolled_students": len(enrollments)})
         
         return {
             "success": True,
             "message": f"Student {student_id} unenrolled from course {course_id}"
         }
+    except NotFoundError:
+        raise HTTPException(status_code=503, detail="Realtime database is not configured")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

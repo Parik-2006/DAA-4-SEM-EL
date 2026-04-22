@@ -13,6 +13,16 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-const analytics = getAnalytics(app);
+let analytics = null;
+
+// Firebase Analytics fails with 404 when app/measurement config is invalid.
+// Keep the app usable by treating analytics as optional in development setups.
+if (typeof window !== "undefined" && firebaseConfig.measurementId) {
+  try {
+    analytics = getAnalytics(app);
+  } catch (error) {
+    console.warn("Firebase Analytics disabled:", error);
+  }
+}
 
 export { app, analytics };
