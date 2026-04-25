@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Attendance Dashboard">
+  <rect width="64" height="64" rx="12" fill="#0f172a"/>
+  <circle cx="22" cy="24" r="8" fill="#22c55e"/>
+  <path d="M12 46c2.5-7 7-11 14-11s11.5 4 14 11" fill="none" stroke="#22c55e" stroke-width="4" stroke-linecap="round"/>
+  <path d="M38 20h14M38 28h14M38 36h10" stroke="#38bdf8" stroke-width="4" stroke-linecap="round"/>
+</svg>

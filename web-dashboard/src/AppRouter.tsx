@@ -46,6 +46,7 @@ export const AppRouter: React.FC = () => {
       }}
     >
       <Routes>
+        <Route path="/index.html" element={<Navigate to="/" replace />} />
         <Route path="/login" element={<LoginPage />} />
 
         <Route
@@ -115,6 +116,7 @@ export const AppRouter: React.FC = () => {
 
         {/* Default redirect */}
         <Route path="/" element={<Navigate to="/dashboard" />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
   );
