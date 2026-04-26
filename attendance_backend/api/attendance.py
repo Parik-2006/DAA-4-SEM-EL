@@ -83,16 +83,57 @@ async def detect_face_and_mark(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid image format: {str(e)}")
 
-    # 3. Extract face embedding
+    # 3. Detect and crop face using YOLOv8
+    try:
+        import cv2
+        detector = ModelManager.get_yolov8_detector()
+        # Convert RGB to BGR for YOLOv8
+        image_bgr = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
+        detections = detector.detect(image_bgr)
+        
+        if not detections:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "matched": False,
+                    "message": "No face detected in the image. Ensure your face is clearly visible.",
+                }
+            )
+            
+        # Get highest confidence face
+        best_face = max(detections, key=lambda x: x[4])
+        x1, y1, x2, y2, conf = best_face
+        
+        # Crop face from the RGB image array (FaceNet expects RGB)
+        h, w = image_array.shape[:2]
+        # Add 10% padding
+        pad_x = int((x2 - x1) * 0.1)
+        pad_y = int((y2 - y1) * 0.1)
+        
+        x1 = max(0, int(x1) - pad_x)
+        y1 = max(0, int(y1) - pad_y)
+        x2 = min(w, int(x2) + pad_x)
+        y2 = min(h, int(y2) + pad_y)
+        
+        face_crop = image_array[y1:y2, x1:x2]
+        
+    except Exception as e:
+        logger.error(f"Face detection error: {e}")
+        return JSONResponse(
+            status_code=200,
+            content={"matched": False, "message": f"Face detection failed: {str(e)}"}
+        )
+
+    # 4. Extract face embedding from the CROPPED face
     try:
         extractor = ModelManager.get_facenet_extractor()
-        embedding = extractor.extract_embedding(image_array)
+        embedding = extractor.extract_embedding(face_crop)
         if embedding is None:
             return JSONResponse(
                 status_code=200,
                 content={
                     "matched": False,
-                    "message": "No face detected in the image. Ensure your face is clearly visible and well-lit.",
+                    "message": "Could not extract face features from the cropped face.",
                 }
             )
     except ImportError:

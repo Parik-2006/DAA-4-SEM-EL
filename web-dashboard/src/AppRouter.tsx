@@ -10,6 +10,7 @@ import QRCodePage from './pages/QRCodePage';
 import BatchImportPage from './pages/BatchImportPage';
 import StudentManagementPage from './pages/StudentManagementPage';
 import CourseManagementPage from './pages/CourseManagementPage';
+import { HistoryPage } from './pages/HistoryPage';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -62,6 +63,14 @@ export const AppRouter: React.FC = () => {
           element={
             <ProtectedRoute>
               <AttendancePage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/history"
+          element={
+            <ProtectedRoute>
+              <HistoryPage />
             </ProtectedRoute>
           }
         />
