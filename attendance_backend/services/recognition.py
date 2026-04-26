@@ -75,7 +75,7 @@ class FaceRecognitionPipeline:
             self.model = InceptionResnetV1(
                 pretrained=self.pretrained,
                 num_classes=None,  # Output embeddings, not classification
-                dropout_p=0.0,
+                dropout_prob=0.0,
                 device=self.device
             )
             

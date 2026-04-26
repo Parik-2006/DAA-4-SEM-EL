@@ -22,8 +22,11 @@ from schemas.attendance_schemas import (
     StreamConfig, StreamHealth,
     HealthCheckResponse, SystemStatsResponse
 )
+import numpy as np
+from scipy.spatial.distance import cosine
 from services.firebase_service import get_firebase_service, FirebaseService
 from services.rtsp_stream_handler import get_stream_manager
+from models.model_manager import ModelManager
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +77,6 @@ async def detect_face_and_mark(
     # 2. Decode image
     try:
         from PIL import Image
-        import numpy as np
 
         image = Image.open(io.BytesIO(contents)).convert("RGB")
         image_array = np.array(image)
@@ -83,8 +85,7 @@ async def detect_face_and_mark(
 
     # 3. Extract face embedding
     try:
-        from models.facenet_extractor import FaceNetExtractor
-        extractor = FaceNetExtractor()
+        extractor = ModelManager.get_facenet_extractor()
         embedding = extractor.extract_embedding(image_array)
         if embedding is None:
             return JSONResponse(
@@ -119,9 +120,6 @@ async def detect_face_and_mark(
         raise HTTPException(status_code=503, detail="Firebase service not initialised")
 
     try:
-        from scipy.spatial.distance import cosine
-        import numpy as np
-
         THRESHOLD = 0.55  # lower = stricter
 
         all_students = firebase.get_all_students()
@@ -223,7 +221,6 @@ async def register_student(request: StudentRegistrationRequest) -> StudentRegist
         if existing:
             raise HTTPException(status_code=409, detail=f"Student {request.student_id} already registered")
 
-        import numpy as np
         embeddings_array = np.array(request.embeddings[0])
         firebase.register_student(
             student_id=request.student_id,
@@ -369,10 +366,8 @@ async def mark_attendance_with_image(
             raise HTTPException(status_code=400, detail=f"Invalid image format: {str(e)}")
 
         try:
-            from models.facenet_extractor import FaceNetExtractor
-            from scipy.spatial.distance import cosine
 
-            extractor = FaceNetExtractor()
+            extractor = ModelManager.get_facenet_extractor()
             embedding = extractor.extract_embedding(image_array)
             if embedding is None:
                 raise HTTPException(status_code=400, detail="No face detected in image")
@@ -447,11 +442,8 @@ async def mark_attendance_mobile(
             raise HTTPException(status_code=400, detail=f"Invalid image format: {str(e)}")
 
         try:
-            from models.facenet_extractor import FaceNetExtractor
-            from scipy.spatial.distance import cosine
-
             THRESHOLD = 0.6
-            extractor = FaceNetExtractor()
+            extractor = ModelManager.get_facenet_extractor()
             embedding = extractor.extract_embedding(image_array)
             if embedding is None:
                 raise HTTPException(status_code=400, detail="No face detected")

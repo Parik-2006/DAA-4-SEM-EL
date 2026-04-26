@@ -73,7 +73,7 @@ class FaceNetExtractor:
                 pretrained='vggface2' if pretrained else None,
                 classify=False,  # Use embedding mode (not classification)
                 num_classes=None,
-                dropout_p=0.5,
+                dropout_prob=0.5,
                 device=self.device
             )
             

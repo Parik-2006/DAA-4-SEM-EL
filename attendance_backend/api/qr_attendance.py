@@ -74,10 +74,10 @@ async def scan_qr_code(
         qr_ref = db.get_reference("qr_tokens").child(token)
         qr_data = qr_ref.get()
         
-        if not qr_data.val():
+        if not qr_data:
             raise HTTPException(status_code=404, detail="Invalid QR code")
         
-        qr_info = qr_data.val()
+        qr_info = qr_data
         
         # Check expiry
         expiry_time = datetime.fromisoformat(qr_info["expires_at"])
@@ -89,7 +89,7 @@ async def scan_qr_code(
         attendance_ref = db.get_reference("attendance").child(today).child(student_id)
         existing = attendance_ref.get()
         
-        if existing.val():
+        if existing:
             raise HTTPException(status_code=400, detail="Already marked attendance today")
         
         # Mark attendance
@@ -128,13 +128,13 @@ async def validate_qr_token(
         qr_ref = db.get_reference("qr_tokens").child(token)
         qr_data = qr_ref.get()
         
-        if not qr_data.val():
+        if not qr_data:
             return {
                 "valid": False,
                 "message": "Invalid QR code"
             }
         
-        qr_info = qr_data.val()
+        qr_info = qr_data
         
         # Check expiry
         expiry_time = datetime.fromisoformat(qr_info["expires_at"])
@@ -160,7 +160,7 @@ async def cleanup_expired_tokens(
         qr_ref = db.get_reference("qr_tokens")
         all_tokens = qr_ref.get()
         
-        if not all_tokens.val():
+        if not all_tokens:
             return {
                 "success": True,
                 "cleaned": 0,
@@ -168,7 +168,7 @@ async def cleanup_expired_tokens(
             }
         
         cleaned_count = 0
-        for token, token_info in all_tokens.val().items():
+        for token, token_info in all_tokens.items():
             try:
                 expiry_time = datetime.fromisoformat(token_info["expires_at"])
                 if datetime.now() > expiry_time:
@@ -195,7 +195,7 @@ async def get_qr_statistics(
         qr_ref = db.get_reference("qr_tokens")
         all_tokens = qr_ref.get()
         
-        if not all_tokens.val():
+        if not all_tokens:
             return {
                 "total_qr_codes": 0,
                 "active_qr_codes": 0,
@@ -203,7 +203,7 @@ async def get_qr_statistics(
                 "average_scans_per_qr": 0
             }
         
-        tokens = all_tokens.val()
+        tokens = all_tokens
         active_count = 0
         total_scans = 0
         

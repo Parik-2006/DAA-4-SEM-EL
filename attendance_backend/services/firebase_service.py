@@ -158,7 +158,7 @@ class FirebaseService:
                 return doc.to_dict() if doc.exists else None
             elif self.firebase_db:
                 data = self.firebase_db.child("students").child(student_id).get()
-                return data.val() if data.val() else None
+                return data if data else None
         except Exception as e:
             logger.error(f"Failed to get student {student_id}: {e}")
             return None
@@ -171,8 +171,8 @@ class FirebaseService:
                 students = [doc.to_dict() for doc in docs]
             elif self.firebase_db:
                 data = self.firebase_db.child("students").get()
-                if data.val():
-                    students = [v for v in data.val().values()]
+                if data:
+                    students = [v for v in data.values()]
             return students
         except Exception as e:
             logger.error(f"Failed to retrieve students: {e}")
@@ -255,8 +255,8 @@ class FirebaseService:
                 records = [doc.to_dict() for doc in docs]
             elif self.firebase_db:
                 data = self.firebase_db.child("attendance").get()
-                if data.val():
-                    records = list(data.val().values())
+                if data:
+                    records = list(data.values())
                     if student_id:
                         records = [r for r in records if r.get("student_id") == student_id]
                     records = sorted(records, key=lambda r: r.get("timestamp", ""), reverse=True)[:limit]
@@ -318,7 +318,7 @@ class FirebaseService:
 
             elif self.firebase_db:  # Realtime DB
                 path = f"students/{student_id}"
-                existing = self.firebase_db.child(path).get().val() or {}
+                existing = self.firebase_db.child(path).get() or {}
                 current_list = existing.get("embeddings") or []
                 if not isinstance(current_list, list):
                     current_list = [current_list]
