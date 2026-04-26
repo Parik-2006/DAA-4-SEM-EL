@@ -62,9 +62,10 @@ async def lifespan(app: FastAPI):
         logger.warning("Operating without Firebase (data won't be persisted)")
     
     try:
-        # Initialize models
-        logger.info("Initializing ML models...")
-        device = "cuda"  # Use GPU if available
+        # Initialize models — use CPU if CUDA is not available
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"Initializing ML models on device: {device}")
         ModelManager.initialize(device=device)
         logger.info("✓ ML models initialized successfully")
     except Exception as e:

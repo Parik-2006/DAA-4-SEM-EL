@@ -68,31 +68,44 @@ class ModelManager:
                 logger.info("Models already initialized")
                 return cls._instance
             
+            logger.info("Initializing ML models...")
+            settings = get_settings()
+            
+            # Load YOLOv8 detector (optional — face detection for RTSP streams)
             try:
-                logger.info("Initializing ML models...")
-                settings = get_settings()
-                
-                # Load YOLOv8 detector
                 logger.info("Loading YOLOv8 face detector...")
                 cls._yolov8_detector = YOLOv8Detector(
                     model_path=settings.yolov8_model_path,
                     confidence_threshold=settings.yolov8_confidence_threshold,
                     device=device
                 )
-                
-                # Load FaceNet extractor
+                logger.info("✓ YOLOv8 detector loaded successfully")
+            except Exception as e:
+                logger.warning(
+                    f"YOLOv8 detector could not be loaded (non-fatal): {e}. "
+                    "RTSP stream detection will be unavailable, but web camera still works."
+                )
+                cls._yolov8_detector = None
+            
+            # Load FaceNet extractor (required for all face recognition)
+            try:
                 logger.info("Loading FaceNet embedding extractor...")
                 cls._facenet_extractor = FaceNetExtractor(
                     pretrained=True,
                     device=device
                 )
-                
-                cls._initialized = True
-                logger.info("All models initialized successfully")
-                
+                logger.info("✓ FaceNet extractor loaded successfully")
             except Exception as e:
-                logger.error(f"Model initialization failed: {e}")
-                raise RuntimeError(f"Failed to initialize models: {e}")
+                logger.error(f"FaceNet extractor failed to load: {e}")
+                cls._facenet_extractor = None
+            
+            # Mark as initialized if at least FaceNet loaded
+            cls._initialized = True
+            if cls._facenet_extractor is not None:
+                logger.info("ML models ready (FaceNet: ✓, YOLOv8: %s)",
+                            "✓" if cls._yolov8_detector else "✗ missing weights")
+            else:
+                logger.error("FaceNet failed to load — face recognition will be unavailable")
         
         return cls._instance
     
@@ -107,9 +120,10 @@ class ModelManager:
         Raises:
             RuntimeError: If models not initialized
         """
-        if not cls._initialized or cls._yolov8_detector is None:
+        if cls._yolov8_detector is None:
             raise RuntimeError(
-                "Models not initialized. Call ModelManager.initialize() first."
+                "YOLOv8 detector is not available. "
+                "Ensure weights/yolov8n-face.pt exists and restart the server."
             )
         return cls._yolov8_detector
     
@@ -124,9 +138,10 @@ class ModelManager:
         Raises:
             RuntimeError: If models not initialized
         """
-        if not cls._initialized or cls._facenet_extractor is None:
+        if cls._facenet_extractor is None:
             raise RuntimeError(
-                "Models not initialized. Call ModelManager.initialize() first."
+                "FaceNet extractor is not available. "
+                "Check server logs for initialization errors and restart."
             )
         return cls._facenet_extractor
     
