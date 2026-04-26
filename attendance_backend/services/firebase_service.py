@@ -9,11 +9,14 @@ import numpy as np
 
 try:
     import firebase_admin
-    from firebase_admin import credentials, firestore, db, storage
+    from firebase_admin import credentials, db, storage
+    from firebase_admin import firestore as admin_firestore
+    from google.cloud import firestore
     FIREBASE_AVAILABLE = True
 except ImportError:
     FIREBASE_AVAILABLE = False
     firebase_admin = None
+    firestore = None
 
 logger = logging.getLogger(__name__)
 
@@ -48,16 +51,21 @@ class FirebaseService:
         service = cls()
 
         try:
+            cred = credentials.Certificate(credentials_path)
             if not firebase_admin._apps:
-                cred = credentials.Certificate(credentials_path)
                 options = {}
                 if database_url:
                     options['databaseURL'] = database_url
                 firebase_admin.initialize_app(cred, options)
 
             if use_firestore:
-                service.db = firestore.client()
-                logger.info("Firestore initialized")
+                cred_obj = credentials.Certificate(credentials_path)
+                service.db = firestore.Client(
+                    project=cred_obj.project_id,
+                    credentials=cred_obj.get_credential(),
+                    database="default"
+                )
+                logger.info("Firestore initialized (database: default)")
             else:
                 service.firebase_db = db.reference()
                 logger.info("Realtime Database initialized")
@@ -70,21 +78,12 @@ class FirebaseService:
             logger.error(f"Failed to initialize Firebase: {e}")
             raise
 
-    # ── NEW: canonical embeddings helper ─────────────────────────────────────
+    # ── canonical embeddings helper ─────────────────────────────────────
 
     @staticmethod
     def get_all_embeddings(student: Dict[str, Any]) -> List[np.ndarray]:
         """
         Return all face embeddings for *student* as a list of numpy arrays.
-
-        Handles three storage layouts that exist in the wild:
-          1. {"embeddings": [[…], […]]}     ← multi-shot (new)
-          2. {"embedding": […]}             ← single-shot (legacy)
-          3. both keys present
-
-        Deduplicates: if 'embeddings' list is non-empty it is used exclusively;
-        the legacy 'embedding' key is only consulted when 'embeddings' is absent
-        or empty.
         """
         embs: List[np.ndarray] = []
 
@@ -93,7 +92,10 @@ class FirebaseService:
         for item in raw_list:
             if item is not None:
                 try:
-                    embs.append(np.array(item, dtype=np.float32))
+                    if isinstance(item, dict) and "vector" in item:
+                        embs.append(np.array(item["vector"], dtype=np.float32))
+                    else:
+                        embs.append(np.array(item, dtype=np.float32))
                 except Exception:
                     pass
 
@@ -127,11 +129,8 @@ class FirebaseService:
                 "name": name,
                 "email": email,
                 "phone": phone or "",
-                # Write BOTH keys so old and new consumers both work:
-                # • embedding  → single vector (legacy consumers)
-                # • embeddings → list of vectors (multi-shot / new)
                 "embedding": embedding_list,
-                "embeddings": [embedding_list],
+                "embeddings": [{"vector": embedding_list}],
                 "registered_at": datetime.now().isoformat(),
                 "last_seen": None,
                 "attendance_count": 0,
@@ -292,10 +291,6 @@ class FirebaseService:
         embedding: np.ndarray,
         timestamp: Optional[datetime] = None,
     ) -> bool:
-        """
-        Append *embedding* to the student's embeddings list and update the
-        legacy ``embedding`` field so both storage layouts stay in sync.
-        """
         timestamp = timestamp or datetime.now()
         embedding_list = embedding.tolist() if isinstance(embedding, np.ndarray) else embedding
 
@@ -307,13 +302,23 @@ class FirebaseService:
                     existing = doc.to_dict() or {}
                     current_list: list = existing.get("embeddings") or []
                     if not isinstance(current_list, list):
-                        current_list = [current_list]
-                    current_list.append(embedding_list)
+                        current_list = [{"vector": current_list}] if isinstance(current_list, list) else []
+                    
+                    # Ensure all existing items are dicts if they were lists
+                    formatted_list = []
+                    for item in current_list:
+                        if isinstance(item, list):
+                            formatted_list.append({"vector": item})
+                        else:
+                            formatted_list.append(item)
+                            
+                    formatted_list.append({"vector": embedding_list})
+                    
                     student_ref.update({
-                        "embedding": embedding_list,   # keep legacy field current
-                        "embeddings": current_list,
+                        "embedding": embedding_list,
+                        "embeddings": formatted_list,
                     })
-                    logger.info(f"Embedding appended for {student_id} (total: {len(current_list)})")
+                    logger.info(f"Embedding appended for {student_id} (total: {len(formatted_list)})")
                     return True
 
             elif self.firebase_db:  # Realtime DB
@@ -321,13 +326,21 @@ class FirebaseService:
                 existing = self.firebase_db.child(path).get() or {}
                 current_list = existing.get("embeddings") or []
                 if not isinstance(current_list, list):
-                    current_list = [current_list]
-                current_list.append(embedding_list)
+                    current_list = [{"vector": current_list}] if isinstance(current_list, list) else []
+                    
+                formatted_list = []
+                for item in current_list:
+                    if isinstance(item, list):
+                        formatted_list.append({"vector": item})
+                    else:
+                        formatted_list.append(item)
+                        
+                formatted_list.append({"vector": embedding_list})
                 self.firebase_db.child(path).update({
                     "embedding": embedding_list,
-                    "embeddings": current_list,
+                    "embeddings": formatted_list,
                 })
-                logger.info(f"Embedding appended for {student_id} (total: {len(current_list)})")
+                logger.info(f"Embedding appended for {student_id} (total: {len(formatted_list)})")
                 return True
 
         except Exception as e:
