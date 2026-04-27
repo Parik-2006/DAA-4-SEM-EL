@@ -11,14 +11,12 @@ const apiClient: AxiosInstance = axios.create({
   },
 });
 
-// Auth token injection
 apiClient.interceptors.request.use((config) => {
   const token = localStorage.getItem('auth_token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
-// 401 handler
 apiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
@@ -69,7 +67,10 @@ export interface Course {
   students_count: number;
 }
 
-// ── Detect-face response ──────────────────────────────────────────────────────
+/**
+ * Response from the detect-face-only endpoint (Step 1).
+ * No attendance record has been saved yet.
+ */
 export interface DetectFaceResponse {
   matched: boolean;
   message: string;
@@ -78,6 +79,20 @@ export interface DetectFaceResponse {
   confidence?: number;
   record_id?: string;
   timestamp?: string;
+}
+
+/**
+ * Response from the confirm-attendance endpoint (Step 2).
+ * The attendance record has been persisted to the database.
+ */
+export interface ConfirmAttendanceResponse {
+  success: boolean;
+  record_id: string;
+  student_id: string;
+  student_name: string;
+  confidence: number;
+  timestamp: string;
+  message: string;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -108,9 +123,98 @@ function normaliseRecord(r: Record<string, unknown>): AttendanceRecord {
   };
 }
 
+function buildDetectError(err: unknown): DetectFaceResponse {
+  const axiosErr = err as AxiosError<{ detail?: string; message?: string }>;
+  const status = axiosErr.response?.status;
+  const detail =
+    axiosErr.response?.data?.detail ||
+    axiosErr.response?.data?.message ||
+    axiosErr.message ||
+    'Unknown error';
+
+  if (status && status >= 400 && status < 500) {
+    return { matched: false, message: detail };
+  }
+  return {
+    matched: false,
+    message: `Server error (${status ?? 'network'}): ${detail}. Check backend logs.`,
+  };
+}
+
 // ── API class ──────────────────────────────────────────────────────────────────
 
 class AttendanceAPI {
+  // ── Two-step attendance flow ──────────────────────────────────────────────
+
+  /**
+   * Step 1 — Detect and identify a face WITHOUT saving to the database.
+   *
+   * Sends a multipart/form-data POST to `/detect-face-only`.
+   * The FormData must have a field named "file" (JPEG/PNG Blob).
+   *
+   * Returns a DetectFaceResponse. If matched, the caller should display a
+   * confirmation dialog and then call `confirmAttendance()` on approval.
+   */
+  async detectFaceOnly(formData: FormData): Promise<DetectFaceResponse> {
+    try {
+      const response = await apiClient.post<DetectFaceResponse>(
+        '/api/v1/attendance/detect-face-only',
+        formData,
+        {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: 25000,
+        }
+      );
+      return response.data;
+    } catch (err: unknown) {
+      return buildDetectError(err);
+    }
+  }
+
+  /**
+   * Step 2 — Persist the attendance record after the user has confirmed identity.
+   *
+   * Sends a JSON POST to `/confirm-attendance` with the student_id and
+   * confidence score returned from `detectFaceOnly`.
+   *
+   * Call this ONLY after the user clicks "Yes" in the confirmation dialog.
+   */
+  async confirmAttendance(
+    studentId: string,
+    confidence: number
+  ): Promise<ConfirmAttendanceResponse> {
+    const response = await apiClient.post<ConfirmAttendanceResponse>(
+      '/api/v1/attendance/confirm-attendance',
+      { student_id: studentId, confidence },
+      { timeout: 15000 }
+    );
+    return response.data;
+  }
+
+  // ── Legacy single-step (used by UploadPhoto fallback) ────────────────────
+
+  /**
+   * @deprecated Use detectFaceOnly + confirmAttendance for the two-step flow.
+   * Kept for legacy integrations that call the old detect-face endpoint.
+   */
+  async detectAndMarkAttendance(formData: FormData): Promise<DetectFaceResponse> {
+    try {
+      const response = await apiClient.post<DetectFaceResponse>(
+        '/api/v1/attendance/detect-face',
+        formData,
+        {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: 25000,
+        }
+      );
+      return response.data;
+    } catch (err: unknown) {
+      return buildDetectError(err);
+    }
+  }
+
+  // ── Data fetching ─────────────────────────────────────────────────────────
+
   async getLiveAttendance(courseId?: string, limit = 50): Promise<AttendanceRecord[]> {
     try {
       const response = await apiClient.get('/api/v1/attendance/attendance', {
@@ -215,55 +319,6 @@ class AttendanceAPI {
       return [];
     }
   }
-
-  /**
-   * Detect face in uploaded image/frame and mark attendance.
-   * Sends multipart/form-data POST to /api/v1/attendance/detect-face.
-   * FormData MUST contain a field named "file" (JPEG/PNG Blob).
-   *
-   * Returns a DetectFaceResponse regardless of match outcome so callers can
-   * surface both "matched" and "not matched" states to the user.
-   */
-  async detectAndMarkAttendance(formData: FormData): Promise<DetectFaceResponse> {
-    try {
-      const response = await apiClient.post<DetectFaceResponse>(
-        '/api/v1/attendance/detect-face',
-        formData,
-        {
-          headers: { 'Content-Type': 'multipart/form-data' },
-          timeout: 25000, // face recognition can be slow on first load
-        }
-      );
-      return response.data;
-    } catch (err: unknown) {
-      const axiosErr = err as AxiosError<{ detail?: string; message?: string }>;
-      const status = axiosErr.response?.status;
-      const detail =
-        axiosErr.response?.data?.detail ||
-        axiosErr.response?.data?.message ||
-        axiosErr.message ||
-        'Unknown error';
-
-      // 4xx from backend → face not recognised, no network issue
-      if (status && status >= 400 && status < 500) {
-        return {
-          matched: false,
-          message: detail,
-        };
-      }
-
-      // Network / 5xx → propagate as structured error
-      return {
-        matched: false,
-        message: `Server error (${status ?? 'network'}): ${detail}. Check backend logs.`,
-      };
-    }
-  }
-
-  // NOTE: _detectViaBase64 / mark-mobile fallback intentionally removed.
-  // Sending large base64 blobs as URL query parameters causes 414 Request-URI
-  // Too Long errors, leaks image data in server logs, and breaks URL length
-  // limits in proxies. Use the multipart detect-face endpoint exclusively.
 
   async registerStudentFace(studentId: string, faceImageBase64: string) {
     const response = await apiClient.post('/api/v1/admin/register-face', {

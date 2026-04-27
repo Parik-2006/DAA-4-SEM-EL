@@ -1,5 +1,6 @@
 """
 REST API endpoints for attendance system.
+Two-step attendance: detect-face (identify only) → confirm-attendance (write to DB).
 """
 
 import logging
@@ -33,36 +34,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/attendance", tags=["attendance"])
 
 
-# ── Face Detection / Attendance via File Upload ───────────────────────────────
+# ── Shared face-extraction helper ─────────────────────────────────────────────
 
-@router.post(
-    "/detect-face",
-    status_code=status.HTTP_200_OK,
-    summary="Detect face from uploaded image and mark attendance",
-)
-async def detect_face_and_mark(
-    file: UploadFile = File(..., description="JPEG or PNG image containing a face"),
-):
+async def _extract_embedding_from_upload(file: UploadFile):
     """
-    Accept a **multipart/form-data** image (field name ``file``), extract a
-    face embedding, match against all registered students, and mark attendance
-    for the best match.
-
-    This is the **canonical** endpoint for web/mobile face-based attendance.
-    Do NOT use query-param base64 (mark-mobile) for new integrations.
-
-    Returns JSON:
-        {
-          "matched": true/false,
-          "message": "...",
-          "record_id": "...",     # if matched
-          "student_name": "...",  # if matched
-          "student_id": "...",    # if matched
-          "confidence": 0.95      # if matched
-        }
+    Read an uploaded image file, detect the face with YOLOv8, crop it,
+    and return (embedding: np.ndarray, error_response: JSONResponse | None).
+    On any failure the embedding is None and error_response carries the reply.
     """
-    # 1. Read uploaded bytes
-    MAX_BYTES = 10 * 1024 * 1024  # 10 MB guard
+    MAX_BYTES = 10 * 1024 * 1024
     try:
         contents = await file.read()
         if not contents:
@@ -74,71 +54,59 @@ async def detect_face_and_mark(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
 
-    # 2. Decode image
     try:
         from PIL import Image
-
         image = Image.open(io.BytesIO(contents)).convert("RGB")
         image_array = np.array(image)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid image format: {str(e)}")
 
-    # 3. Detect and crop face using YOLOv8
     try:
         import cv2
         detector = ModelManager.get_yolov8_detector()
-        # Convert RGB to BGR for YOLOv8
         image_bgr = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
         detections = detector.detect(image_bgr)
-        
+
         if not detections:
-            return JSONResponse(
+            return None, JSONResponse(
                 status_code=200,
                 content={
                     "matched": False,
                     "message": "No face detected in the image. Ensure your face is clearly visible.",
                 }
             )
-            
-        # Get highest confidence face
+
         best_face = max(detections, key=lambda x: x[4])
         x1, y1, x2, y2, conf = best_face
-        
-        # Crop face from the RGB image array (FaceNet expects RGB)
         h, w = image_array.shape[:2]
-        # Add 10% padding
         pad_x = int((x2 - x1) * 0.1)
         pad_y = int((y2 - y1) * 0.1)
-        
         x1 = max(0, int(x1) - pad_x)
         y1 = max(0, int(y1) - pad_y)
         x2 = min(w, int(x2) + pad_x)
         y2 = min(h, int(y2) + pad_y)
-        
         face_crop = image_array[y1:y2, x1:x2]
-        
     except Exception as e:
         logger.error(f"Face detection error: {e}")
-        return JSONResponse(
+        return None, JSONResponse(
             status_code=200,
             content={"matched": False, "message": f"Face detection failed: {str(e)}"}
         )
 
-    # 4. Extract face embedding from the CROPPED face
     try:
         extractor = ModelManager.get_facenet_extractor()
         embedding = extractor.extract_embedding(face_crop)
         if embedding is None:
-            return JSONResponse(
+            return None, JSONResponse(
                 status_code=200,
                 content={
                     "matched": False,
                     "message": "Could not extract face features from the cropped face.",
                 }
             )
+        return embedding, None
     except ImportError:
-        logger.warning("FaceNetExtractor not available; returning unmatched")
-        return JSONResponse(
+        return None, JSONResponse(
             status_code=200,
             content={
                 "matched": False,
@@ -147,40 +115,80 @@ async def detect_face_and_mark(
         )
     except Exception as e:
         logger.error(f"Embedding extraction error: {e}")
-        return JSONResponse(
+        return None, JSONResponse(
             status_code=200,
-            content={
-                "matched": False,
-                "message": f"Could not process face: {str(e)}",
-            }
+            content={"matched": False, "message": f"Could not process face: {str(e)}"}
         )
 
-    # 4. Match against all registered students
+
+def _match_embedding(embedding: np.ndarray, firebase, threshold: float = 0.55):
+    """
+    Compare embedding against all registered students.
+    Returns (best_student | None, confidence: float, best_distance: float).
+    """
+    all_students = firebase.get_all_students()
+    best_distance = float("inf")
+    best_student = None
+
+    for student in all_students:
+        stored_embs = FirebaseService.get_all_embeddings(student)
+        for arr in stored_embs:
+            if arr.shape != embedding.shape:
+                logger.debug(
+                    f"Shape mismatch for {student.get('student_id')}: "
+                    f"{arr.shape} vs {embedding.shape}"
+                )
+                continue
+            dist = float(cosine(embedding, arr))
+            if dist < best_distance:
+                best_distance = dist
+                best_student = student
+
+    confidence = float(1.0 - min(best_distance, 1.0)) if best_student else 0.0
+    return best_student, confidence, best_distance
+
+
+# ── Step 1: Detect face only (NO database write) ──────────────────────────────
+
+@router.post(
+    "/detect-face-only",
+    status_code=status.HTTP_200_OK,
+    summary="Detect and identify face — does NOT write to database",
+)
+async def detect_face_only(
+    file: UploadFile = File(..., description="JPEG or PNG image containing a face"),
+):
+    """
+    Step 1 of the two-step attendance flow.
+
+    Accepts a **multipart/form-data** image (field ``file``), extracts the face
+    embedding, and matches it against registered students.
+
+    **No attendance record is written.** The caller receives identification
+    data and must call ``POST /confirm-attendance`` to persist the record.
+
+    Returns:
+        {
+          "matched": true/false,
+          "message": "...",
+          "student_name": "Alice Smith",   # if matched
+          "student_id": "STU001",          # if matched
+          "confidence": 0.97               # if matched
+        }
+    """
+    embedding, err = await _extract_embedding_from_upload(file)
+    if err is not None:
+        return err
+
     firebase = get_firebase_service()
     if not firebase:
         raise HTTPException(status_code=503, detail="Firebase service not initialised")
 
     try:
-        THRESHOLD = 0.55  # lower = stricter
-
-        all_students = firebase.get_all_students()
-        best_distance = float("inf")
-        best_student = None
-
-        for student in all_students:
-            # Use the canonical helper — handles all three storage layouts
-            stored_embs = FirebaseService.get_all_embeddings(student)
-            for arr in stored_embs:
-                if arr.shape != embedding.shape:
-                    logger.debug(
-                        f"Shape mismatch for {student.get('student_id')}: "
-                        f"{arr.shape} vs {embedding.shape}"
-                    )
-                    continue
-                dist = float(cosine(embedding, arr))
-                if dist < best_distance:
-                    best_distance = dist
-                    best_student = student
+        THRESHOLD = 0.55
+        best_student, confidence, best_distance = _match_embedding(
+            embedding, firebase, THRESHOLD
+        )
 
         if best_student is None or best_distance > THRESHOLD:
             return JSONResponse(
@@ -197,12 +205,26 @@ async def detect_face_and_mark(
                 }
             )
 
-        confidence = float(1.0 - best_distance)
         student_id = best_student.get("student_id", "")
         student_name = best_student.get("name", "Unknown")
 
+        logger.info(
+            f"Face identified (detection only, NOT recorded): "
+            f"{student_id} ({student_name}) conf={confidence:.2f}"
+        )
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "matched": True,
+                "message": f"Face identified: {student_name}",
+                "student_name": student_name,
+                "student_id": student_id,
+                "confidence": round(confidence, 4),
+            }
+        )
+
     except ImportError:
-        logger.warning("scipy not installed — cannot compare embeddings")
         return JSONResponse(
             status_code=200,
             content={"matched": False, "message": "Server missing scipy library for face matching."}
@@ -211,8 +233,138 @@ async def detect_face_and_mark(
         logger.error(f"Matching error: {e}")
         raise HTTPException(status_code=500, detail=f"Face matching failed: {str(e)}")
 
-    # 5. Mark attendance
+
+# ── Step 2: Confirm attendance (writes to database) ───────────────────────────
+
+@router.post(
+    "/confirm-attendance",
+    status_code=status.HTTP_200_OK,
+    summary="Confirm and persist an attendance record after user approval",
+)
+async def confirm_attendance(
+    student_id: str = Body(..., embed=True),
+    confidence: float = Body(0.0, embed=True),
+):
+    """
+    Step 2 of the two-step attendance flow.
+
+    Called **only after the user has confirmed** the detected identity in the
+    frontend UI. Writes the attendance record to Firestore / Realtime DB.
+
+    Body (JSON):
+        {
+          "student_id": "STU001",
+          "confidence": 0.97
+        }
+
+    Returns:
+        {
+          "success": true,
+          "record_id": "...",
+          "student_id": "STU001",
+          "student_name": "Alice Smith",
+          "timestamp": "2026-04-27T10:00:00"
+        }
+    """
+    firebase = get_firebase_service()
+    if not firebase:
+        raise HTTPException(status_code=503, detail="Firebase service not initialised")
+
+    student = firebase.get_student(student_id)
+    if not student:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Student {student_id} not found in the system."
+        )
+
     try:
+        timestamp = datetime.now()
+        result = firebase.mark_attendance(
+            student_id=student_id,
+            timestamp=timestamp,
+            confidence=confidence,
+            track_id=None,
+            camera_id="web_confirmed",
+            metadata={
+                "method": "face_recognition_confirmed",
+                "confirmed_by_user": True,
+            }
+        )
+
+        student_name = student.get("name", "Unknown")
+        logger.info(
+            f"Attendance confirmed and recorded: {student_id} ({student_name}) "
+            f"conf={confidence:.2f} record={result.get('record_id', '')}"
+        )
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "record_id": result.get("record_id", ""),
+                "student_id": student_id,
+                "student_name": student_name,
+                "confidence": round(confidence, 4),
+                "timestamp": timestamp.isoformat(),
+                "message": f"Attendance marked successfully for {student_name}",
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to save confirmed attendance: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Attendance recording failed: {str(e)}"
+        )
+
+
+# ── Legacy: Detect + mark in one step (kept for backward compat) ──────────────
+
+@router.post(
+    "/detect-face",
+    status_code=status.HTTP_200_OK,
+    summary="[Legacy] Detect face and mark attendance in a single step",
+)
+async def detect_face_and_mark(
+    file: UploadFile = File(..., description="JPEG or PNG image containing a face"),
+):
+    """
+    Legacy single-step endpoint. Prefer the two-step flow:
+      POST /detect-face-only  →  user confirms  →  POST /confirm-attendance
+
+    Kept for backward compatibility with older integrations.
+    """
+    embedding, err = await _extract_embedding_from_upload(file)
+    if err is not None:
+        return err
+
+    firebase = get_firebase_service()
+    if not firebase:
+        raise HTTPException(status_code=503, detail="Firebase service not initialised")
+
+    try:
+        THRESHOLD = 0.55
+        best_student, confidence, best_distance = _match_embedding(
+            embedding, firebase, THRESHOLD
+        )
+
+        if best_student is None or best_distance > THRESHOLD:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "matched": False,
+                    "message": (
+                        "Face not recognised. "
+                        f"Best similarity: {max(0.0, 1 - best_distance):.2f} "
+                        f"(threshold: {1 - THRESHOLD:.2f}). "
+                        "Ensure your face is clearly visible and well-lit, "
+                        "or ask admin to register your face profile."
+                    ),
+                }
+            )
+
+        student_id = best_student.get("student_id", "")
+        student_name = best_student.get("name", "Unknown")
+
         timestamp = datetime.now()
         result = firebase.mark_attendance(
             student_id=student_id,
@@ -226,7 +378,10 @@ async def detect_face_and_mark(
                 "distance": best_distance,
             }
         )
-        logger.info(f"Attendance marked via upload: {student_id} ({student_name}) conf={confidence:.2f}")
+        logger.info(
+            f"Attendance marked via legacy upload: {student_id} ({student_name}) "
+            f"conf={confidence:.2f}"
+        )
 
         return JSONResponse(
             status_code=200,
@@ -240,9 +395,14 @@ async def detect_face_and_mark(
                 "timestamp": timestamp.isoformat(),
             }
         )
+    except ImportError:
+        return JSONResponse(
+            status_code=200,
+            content={"matched": False, "message": "Server missing scipy library for face matching."}
+        )
     except Exception as e:
-        logger.error(f"Failed to save attendance: {e}")
-        raise HTTPException(status_code=500, detail=f"Attendance recording failed: {str(e)}")
+        logger.error(f"Matching error: {e}")
+        raise HTTPException(status_code=500, detail=f"Face matching failed: {str(e)}")
 
 
 # ── Student Management ────────────────────────────────────────────────────────
@@ -382,81 +542,6 @@ async def mark_attendance(request: MarkAttendanceRequest) -> MarkAttendanceRespo
         raise HTTPException(status_code=500, detail=f"Failed to mark attendance: {str(e)}")
 
 
-@router.post("/mark", response_model=MarkAttendanceResponse, status_code=status.HTTP_201_CREATED)
-async def mark_attendance_with_image(
-    student_id: str = Body(...),
-    image_base64: str = Body(...)
-) -> MarkAttendanceResponse:
-    try:
-        firebase = get_firebase_service()
-        if not firebase:
-            raise HTTPException(status_code=503, detail="Firebase service not initialized")
-
-        student = firebase.get_student(student_id)
-        if not student:
-            raise HTTPException(status_code=404, detail=f"Student {student_id} not found")
-
-        import numpy as np
-        from PIL import Image
-
-        try:
-            image_data = base64.b64decode(image_base64)
-            image = Image.open(io.BytesIO(image_data)).convert("RGB")
-            image_array = np.array(image)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid image format: {str(e)}")
-
-        try:
-
-            extractor = ModelManager.get_facenet_extractor()
-            embedding = extractor.extract_embedding(image_array)
-            if embedding is None:
-                raise HTTPException(status_code=400, detail="No face detected in image")
-
-            student_embeddings = FirebaseService.get_all_embeddings(student)
-            if not student_embeddings:
-                raise HTTPException(status_code=404, detail="Student has no registered face embeddings")
-
-            THRESHOLD = 0.6
-            best_match = None
-            for arr in student_embeddings:
-                dist = float(cosine(embedding, arr))
-                if best_match is None or dist < best_match:
-                    best_match = dist
-
-            confidence = float(1.0 - min(best_match, 1.0)) if best_match is not None else 0.0
-            if best_match > THRESHOLD:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Face does not match student. Confidence: {confidence:.2f}"
-                )
-        except (ImportError, HTTPException):
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Face processing failed: {str(e)}")
-
-        timestamp = datetime.now()
-        result = firebase.mark_attendance(
-            student_id=student_id,
-            timestamp=timestamp,
-            confidence=confidence,
-            track_id=None,
-            camera_id="web_json",
-            metadata={"method": "face_recognition_json"}
-        )
-        return MarkAttendanceResponse(
-            success=True,
-            record_id=result['record_id'],
-            student_id=student_id,
-            timestamp=timestamp.isoformat(),
-            message=f"Attendance marked successfully (confidence: {confidence:.2f})"
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to mark attendance: {str(e)}")
-
-
 @router.post("/mark-mobile", response_model=MarkAttendanceResponse, status_code=status.HTTP_201_CREATED)
 async def mark_attendance_mobile(
     student_id: str = Query(...),
@@ -472,9 +557,7 @@ async def mark_attendance_mobile(
         if not student:
             raise HTTPException(status_code=404, detail=f"Student {student_id} not found")
 
-        import numpy as np
         from PIL import Image
-
         try:
             image_data = base64.b64decode(image_base64)
             image = Image.open(io.BytesIO(image_data)).convert("RGB")
