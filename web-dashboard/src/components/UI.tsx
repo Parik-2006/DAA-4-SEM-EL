@@ -1,5 +1,6 @@
 import React from 'react';
 
+/* ── Card ─────────────────────────────────────────────────────────────────── */
 interface CardProps {
   children: React.ReactNode;
   className?: string;
@@ -9,34 +10,71 @@ interface CardProps {
 export const Card: React.FC<CardProps> = ({ children, className = '', onClick }) => (
   <div
     onClick={onClick}
-    className={`
-      bg-white rounded-xl shadow-sm border border-gray-100 
-      p-6 transition-all duration-200 hover:shadow-md hover:border-gray-200
-      ${onClick ? 'cursor-pointer' : ''}
-      ${className}
-    `}
+    className={`glass rounded-2xl p-6 animate-fade-in-up ${onClick ? 'glass-lift cursor-pointer' : ''} ${className}`}
+    style={{ position: 'relative', overflow: 'hidden' }}
   >
-    {children}
+    {/* Subtle grain texture overlay */}
+    <div
+      aria-hidden
+      style={{
+        position: 'absolute',
+        inset: 0,
+        backgroundImage:
+          "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.018'/%3E%3C/svg%3E\")",
+        pointerEvents: 'none',
+        borderRadius: 'inherit',
+        zIndex: 0,
+      }}
+    />
+    <div style={{ position: 'relative', zIndex: 1 }}>{children}</div>
   </div>
 );
 
+/* ── StatCard ─────────────────────────────────────────────────────────────── */
 interface StatCardProps {
   label: string;
   value: string | number;
   color: 'primary' | 'success' | 'warning' | 'danger' | 'info';
   icon?: React.ReactNode;
-  trend?: {
-    value: number;
-    isPositive: boolean;
-  };
+  trend?: { value: number; isPositive: boolean };
 }
 
-const colorMap = {
-  primary: 'bg-indigo-50 text-indigo-600 border-indigo-200',
-  success: 'bg-green-50 text-green-600 border-green-200',
-  warning: 'bg-yellow-50 text-yellow-600 border-yellow-200',
-  danger: 'bg-red-50 text-red-600 border-red-200',
-  info: 'bg-blue-50 text-blue-600 border-blue-200',
+const statColorMap = {
+  primary: {
+    accent: 'var(--gold)',
+    accentBg: 'rgba(155,122,58,0.10)',
+    bar: 'linear-gradient(90deg, var(--gold-light), var(--gold))',
+    text: 'var(--gold)',
+    border: 'rgba(155,122,58,0.18)',
+  },
+  success: {
+    accent: 'var(--sage)',
+    accentBg: 'rgba(107,138,113,0.10)',
+    bar: 'linear-gradient(90deg, #A8C4AD, var(--sage))',
+    text: 'var(--sage)',
+    border: 'rgba(107,138,113,0.18)',
+  },
+  warning: {
+    accent: '#B08030',
+    accentBg: 'rgba(176,128,48,0.10)',
+    bar: 'linear-gradient(90deg, #D4A84A, #B08030)',
+    text: '#B08030',
+    border: 'rgba(176,128,48,0.18)',
+  },
+  danger: {
+    accent: 'var(--terra)',
+    accentBg: 'rgba(193,123,91,0.10)',
+    bar: 'linear-gradient(90deg, #D4987A, var(--terra))',
+    text: 'var(--terra)',
+    border: 'rgba(193,123,91,0.18)',
+  },
+  info: {
+    accent: '#6A82A8',
+    accentBg: 'rgba(106,130,168,0.10)',
+    bar: 'linear-gradient(90deg, #8BA4C4, #6A82A8)',
+    text: '#6A82A8',
+    border: 'rgba(106,130,168,0.18)',
+  },
 };
 
 export const StatCard: React.FC<StatCardProps> = ({
@@ -45,54 +83,111 @@ export const StatCard: React.FC<StatCardProps> = ({
   color,
   icon,
   trend,
-}) => (
-  <Card className={`border ${colorMap[color]}`}>
-    <div className="flex justify-between items-start">
-      <div className="flex-1">
-        <p className="text-sm font-medium text-gray-600 mb-2">{label}</p>
-        <div className="flex items-baseline gap-2">
-          <p className={`text-3xl font-bold ${colorMap[color].split(' ')[1]}`}>
-            {value}
-          </p>
-          {trend && (
-            <span
-              className={`text-xs font-semibold ${
-                trend.isPositive ? 'text-green-600' : 'text-red-600'
-              }`}
+}) => {
+  const c = statColorMap[color];
+  return (
+    <div
+      className="glass rounded-2xl glass-lift animate-fade-in-up"
+      style={{
+        position: 'relative',
+        overflow: 'hidden',
+        border: `1px solid ${c.border}`,
+      }}
+    >
+      {/* Top accent bar */}
+      <div style={{ height: '3px', background: c.bar, borderRadius: '8px 8px 0 0' }} />
+
+      <div className="px-5 py-4">
+        <div className="flex justify-between items-start">
+          <div className="flex-1 min-w-0">
+            <p
+              className="text-xs font-medium tracking-widest uppercase mb-3"
+              style={{ color: 'var(--whisper)' }}
             >
-              {trend.isPositive ? '↑' : '↓'} {Math.abs(trend.value)}%
-            </span>
+              {label}
+            </p>
+            <div className="flex items-baseline gap-2">
+              <p
+                className="text-3xl font-semibold tabular-nums leading-none"
+                style={{ color: c.text, fontFamily: 'Fraunces, serif' }}
+              >
+                {value}
+              </p>
+              {trend && (
+                <span
+                  className="text-xs font-semibold px-1.5 py-0.5 rounded-full"
+                  style={{
+                    color: trend.isPositive ? 'var(--sage)' : 'var(--terra)',
+                    background: trend.isPositive ? 'rgba(107,138,113,0.12)' : 'rgba(193,123,91,0.12)',
+                  }}
+                >
+                  {trend.isPositive ? '↑' : '↓'} {Math.abs(trend.value)}%
+                </span>
+              )}
+            </div>
+          </div>
+
+          {icon && (
+            <div
+              className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ml-3"
+              style={{ background: c.accentBg, color: c.accent }}
+            >
+              {icon}
+            </div>
           )}
         </div>
       </div>
-      {icon && (
-        <div className={`p-3 rounded-lg ${colorMap[color].split(' ')[0]}`}>
-          {icon}
-        </div>
-      )}
     </div>
-  </Card>
-);
+  );
+};
 
-interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+/* ── Button ───────────────────────────────────────────────────────────────── */
+interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'secondary' | 'danger' | 'ghost';
   size?: 'sm' | 'md' | 'lg';
   isLoading?: boolean;
   children: React.ReactNode;
 }
 
-const variantMap = {
-  primary: 'bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-indigo-400',
-  secondary: 'bg-gray-100 text-gray-900 hover:bg-gray-200 disabled:bg-gray-50',
-  danger: 'bg-red-600 text-white hover:bg-red-700 disabled:bg-red-400',
-  ghost: 'text-gray-700 hover:bg-gray-100 disabled:text-gray-400',
+const buttonVariants = {
+  primary: {
+    background: 'linear-gradient(135deg, var(--gold) 0%, var(--gold-light) 100%)',
+    color: '#fff',
+    border: '1px solid rgba(155,122,58,0.5)',
+    boxShadow: '0 2px 12px rgba(155,122,58,0.28), inset 0 1px 0 rgba(255,255,255,0.18)',
+    hoverShadow: '0 6px 20px rgba(155,122,58,0.38)',
+    disabledBg: 'rgba(155,122,58,0.40)',
+  },
+  secondary: {
+    background: 'var(--glass-bg)',
+    color: 'var(--ink)',
+    border: '1px solid var(--glass-border)',
+    boxShadow: 'var(--glass-shadow)',
+    hoverShadow: 'var(--glass-shadow-hover)',
+    disabledBg: 'rgba(232,220,200,0.50)',
+  },
+  danger: {
+    background: 'linear-gradient(135deg, var(--terra) 0%, #D4987A 100%)',
+    color: '#fff',
+    border: '1px solid rgba(193,123,91,0.5)',
+    boxShadow: '0 2px 12px rgba(193,123,91,0.25)',
+    hoverShadow: '0 6px 20px rgba(193,123,91,0.35)',
+    disabledBg: 'rgba(193,123,91,0.40)',
+  },
+  ghost: {
+    background: 'transparent',
+    color: 'var(--muted)',
+    border: '1px solid transparent',
+    boxShadow: 'none',
+    hoverShadow: 'none',
+    disabledBg: 'transparent',
+  },
 };
 
-const sizeMap = {
-  sm: 'px-3 py-1.5 text-sm',
-  md: 'px-4 py-2 text-base',
-  lg: 'px-6 py-3 text-lg',
+const buttonSizes = {
+  sm: { padding: '0.375rem 0.875rem', fontSize: '0.8125rem', borderRadius: '0.625rem', gap: '0.375rem' },
+  md: { padding: '0.5rem 1.125rem', fontSize: '0.875rem', borderRadius: '0.75rem', gap: '0.5rem' },
+  lg: { padding: '0.75rem 1.5rem', fontSize: '0.9375rem', borderRadius: '0.875rem', gap: '0.625rem' },
 };
 
 export const Button: React.FC<ButtonProps> = ({
@@ -101,72 +196,82 @@ export const Button: React.FC<ButtonProps> = ({
   isLoading = false,
   disabled,
   children,
+  style,
   ...props
-}) => (
-  <button
-    disabled={disabled || isLoading}
-    className={`
-      font-semibold rounded-lg transition-all duration-200
-      flex items-center justify-center gap-2
-      ${variantMap[variant]}
-      ${sizeMap[size]}
-      disabled:cursor-not-allowed
-      ${isLoading ? 'opacity-70' : ''}
-    `}
-    {...props}
-  >
-    {isLoading && (
-      <svg
-        className="animate-spin h-4 w-4"
-        xmlns="http://www.w3.org/2000/svg"
-        fill="none"
-        viewBox="0 0 24 24"
-      >
-        <circle
-          className="opacity-25"
-          cx="12"
-          cy="12"
-          r="10"
-          stroke="currentColor"
-          strokeWidth="4"
-        />
-        <path
-          className="opacity-75"
-          fill="currentColor"
-          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-        />
-      </svg>
-    )}
-    {children}
-  </button>
-);
+}) => {
+  const v = buttonVariants[variant];
+  const s = buttonSizes[size];
+  const isDisabled = disabled || isLoading;
 
+  const [hovered, setHovered] = React.useState(false);
+
+  return (
+    <button
+      disabled={isDisabled}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      className="btn-press inline-flex items-center justify-center font-medium tracking-wide select-none disabled:cursor-not-allowed"
+      style={{
+        background: isDisabled ? v.disabledBg : v.background,
+        color: v.color,
+        border: v.border,
+        boxShadow: hovered && !isDisabled ? v.hoverShadow : v.boxShadow,
+        padding: s.padding,
+        fontSize: s.fontSize,
+        borderRadius: s.borderRadius,
+        gap: s.gap,
+        opacity: isDisabled ? 0.65 : 1,
+        transition: 'box-shadow 0.2s ease, transform 0.12s ease, opacity 0.15s ease',
+        ...style,
+      }}
+      {...props}
+    >
+      {isLoading && (
+        <svg
+          className="animate-spin"
+          style={{ width: '14px', height: '14px', flexShrink: 0 }}
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+        >
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+      )}
+      {children}
+    </button>
+  );
+};
+
+/* ── Badge ────────────────────────────────────────────────────────────────── */
 interface BadgeProps {
   children: React.ReactNode;
   variant?: 'primary' | 'success' | 'warning' | 'danger' | 'info' | 'gray';
   size?: 'sm' | 'md';
 }
 
-const badgeColorMap = {
-  primary: 'bg-indigo-100 text-indigo-700',
-  success: 'bg-green-100 text-green-700',
-  warning: 'bg-yellow-100 text-yellow-700',
-  danger: 'bg-red-100 text-red-700',
-  info: 'bg-blue-100 text-blue-700',
-  gray: 'bg-gray-100 text-gray-700',
+const badgeStyles = {
+  primary: { background: 'rgba(155,122,58,0.12)', color: 'var(--gold)', border: '1px solid rgba(155,122,58,0.22)' },
+  success: { background: 'rgba(107,138,113,0.12)', color: 'var(--sage)', border: '1px solid rgba(107,138,113,0.22)' },
+  warning: { background: 'rgba(176,128,48,0.12)', color: '#9B7030', border: '1px solid rgba(176,128,48,0.22)' },
+  danger: { background: 'rgba(193,123,91,0.12)', color: 'var(--terra)', border: '1px solid rgba(193,123,91,0.22)' },
+  info: { background: 'rgba(106,130,168,0.12)', color: '#5A72A0', border: '1px solid rgba(106,130,168,0.22)' },
+  gray: { background: 'rgba(122,101,69,0.10)', color: 'var(--muted)', border: '1px solid rgba(122,101,69,0.18)' },
 };
 
-export const Badge: React.FC<BadgeProps> = ({
-  children,
-  variant = 'primary',
-  size = 'md',
-}) => (
-  <span
-    className={`
-      font-semibold rounded-full ${badgeColorMap[variant]}
-      ${size === 'sm' ? 'px-2 py-0.5 text-xs' : 'px-3 py-1 text-sm'}
-    `}
-  >
-    {children}
-  </span>
-);
+export const Badge: React.FC<BadgeProps> = ({ children, variant = 'primary', size = 'md' }) => {
+  const s = badgeStyles[variant];
+  return (
+    <span
+      className="inline-flex items-center font-semibold rounded-full"
+      style={{
+        ...s,
+        padding: size === 'sm' ? '0.15rem 0.55rem' : '0.25rem 0.75rem',
+        fontSize: size === 'sm' ? '0.7rem' : '0.75rem',
+        letterSpacing: '0.03em',
+      }}
+    >
+      {children}
+    </span>
+  );
+};

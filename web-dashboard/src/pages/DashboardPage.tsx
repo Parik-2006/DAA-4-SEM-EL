@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { RefreshCw, Users, TrendingUp } from 'lucide-react';
+import { RefreshCw, Users, TrendingUp, Activity } from 'lucide-react';
 import { useDashboardStore } from '@/store';
 import { attendanceAPI } from '@/services/api';
 import {
@@ -13,7 +13,6 @@ import {
 
 export const DashboardPage: React.FC = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [courseFilter, setCourseFilter] = useState<string>('');
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const {
@@ -35,7 +34,6 @@ export const DashboardPage: React.FC = () => {
     setSelectedCourse,
   } = useDashboardStore();
 
-  // Fetch initial data
   useEffect(() => {
     const fetchInitialData = async () => {
       try {
@@ -43,59 +41,38 @@ export const DashboardPage: React.FC = () => {
           attendanceAPI.getCourses(),
           attendanceAPI.healthCheck(),
         ]);
-
         setCourses(coursesData);
         setSystemRunning(healthData);
         await fetchAttendanceData();
         setIsPolling(true);
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : 'Failed to fetch initial data'
-        );
+        setError(err instanceof Error ? err.message : 'Failed to fetch initial data');
         setSystemRunning(false);
       }
     };
-
     fetchInitialData();
   }, []);
 
-  // Polling mechanism
   useEffect(() => {
     if (!isPolling) return;
-
     const pollInterval = setInterval(fetchAttendanceData, 5000);
     pollingIntervalRef.current = pollInterval;
-
-    return () => {
-      if (pollingIntervalRef.current) {
-        clearInterval(pollingIntervalRef.current);
-      }
-    };
+    return () => { if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current); };
   }, [isPolling, selectedCourse]);
 
   const fetchAttendanceData = async () => {
     try {
-      const [records, stats] = await Promise.all([
+      const [records, s] = await Promise.all([
         attendanceAPI.getLiveAttendance(selectedCourse || undefined),
         attendanceAPI.getAttendanceStats(selectedCourse || undefined),
       ]);
-
       setLiveRecords(records);
-      setStats(stats);
+      setStats(s);
       setLastSyncTime(new Date());
       setError(null);
-
-      // Check system health
-      try {
-        const health = await attendanceAPI.healthCheck();
-        setSystemRunning(health);
-      } catch {
-        setSystemRunning(false);
-      }
+      try { const h = await attendanceAPI.healthCheck(); setSystemRunning(h); } catch { setSystemRunning(false); }
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : 'Failed to fetch attendance data'
-      );
+      setError(err instanceof Error ? err.message : 'Failed to fetch attendance data');
       setSystemRunning(false);
     }
   };
@@ -108,122 +85,166 @@ export const DashboardPage: React.FC = () => {
 
   const handleCourseFilter = (courseId: string) => {
     setSelectedCourse(courseId === 'all' ? null : courseId);
-    setCourseFilter(courseId);
   };
 
   return (
     <Layout systemRunning={systemRunning} lastSyncTime={lastSyncTime}>
-      <div className="space-y-8">
+      <div className="space-y-7">
+
         {/* System Alert */}
         {(error || !systemRunning) && (
           <SystemAlert systemRunning={systemRunning} error={error} />
         )}
 
-        {/* Header with Controls */}
-        <div className="flex items-center justify-between">
+        {/* ── Page Header ───────────────────────────────────────────────────── */}
+        <div className="flex items-end justify-between animate-fade-in-up">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
-            <p className="text-gray-600 mt-1">
-              Real-time attendance monitoring and statistics
+            <p
+              className="text-xs font-semibold tracking-widest uppercase mb-1"
+              style={{ color: 'var(--whisper)' }}
+            >
+              Overview
             </p>
+            <h1
+              className="text-3xl font-medium leading-none"
+              style={{ fontFamily: 'Fraunces, serif', color: 'var(--ink)' }}
+            >
+              Attendance Command
+            </h1>
           </div>
           <Button
             onClick={handleRefresh}
             isLoading={isRefreshing}
-            variant="primary"
+            variant="secondary"
+            size="sm"
           >
-            <RefreshCw size={20} />
-            Refresh Now
+            <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
+            Refresh
           </Button>
         </div>
 
-        {/* Statistics Grid */}
+        {/* ── Stat Cards ────────────────────────────────────────────────────── */}
         {stats && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatCard
-              label="Present"
-              value={stats.total_present}
-              color="success"
-              icon={<Users size={24} />}
-            />
-            <StatCard
-              label="Late"
-              value={stats.total_late}
-              color="warning"
-              icon={<TrendingUp size={24} />}
-            />
-            <StatCard
-              label="Absent"
-              value={stats.total_absent}
-              color="danger"
-              icon={<Users size={24} />}
-            />
-            <StatCard
-              label="Excused"
-              value={stats.total_excused}
-              color="info"
-              icon={<Users size={24} />}
-            />
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 stagger-children">
+            <StatCard label="Present" value={stats.total_present} color="success" icon={<Users size={18} />} />
+            <StatCard label="Late" value={stats.total_late} color="warning" icon={<TrendingUp size={18} />} />
+            <StatCard label="Absent" value={stats.total_absent} color="danger" icon={<Users size={18} />} />
+            <StatCard label="Excused" value={stats.total_excused} color="info" icon={<Activity size={18} />} />
           </div>
         )}
 
-        {/* Filters */}
-        <Card>
-          <div className="flex items-center gap-3 pb-6 border-b border-gray-100">
-            <span className="text-sm font-semibold text-gray-700">
-              Filter by Course:
+        {/* ── Course Filter ─────────────────────────────────────────────────── */}
+        <Card className="!p-4 animate-fade-in-up">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span
+              className="text-xs font-semibold tracking-widest uppercase flex-shrink-0"
+              style={{ color: 'var(--whisper)' }}
+            >
+              Filter
             </span>
+
             <div className="flex gap-2 flex-wrap">
-              <button
-                onClick={() => handleCourseFilter('all')}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                  !selectedCourse
-                    ? 'bg-indigo-600 text-white'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                All Courses
-              </button>
-              {courses.map((course) => (
-                <button
-                  key={course.id}
-                  onClick={() => handleCourseFilter(course.id)}
-                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                    selectedCourse === course.id
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  {course.code} - {course.name}
-                </button>
-              ))}
+              {[{ id: 'all', label: 'All Courses' }, ...courses.map(c => ({ id: c.id, label: `${c.code} — ${c.name}` }))].map(({ id, label }) => {
+                const active = id === 'all' ? !selectedCourse : selectedCourse === id;
+                return (
+                  <button
+                    key={id}
+                    onClick={() => handleCourseFilter(id)}
+                    className="btn-press text-xs font-medium px-3 py-1.5 rounded-full transition-all duration-200"
+                    style={{
+                      background: active
+                        ? 'linear-gradient(135deg, var(--gold) 0%, var(--gold-light) 100%)'
+                        : 'rgba(155,122,58,0.08)',
+                      color: active ? '#fff' : 'var(--muted)',
+                      border: active
+                        ? '1px solid rgba(155,122,58,0.40)'
+                        : '1px solid rgba(155,122,58,0.15)',
+                      boxShadow: active ? '0 2px 10px rgba(155,122,58,0.25)' : 'none',
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
             </div>
           </div>
         </Card>
 
-        {/* Live Attendance List */}
-        <Card>
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h2 className="text-xl font-bold text-gray-900">
-                Live Check-ins
-              </h2>
-              <p className="text-sm text-gray-500">
-                {liveRecords.length} students marked attendance
-              </p>
+        {/* ── Live Check-ins ────────────────────────────────────────────────── */}
+        <Card className="animate-fade-in-up">
+          {/* Card header */}
+          <div className="flex items-center justify-between mb-5">
+            <div className="flex items-center gap-3">
+              <div
+                style={{
+                  width: '36px',
+                  height: '36px',
+                  borderRadius: '10px',
+                  background: 'rgba(107,138,113,0.12)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Activity size={17} style={{ color: 'var(--sage)' }} />
+              </div>
+              <div>
+                <h2
+                  className="text-base font-semibold leading-none"
+                  style={{ fontFamily: 'Fraunces, serif', color: 'var(--ink)' }}
+                >
+                  Live Check-ins
+                </h2>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--whisper)' }}>
+                  {liveRecords.length} {liveRecords.length === 1 ? 'student' : 'students'} marked today
+                </p>
+              </div>
             </div>
+
+            {/* Live indicator */}
             <div
-              className={`w-3 h-3 rounded-full animate-pulse ${
-                systemRunning ? 'bg-green-500' : 'bg-red-500'
-              }`}
-            />
+              className="flex items-center gap-2 px-3 py-1.5 rounded-full"
+              style={{
+                background: systemRunning ? 'rgba(107,138,113,0.10)' : 'rgba(193,123,91,0.10)',
+                border: `1px solid ${systemRunning ? 'rgba(107,138,113,0.22)' : 'rgba(193,123,91,0.22)'}`,
+              }}
+            >
+              <span
+                className="w-1.5 h-1.5 rounded-full"
+                style={{
+                  background: systemRunning ? 'var(--sage)' : 'var(--terra)',
+                  animation: systemRunning ? 'pulse-gold 2s ease infinite' : 'none',
+                }}
+              />
+              <span className="text-[11px] font-medium" style={{ color: systemRunning ? 'var(--sage)' : 'var(--terra)' }}>
+                {systemRunning ? 'Streaming' : 'Offline'}
+              </span>
+            </div>
           </div>
 
-          <div className="space-y-3 max-h-96 overflow-y-auto">
+          <div className="tac-divider mb-4" />
+
+          {/* Records */}
+          <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1 stagger-children">
             {liveRecords.length === 0 ? (
-              <div className="text-center py-12">
-                <Users className="mx-auto text-gray-300 mb-2" size={40} />
-                <p className="text-gray-500">No attendance records yet</p>
+              <div style={{ padding: '3rem 0', textAlign: 'center' }}>
+                <div
+                  style={{
+                    width: '48px', height: '48px', borderRadius: '14px',
+                    background: 'rgba(155,122,58,0.08)',
+                    border: '1px solid rgba(155,122,58,0.15)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    margin: '0 auto 12px',
+                  }}
+                >
+                  <Users size={20} style={{ color: 'var(--cream-400)' }} />
+                </div>
+                <p style={{ fontSize: '0.8rem', color: 'var(--whisper)', fontWeight: 500 }}>
+                  Awaiting check-ins…
+                </p>
+                <p style={{ fontSize: '0.72rem', color: 'var(--cream-400)', marginTop: '4px' }}>
+                  Records will appear here in real time
+                </p>
               </div>
             ) : (
               liveRecords.map((record, idx) => (
@@ -233,26 +254,38 @@ export const DashboardPage: React.FC = () => {
           </div>
         </Card>
 
-        {/* Additional Info */}
-        <Card className="bg-gradient-to-br from-indigo-50 to-purple-50 border-indigo-100">
+        {/* ── Info Banner ───────────────────────────────────────────────────── */}
+        <div
+          className="rounded-2xl px-6 py-5 animate-fade-in-up"
+          style={{
+            background: 'linear-gradient(135deg, rgba(155,122,58,0.06) 0%, rgba(107,138,113,0.06) 100%)',
+            border: '1px solid rgba(155,122,58,0.14)',
+          }}
+        >
           <div className="flex items-start gap-4">
-            <div className="flex-1">
-              <h3 className="font-bold text-gray-900 mb-2">
+            <div
+              style={{
+                width: '32px', height: '32px', borderRadius: '8px', flexShrink: 0,
+                background: 'rgba(155,122,58,0.12)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                marginTop: '2px',
+              }}
+            >
+              <Activity size={15} style={{ color: 'var(--gold)' }} />
+            </div>
+            <div>
+              <p
+                className="text-sm font-semibold mb-1"
+                style={{ color: 'var(--ink)', fontFamily: 'Fraunces, serif' }}
+              >
                 Real-time Monitoring Active
-              </h3>
-              <p className="text-sm text-gray-700">
-                The dashboard automatically refreshes every 5 seconds to show
-                live attendance data. This connection will continue even while
-                the camera system is actively scanning faces.
               </p>
-              <ul className="mt-3 text-sm text-gray-700 space-y-1">
-                <li>✓ Auto-refresh every 5 seconds</li>
-                <li>✓ Face confidence scores displayed</li>
-                <li>✓ Course-based filtering available</li>
-              </ul>
+              <p className="text-xs leading-relaxed" style={{ color: 'var(--muted)' }}>
+                Dashboard refreshes automatically every 5 seconds. Face confidence scores and course-based filtering are available above.
+              </p>
             </div>
           </div>
-        </Card>
+        </div>
       </div>
     </Layout>
   );
