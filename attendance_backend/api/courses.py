@@ -27,7 +27,10 @@ def _safe_get(reference) -> Any:
     try:
         return reference.get()
     except NotFoundError as exc:
-        logger.warning("Firebase RTDB path not found: %s", exc)
+        logger.debug("Firebase RTDB path not found (expected if RTDB not configured): %s", exc)
+        return None
+    except Exception as exc:
+        logger.debug("Error reading Firebase RTDB: %s", exc)
         return None
 
 

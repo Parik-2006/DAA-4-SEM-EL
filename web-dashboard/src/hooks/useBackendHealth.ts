@@ -85,6 +85,7 @@ export function useSafeApiCall<T,>(
       } catch (err) {
         if (isMounted) {
           setError(err instanceof Error ? err : new Error(String(err)));
+          console.error('[useSafeApiCall] Error:', err);
         }
       } finally {
         if (isMounted) {
@@ -101,4 +102,53 @@ export function useSafeApiCall<T,>(
   }, dependencies);
 
   return { data, loading, error };
+}
+
+/**
+ * Hook for continuous health monitoring
+ * Periodically checks backend health and provides status updates
+ */
+export function useBackendHealthMonitor(
+  interval: number = 5000, // Check every 5 seconds
+  onStatusChange?: (isHealthy: boolean) => void
+) {
+  const [isHealthy, setIsHealthy] = useState(true);
+  const [lastCheck, setLastCheck] = useState<Date>(new Date());
+
+  useEffect(() => {
+    let timeoutId: NodeJS.Timeout;
+
+    const performHealthCheck = async () => {
+      try {
+        const result = await attendanceAPI.healthCheck();
+        const newHealthStatus = result;
+
+        if (newHealthStatus !== isHealthy) {
+          console.log(
+            `[useBackendHealthMonitor] Status changed: ${isHealthy ? 'healthy' : 'unhealthy'} -> ${newHealthStatus ? 'healthy' : 'unhealthy'}`
+          );
+          setIsHealthy(newHealthStatus);
+          onStatusChange?.(newHealthStatus);
+        }
+
+        setLastCheck(new Date());
+      } catch (err) {
+        if (isHealthy) {
+          console.warn('[useBackendHealthMonitor] Backend became unhealthy:', err);
+          setIsHealthy(false);
+          onStatusChange?.(false);
+        }
+      }
+
+      // Schedule next check
+      timeoutId = setTimeout(performHealthCheck, interval);
+    };
+
+    // Perform first check immediately
+    performHealthCheck();
+
+    return () => clearTimeout(timeoutId);
+  }, [interval, isHealthy, onStatusChange]);
+
+  return { isHealthy, lastCheck };
 }

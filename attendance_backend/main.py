@@ -5,6 +5,8 @@ Entry point for the face recognition attendance backend API.
 """
 
 import logging
+import asyncio
+import socket
 from contextlib import asynccontextmanager
 from typing import Dict, Any
 
@@ -33,12 +35,39 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
+# Suppress spurious Windows socket errors (WinError 10054)
+def suppress_windows_socket_errors():
+    """
+    Suppress spurious Windows socket errors that occur during connection cleanup.
+    These are harmless and can be safely ignored.
+    Reference: https://github.com/encode/uvicorn/issues/1014
+    """
+    def exception_handler(loop, context):
+        exception = context.get("exception")
+        
+        # Suppress WinError 10054: An existing connection was forcibly closed by the remote host
+        if isinstance(exception, OSError):
+            if exception.winerror == 10054:  # type: ignore
+                logger.debug(f"Suppressed spurious Windows socket error: {exception}")
+                return
+        
+        # For other exceptions, use default handler
+        loop.default_exception_handler(context)
+    
+    if asyncio.sys.platform == "win32":
+        loop = asyncio.get_event_loop()
+        loop.set_exception_handler(exception_handler)
+
+
 # Lifespan context manager for startup/shutdown
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     Manage application startup and shutdown events.
     """
+    # Suppress Windows socket errors
+    suppress_windows_socket_errors()
+    
     # Startup
     logger.info(f"Starting {SYSTEM_NAME} v{SYSTEM_VERSION}")
     

@@ -14,7 +14,16 @@ const apiClient: AxiosInstance = axios.create({
   headers: {
     'Content-Type': 'application/json',
     Accept: 'application/json',
+    'Connection': 'keep-alive', // Maintain connection persistence
   },
+  validateStatus: (status) => {
+    // Accept all status codes so we can handle them in interceptors
+    return true;
+  },
+  maxRedirects: 5,
+  // Configure connection pooling for better performance
+  httpAgent: typeof window === 'undefined' ? undefined : undefined,
+  httpsAgent: typeof window === 'undefined' ? undefined : undefined,
 });
 
 // Track retry attempts
@@ -30,7 +39,60 @@ apiClient.interceptors.request.use((config) => {
 apiClient.interceptors.response.use(
   (response) => {
     retryAttemptCount = 0;
-    console.log(`[API Response] ${response.status} ${response.config.url}`);
+    
+    // Handle all status codes here since validateStatus returns true for all
+    if (response.status >= 400) {
+      const status = response.status;
+      const message = 
+        response.data?.detail || 
+        response.data?.message || 
+        response.statusText || 
+        'Unknown error';
+
+      console.error(`[API Error] ${status} - ${response.config?.url}: ${message}`);
+
+      // Handle authentication errors
+      if (status === 401) {
+        localStorage.removeItem('auth_token');
+        window.location.href = '/login';
+        return Promise.reject(
+          new axios.AxiosError(
+            message,
+            String(status),
+            response.config,
+            response.request,
+            response
+          )
+        );
+      }
+
+      // Handle client errors (4xx) - don't retry except for specific cases
+      if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
+        console.error(`[API] Client error ${status} - not retrying:`, message);
+        return Promise.reject(
+          new axios.AxiosError(
+            message,
+            String(status),
+            response.config,
+            response.request,
+            response
+          )
+        );
+      }
+
+      // For retryable errors, reject so interceptor can retry
+      return Promise.reject(
+        new axios.AxiosError(
+          message,
+          String(status),
+          response.config,
+          response.request,
+          response
+        )
+      );
+    }
+
+    console.log(`[API Response] ${response.status} ${response.config?.url}`);
     return response;
   },
   (error: AxiosError) => {
@@ -47,12 +109,6 @@ apiClient.interceptors.response.use(
     if (status === 401) {
       localStorage.removeItem('auth_token');
       window.location.href = '/login';
-      return Promise.reject(error);
-    }
-
-    // Handle client errors (4xx) - don't retry except for specific cases
-    if (status && status >= 400 && status < 500 && status !== 408 && status !== 429) {
-      console.error(`[API] Client error ${status} - not retrying:`, message);
       return Promise.reject(error);
     }
 
@@ -515,9 +571,10 @@ class AttendanceAPI {
   async healthCheck(): Promise<boolean> {
     try {
       const response = await apiClient.get('/api/v1/attendance/health');
+      console.log('[healthCheck] Backend is healthy:', response.status === 200);
       return response.status === 200;
     } catch (err) {
-      console.warn('[healthCheck] Backend not ready:', err);
+      console.warn('[healthCheck] Backend not healthy:', err instanceof Error ? err.message : err);
       return false;
     }
   }
@@ -525,18 +582,36 @@ class AttendanceAPI {
   /**
    * Wait for backend to be healthy before proceeding
    * Useful for initialization/startup
+   * Handles network errors gracefully and retries with increasing delays
    */
   async waitForBackend(maxRetries = 30): Promise<void> {
-    console.log('[AttendanceAPI] Waiting for backend to be healthy...');
-    await waitForHealthy(
-      () => this.healthCheck(),
-      {
-        maxRetries,
-        initialDelayMs: 1000,
-        maxDelayMs: 5000,
-        backoffMultiplier: 1.5,
+    console.log('[AttendanceAPI] Waiting for backend to be healthy (max', maxRetries, 'attempts)...');
+    let lastError: Error | undefined;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const isHealthy = await this.healthCheck();
+        if (isHealthy) {
+          console.log(`[AttendanceAPI] ✓ Backend is healthy (attempt ${attempt}/${maxRetries})`);
+          return;
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
       }
+
+      if (attempt < maxRetries) {
+        const delayMs = Math.min(1000 * Math.pow(1.5, attempt - 1), 5000);
+        console.log(
+          `[AttendanceAPI] Attempt ${attempt}/${maxRetries} - backend not ready, retrying in ${delayMs}ms...`
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+
+    console.warn(
+      `[AttendanceAPI] Backend still not healthy after ${maxRetries} attempts. Proceeding anyway...`
     );
+    // Don't throw - proceed anyway so the app doesn't get stuck
   }
 
   // ── Admin helpers ──────────────────────────────────────────────────────────
