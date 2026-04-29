@@ -1,6 +1,12 @@
 /// <reference types="vite/client" />
 
 import axios, { AxiosError, AxiosInstance } from 'axios';
+import { 
+  withRetry, 
+  waitForHealthy, 
+  isRetryableError,
+  RetryConfig 
+} from '../utils/retry-handler';
 
 const apiClient: AxiosInstance = axios.create({
   baseURL: (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, ''),
@@ -11,19 +17,51 @@ const apiClient: AxiosInstance = axios.create({
   },
 });
 
+// Track retry attempts
+let retryAttemptCount = 0;
+
 apiClient.interceptors.request.use((config) => {
   const token = localStorage.getItem('auth_token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
+  console.log(`[API Request] ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`);
   return config;
 });
 
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    retryAttemptCount = 0;
+    console.log(`[API Response] ${response.status} ${response.config.url}`);
+    return response;
+  },
   (error: AxiosError) => {
-    if (error.response?.status === 401) {
+    const status = error.response?.status;
+    const message = 
+      error.response?.data?.detail || 
+      error.response?.data?.message || 
+      error.message || 
+      'Unknown error';
+
+    console.error(`[API Error] ${status || 'Network'} - ${error.config?.url}: ${message}`);
+
+    // Handle authentication errors
+    if (status === 401) {
       localStorage.removeItem('auth_token');
       window.location.href = '/login';
+      return Promise.reject(error);
     }
+
+    // Handle client errors (4xx) - don't retry except for specific cases
+    if (status && status >= 400 && status < 500 && status !== 408 && status !== 429) {
+      console.error(`[API] Client error ${status} - not retrying:`, message);
+      return Promise.reject(error);
+    }
+
+    // Retryable errors
+    if (isRetryableError(error)) {
+      retryAttemptCount++;
+      console.warn(`[API] Retryable error detected. Attempt: ${retryAttemptCount}`);
+    }
+
     return Promise.reject(error);
   }
 );
@@ -132,9 +170,19 @@ function buildDetectError(err: unknown): DetectFaceResponse {
     axiosErr.message ||
     'Unknown error';
 
+  console.error('[DetectError]', { status, detail, code: axiosErr.code });
+
   if (status && status >= 400 && status < 500) {
     return { matched: false, message: detail };
   }
+
+  if (isRetryableError(err)) {
+    return {
+      matched: false,
+      message: `Backend is starting up. Please wait a moment and try again.`,
+    };
+  }
+
   return {
     matched: false,
     message: `Server error (${status ?? 'network'}): ${detail}. Check backend logs.`,
@@ -144,6 +192,20 @@ function buildDetectError(err: unknown): DetectFaceResponse {
 // ── API class ──────────────────────────────────────────────────────────────────
 
 class AttendanceAPI {
+  private retryConfig: RetryConfig = {
+    maxRetries: 5,
+    initialDelayMs: 500,
+    maxDelayMs: 10000,
+    backoffMultiplier: 2,
+    retryableStatusCodes: [408, 429, 500, 502, 503, 504],
+    onRetry: (attempt, error, delayMs) => {
+      console.warn(
+        `[AttendanceAPI] Retry attempt ${attempt} in ${delayMs}ms`,
+        error.message
+      );
+    },
+  };
+
   // ── Two-step attendance flow ──────────────────────────────────────────────
 
   /**
@@ -157,16 +219,22 @@ class AttendanceAPI {
    */
   async detectFaceOnly(formData: FormData): Promise<DetectFaceResponse> {
     try {
-      const response = await apiClient.post<DetectFaceResponse>(
-        '/api/v1/attendance/detect-face-only',
-        formData,
-        {
-          headers: { 'Content-Type': 'multipart/form-data' },
-          timeout: 25000,
-        }
+      return await withRetry(
+        async () => {
+          const response = await apiClient.post<DetectFaceResponse>(
+            '/api/v1/attendance/detect-face-only',
+            formData,
+            {
+              headers: { 'Content-Type': 'multipart/form-data' },
+              timeout: 25000,
+            }
+          );
+          return response.data;
+        },
+        { ...this.retryConfig, maxRetries: 3 }
       );
-      return response.data;
     } catch (err: unknown) {
+      console.error('[detectFaceOnly] Failed after retries:', err);
       return buildDetectError(err);
     }
   }
@@ -183,12 +251,22 @@ class AttendanceAPI {
     studentId: string,
     confidence: number
   ): Promise<ConfirmAttendanceResponse> {
-    const response = await apiClient.post<ConfirmAttendanceResponse>(
-      '/api/v1/attendance/confirm-attendance',
-      { student_id: studentId, confidence },
-      { timeout: 15000 }
-    );
-    return response.data;
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.post<ConfirmAttendanceResponse>(
+            '/api/v1/attendance/confirm-attendance',
+            { student_id: studentId, confidence },
+            { timeout: 15000 }
+          );
+          return response.data;
+        },
+        { ...this.retryConfig, maxRetries: 3 }
+      );
+    } catch (err: unknown) {
+      console.error('[confirmAttendance] Failed after retries:', err);
+      throw err;
+    }
   }
 
   // ── Legacy single-step (used by UploadPhoto fallback) ────────────────────
@@ -199,16 +277,22 @@ class AttendanceAPI {
    */
   async detectAndMarkAttendance(formData: FormData): Promise<DetectFaceResponse> {
     try {
-      const response = await apiClient.post<DetectFaceResponse>(
-        '/api/v1/attendance/detect-face',
-        formData,
-        {
-          headers: { 'Content-Type': 'multipart/form-data' },
-          timeout: 25000,
-        }
+      return await withRetry(
+        async () => {
+          const response = await apiClient.post<DetectFaceResponse>(
+            '/api/v1/attendance/detect-face',
+            formData,
+            {
+              headers: { 'Content-Type': 'multipart/form-data' },
+              timeout: 25000,
+            }
+          );
+          return response.data;
+        },
+        { ...this.retryConfig, maxRetries: 3 }
       );
-      return response.data;
     } catch (err: unknown) {
+      console.error('[detectAndMarkAttendance] Failed after retries:', err);
       return buildDetectError(err);
     }
   }
@@ -217,30 +301,48 @@ class AttendanceAPI {
 
   async getLiveAttendance(courseId?: string, limit = 50): Promise<AttendanceRecord[]> {
     try {
-      const response = await apiClient.get('/api/v1/attendance/attendance', {
-        params: { ...(courseId ? { student_id: courseId } : {}), limit },
-      });
-      return toArray<Record<string, unknown>>(response.data).map(normaliseRecord);
-    } catch {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.get('/api/v1/attendance/attendance', {
+            params: { ...(courseId ? { student_id: courseId } : {}), limit },
+          });
+          return toArray<Record<string, unknown>>(response.data).map(normaliseRecord);
+        },
+        this.retryConfig
+      );
+    } catch (err) {
+      console.error('[getLiveAttendance] Error:', err);
       return [];
     }
   }
 
   async getAttendanceStats(courseId?: string, date?: string): Promise<AttendanceStats> {
     try {
-      const response = await apiClient.get('/api/v1/attendance/stats', {
-        params: { ...(courseId ? { course_id: courseId } : {}), ...(date ? { date } : {}) },
-      });
-      const d = response.data as Record<string, unknown>;
+      return await withRetry(
+        async () => {
+          const response = await apiClient.get('/api/v1/attendance/stats', {
+            params: { ...(courseId ? { course_id: courseId } : {}), ...(date ? { date } : {}) },
+          });
+          const d = response.data as Record<string, unknown>;
+          return {
+            total_present: Number(d.total_present ?? d.present_today ?? 0),
+            total_late: Number(d.total_late ?? d.late_today ?? 0),
+            total_absent: Number(d.total_absent ?? d.absent_today ?? 0),
+            total_excused: Number(d.total_excused ?? 0),
+            last_updated: String(d.last_updated ?? new Date().toISOString()),
+          };
+        },
+        this.retryConfig
+      );
+    } catch (err) {
+      console.error('[getAttendanceStats] Error:', err);
       return {
-        total_present: Number(d.total_present ?? d.present_today ?? 0),
-        total_late: Number(d.total_late ?? d.late_today ?? 0),
-        total_absent: Number(d.total_absent ?? d.absent_today ?? 0),
-        total_excused: Number(d.total_excused ?? 0),
-        last_updated: String(d.last_updated ?? new Date().toISOString()),
+        total_present: 0,
+        total_late: 0,
+        total_absent: 0,
+        total_excused: 0,
+        last_updated: new Date().toISOString(),
       };
-    } catch {
-      return { total_present: 0, total_late: 0, total_absent: 0, total_excused: 0, last_updated: new Date().toISOString() };
     }
   }
 
@@ -252,17 +354,23 @@ class AttendanceAPI {
     limit = 30
   ): Promise<AttendanceRecord[]> {
     try {
-      const response = await apiClient.get('/api/v1/attendance/attendance', {
-        params: {
-          ...(courseId ? { student_id: courseId } : {}),
-          ...(startDate ? { date_from: startDate } : {}),
-          ...(endDate ? { date_to: endDate } : {}),
-          limit,
-          offset: (page - 1) * limit,
+      return await withRetry(
+        async () => {
+          const response = await apiClient.get('/api/v1/attendance/attendance', {
+            params: {
+              ...(courseId ? { student_id: courseId } : {}),
+              ...(startDate ? { date_from: startDate } : {}),
+              ...(endDate ? { date_to: endDate } : {}),
+              limit,
+              offset: (page - 1) * limit,
+            },
+          });
+          return toArray<Record<string, unknown>>(response.data).map(normaliseRecord);
         },
-      });
-      return toArray<Record<string, unknown>>(response.data).map(normaliseRecord);
-    } catch {
+        this.retryConfig
+      );
+    } catch (err) {
+      console.error('[getAttendanceHistory] Error:', err);
       return [];
     }
   }
@@ -273,137 +381,336 @@ class AttendanceAPI {
     endDate?: string
   ): Promise<Record<string, number>> {
     try {
-      const response = await apiClient.get('/api/v1/attendance/attendance/daily-report', {
-        params: { ...(startDate ? { date: startDate } : {}) },
-      });
-      const d = response.data as Record<string, unknown>;
-      return {
-        total_records: Number(d.total_records ?? 0),
-        unique_students: Number(d.unique_students ?? 0),
-      };
-    } catch {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.get('/api/v1/attendance/attendance/daily-report', {
+            params: { ...(startDate ? { date: startDate } : {}) },
+          });
+          const d = response.data as Record<string, unknown>;
+          return {
+            total_records: Number(d.total_records ?? 0),
+            unique_students: Number(d.unique_students ?? 0),
+          };
+        },
+        this.retryConfig
+      );
+    } catch (err) {
+      console.error('[getAttendanceSummary] Error:', err);
       return {};
     }
   }
 
   async getStudents(courseId?: string): Promise<Student[]> {
     try {
-      const response = await apiClient.get('/api/v1/attendance/students', {
-        params: { ...(courseId ? { course_id: courseId } : {}), limit: 1000 },
-      });
-      return toArray<Record<string, unknown>>(response.data).map((s) => ({
-        id: String(s.student_id ?? s.id ?? ''),
-        name: String(s.name ?? ''),
-        student_id: String(s.student_id ?? ''),
-        email: String(s.email ?? ''),
-        department: String(s.department ?? ''),
-        semester: s.semester ? String(s.semester) : undefined,
-        avatar_url: s.avatar_url ? String(s.avatar_url) : undefined,
-      }));
-    } catch {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.get('/api/v1/attendance/students', {
+            params: { ...(courseId ? { course_id: courseId } : {}), limit: 1000 },
+          });
+          return toArray<Record<string, unknown>>(response.data).map((s) => ({
+            id: String(s.student_id ?? s.id ?? ''),
+            name: String(s.name ?? ''),
+            student_id: String(s.student_id ?? ''),
+            email: String(s.email ?? ''),
+            department: String(s.department ?? ''),
+            semester: s.semester ? String(s.semester) : undefined,
+            avatar_url: s.avatar_url ? String(s.avatar_url) : undefined,
+          }));
+        },
+        this.retryConfig
+      );
+    } catch (err) {
+      console.error('[getStudents] Error:', err);
       return [];
     }
   }
 
   async getCourses(): Promise<Course[]> {
     try {
-      const response = await apiClient.get('/api/v1/courses');
-      return toArray<Record<string, unknown>>(response.data).map((c) => ({
-        id: String(c.id ?? ''),
-        code: String(c.code ?? ''),
-        name: String(c.name ?? ''),
-        instructor: String(c.instructor ?? c.teacher_name ?? ''),
-        students_count: Number(c.students_count ?? c.total_students ?? 0),
-      }));
-    } catch {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.get('/api/v1/courses');
+          return toArray<Record<string, unknown>>(response.data).map((c) => ({
+            id: String(c.id ?? ''),
+            code: String(c.code ?? ''),
+            name: String(c.name ?? ''),
+            instructor: String(c.instructor ?? c.teacher_name ?? ''),
+            students_count: Number(c.students_count ?? c.total_students ?? 0),
+          }));
+        },
+        this.retryConfig
+      );
+    } catch (err) {
+      console.error('[getCourses] Error:', err);
       return [];
     }
   }
 
   async registerStudentFace(studentId: string, faceImageBase64: string) {
-    const response = await apiClient.post('/api/v1/admin/register-face', {
-      student_id: studentId,
-      face_image_base64: faceImageBase64,
-    });
-    return response.data;
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.post('/api/v1/admin/register-face', {
+            student_id: studentId,
+            face_image_base64: faceImageBase64,
+          });
+          return response.data;
+        },
+        { ...this.retryConfig, maxRetries: 3 }
+      );
+    } catch (err) {
+      console.error('[registerStudentFace] Error:', err);
+      throw err;
+    }
   }
 
   async generateQRCode() {
-    const response = await apiClient.post('/api/v1/qr/generate', {});
-    return response.data;
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.post('/api/v1/qr/generate', {});
+          return response.data;
+        },
+        { ...this.retryConfig, maxRetries: 3 }
+      );
+    } catch (err) {
+      console.error('[generateQRCode] Error:', err);
+      throw err;
+    }
   }
 
   async validateQRToken(token: string) {
-    const response = await apiClient.get(`/api/v1/qr/validate/${token}`);
-    return response.data;
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.get(`/api/v1/qr/validate/${token}`);
+          return response.data;
+        },
+        { ...this.retryConfig, maxRetries: 3 }
+      );
+    } catch (err) {
+      console.error('[validateQRToken] Error:', err);
+      throw err;
+    }
   }
 
   async scanQRCode(token: string, studentId: string) {
-    const response = await apiClient.post('/api/v1/qr/scan', { token, student_id: studentId });
-    return response.data;
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.post('/api/v1/qr/scan', {
+            token,
+            student_id: studentId,
+          });
+          return response.data;
+        },
+        { ...this.retryConfig, maxRetries: 3 }
+      );
+    } catch (err) {
+      console.error('[scanQRCode] Error:', err);
+      throw err;
+    }
   }
 
   async healthCheck(): Promise<boolean> {
     try {
       const response = await apiClient.get('/api/v1/attendance/health');
       return response.status === 200;
-    } catch {
+    } catch (err) {
+      console.warn('[healthCheck] Backend not ready:', err);
       return false;
     }
+  }
+
+  /**
+   * Wait for backend to be healthy before proceeding
+   * Useful for initialization/startup
+   */
+  async waitForBackend(maxRetries = 30): Promise<void> {
+    console.log('[AttendanceAPI] Waiting for backend to be healthy...');
+    await waitForHealthy(
+      () => this.healthCheck(),
+      {
+        maxRetries,
+        initialDelayMs: 1000,
+        maxDelayMs: 5000,
+        backoffMultiplier: 1.5,
+      }
+    );
   }
 
   // ── Admin helpers ──────────────────────────────────────────────────────────
 
   async getAllStudents(page = 1, limit = 50) {
-    const response = await apiClient.get('/api/v1/attendance/students', {
-      params: { limit, offset: (page - 1) * limit },
-    });
-    return toArray(response.data);
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.get('/api/v1/attendance/students', {
+            params: { limit, offset: (page - 1) * limit },
+          });
+          return toArray(response.data);
+        },
+        this.retryConfig
+      );
+    } catch (err) {
+      console.error('[getAllStudents] Error:', err);
+      return [];
+    }
   }
 
   async createStudent(name: string, email: string, courses: string[]) {
-    const response = await apiClient.post('/api/v1/admin/students', { name, email, courses });
-    return response.data;
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.post('/api/v1/admin/students', {
+            name,
+            email,
+            courses,
+          });
+          return response.data;
+        },
+        { ...this.retryConfig, maxRetries: 3 }
+      );
+    } catch (err) {
+      console.error('[createStudent] Error:', err);
+      throw err;
+    }
   }
 
   async updateStudent(studentId: string, name: string, email: string, courses: string[]) {
-    const response = await apiClient.put(`/api/v1/admin/students/${studentId}`, { name, email, courses });
-    return response.data;
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.put(`/api/v1/admin/students/${studentId}`, {
+            name,
+            email,
+            courses,
+          });
+          return response.data;
+        },
+        { ...this.retryConfig, maxRetries: 3 }
+      );
+    } catch (err) {
+      console.error('[updateStudent] Error:', err);
+      throw err;
+    }
   }
 
   async deleteStudent(studentId: string) {
-    const response = await apiClient.delete(`/api/v1/admin/students/${studentId}`);
-    return response.data;
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.delete(`/api/v1/admin/students/${studentId}`);
+          return response.data;
+        },
+        { ...this.retryConfig, maxRetries: 3 }
+      );
+    } catch (err) {
+      console.error('[deleteStudent] Error:', err);
+      throw err;
+    }
   }
 
   async batchImportStudents(students: unknown[]) {
-    const response = await apiClient.post('/api/v1/admin/batch-import', { students });
-    return response.data;
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.post('/api/v1/admin/batch-import', { students });
+          return response.data;
+        },
+        { ...this.retryConfig, maxRetries: 2 }
+      );
+    } catch (err) {
+      console.error('[batchImportStudents] Error:', err);
+      throw err;
+    }
   }
 
   async getAllCourses(page = 1, limit = 50) {
-    const response = await apiClient.get('/api/v1/admin/courses', { params: { page, limit } });
-    return toArray(response.data);
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.get('/api/v1/admin/courses', { params: { page, limit } });
+          return toArray(response.data);
+        },
+        this.retryConfig
+      );
+    } catch (err) {
+      console.error('[getAllCourses] Error:', err);
+      return [];
+    }
   }
 
   async createCourse(name: string, code: string, schedule: string, room: string) {
-    const response = await apiClient.post('/api/v1/admin/courses', { name, code, schedule, room });
-    return response.data;
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.post('/api/v1/admin/courses', {
+            name,
+            code,
+            schedule,
+            room,
+          });
+          return response.data;
+        },
+        { ...this.retryConfig, maxRetries: 3 }
+      );
+    } catch (err) {
+      console.error('[createCourse] Error:', err);
+      throw err;
+    }
   }
 
   async updateCourse(courseId: string, name: string, code: string, schedule: string, room: string) {
-    const response = await apiClient.put(`/api/v1/admin/courses/${courseId}`, { name, code, schedule, room });
-    return response.data;
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.put(`/api/v1/admin/courses/${courseId}`, {
+            name,
+            code,
+            schedule,
+            room,
+          });
+          return response.data;
+        },
+        { ...this.retryConfig, maxRetries: 3 }
+      );
+    } catch (err) {
+      console.error('[updateCourse] Error:', err);
+      throw err;
+    }
   }
 
   async toggleCourse(courseId: string, active: boolean) {
-    const response = await apiClient.patch(`/api/v1/admin/courses/${courseId}`, { active });
-    return response.data;
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.patch(`/api/v1/admin/courses/${courseId}`, {
+            active,
+          });
+          return response.data;
+        },
+        { ...this.retryConfig, maxRetries: 3 }
+      );
+    } catch (err) {
+      console.error('[toggleCourse] Error:', err);
+      throw err;
+    }
   }
 
   async deleteCourse(courseId: string) {
-    const response = await apiClient.delete(`/api/v1/admin/courses/${courseId}`);
-    return response.data;
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.delete(`/api/v1/admin/courses/${courseId}`);
+          return response.data;
+        },
+        { ...this.retryConfig, maxRetries: 3 }
+      );
+    } catch (err) {
+      console.error('[deleteCourse] Error:', err);
+      throw err;
+    }
   }
 }
 

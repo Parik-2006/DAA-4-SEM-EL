@@ -4,21 +4,26 @@ RTSP stream handler for real-time processing of camera feeds.
 Supports multiple concurrent RTSP streams.
 Integrates with the Super Attendance Pipeline (motion-gated YOLO + FaceNet).
 
-Changes from original
----------------------
-- ``_process_frame`` now delegates to ``OptimizedAttendancePipeline.process_frame``
-  instead of being a no-op placeholder.
-- Motion gate state is exposed in ``get_metrics`` so the admin dashboard can
-  show per-stream AI skip rates.
-- ``StreamManager`` exposes ``configure_motion_gate`` for runtime tuning.
-- Student embeddings are loaded at stream start (``register_students``).
+Changes (2026-04)
+-----------------
+- ``start()`` now spawns a background thread that auto-loads registered
+  students for the configured classroom directly from Firebase into the
+  pipeline's FAISS index — bypassing generate_embeddings() because Firebase
+  already stores precomputed float32 vectors.
+- ``_process_frame`` tracks ``_is_ai_active`` with a 3-second cooldown so the
+  teacher dashboard doesn't flicker on a per-frame basis.
+- ``get_metrics`` exposes ``is_ai_active`` and ``students_loaded`` so the
+  frontend can show "Live Monitoring" vs "System Idle" and know whether the
+  student index is ready.
+- ``StreamManager`` forwards ``classroom_id`` to the handler.
 """
 
 import logging
 import threading
 import time
 import cv2
-from datetime import datetime
+import numpy as np
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Callable, List
 from dataclasses import dataclass, field
 from queue import Queue, Empty
@@ -28,9 +33,13 @@ from services.optimized_attendance_pipeline import (
     PipelineFrameResult,
 )
 from utils.motion_detector import MotionConfig
-from services.firebase_service import get_firebase_service
+from services.firebase_service import get_firebase_service, FirebaseService
 
 logger = logging.getLogger(__name__)
+
+# How long (seconds) is_ai_active stays True after the last AI trigger.
+# Prevents the teacher dashboard from flickering between frames.
+_AI_ACTIVE_COOLDOWN_SECONDS = 3.0
 
 
 # ── Stream Metrics ─────────────────────────────────────────────────────────────
@@ -63,14 +72,23 @@ class RTSPStreamHandler:
     each frame; the motion gatekeeper ensures YOLO + FaceNet are only called
     when movement is detected, slashing CPU usage between arrivals.
 
-    Features
-    --------
-    - Motion-gated AI inference (60–80 % CPU reduction in static scenes)
-    - SORT tracking for smooth identity labels across frames
-    - Temporal verification before marking attendance
-    - Thread-safe start / stop / pause / resume
-    - Automatic reconnection on stream drop (``_reconnect`` strategy)
-    - Per-stream runtime motion config updates
+    Student auto-loading
+    --------------------
+    When ``start()`` is called, a separate daemon thread immediately fetches
+    all students for ``classroom_id`` from Firebase and injects their stored
+    embeddings straight into the pipeline's FAISS index.  This means:
+
+    * The API returns instantly — ``start()`` never blocks on Firebase.
+    * The stream begins processing frames right away.
+    * The FAISS index becomes ready within ~1–2 s for typical class sizes.
+    * ``get_metrics()["students_loaded"]`` flips to True once indexing is done.
+
+    AI-active tracking
+    ------------------
+    ``is_ai_active`` is True when the AI models ran within the last
+    ``_AI_ACTIVE_COOLDOWN_SECONDS`` seconds.  The cooldown prevents the
+    teacher dashboard from flickering: once motion stops, the indicator
+    stays green for 3 s before switching to "System Idle".
     """
 
     def __init__(
@@ -84,6 +102,7 @@ class RTSPStreamHandler:
         motion_config: Optional[MotionConfig] = None,
         enable_motion_gate: bool = True,
         reconnect_delay: float = 5.0,
+        classroom_id: Optional[str] = None,
     ):
         """
         Parameters
@@ -106,10 +125,15 @@ class RTSPStreamHandler:
             Set ``False`` to disable gating (useful for testing).
         reconnect_delay:
             Seconds to wait before reconnecting after a stream drop.
+        classroom_id:
+            Optional classroom identifier.  When set, only students whose
+            ``metadata.classroom_id`` matches are loaded into the FAISS index.
+            Pass ``None`` to load *all* registered students.
         """
         self.stream_id = stream_id
         self.rtsp_url = rtsp_url
         self.reconnect_delay = reconnect_delay
+        self.classroom_id = classroom_id
 
         # ── Super Pipeline ──────────────────────────────────────────────────
         self.pipeline = OptimizedAttendancePipeline(
@@ -129,6 +153,17 @@ class RTSPStreamHandler:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
+        # ── Student loading state ───────────────────────────────────────────
+        self._students_loaded: bool = False
+        self._students_loaded_count: int = 0
+        self._student_load_error: Optional[str] = None
+
+        # ── AI-active tracking (with cooldown) ──────────────────────────────
+        # Timestamp of the last frame where result.ai_triggered was True.
+        # is_ai_active = (now - _last_ai_trigger_time) < _AI_ACTIVE_COOLDOWN_SECONDS
+        self._last_ai_trigger_time: Optional[datetime] = None
+        self._is_ai_active: bool = False
+
         # ── FPS rolling window ──────────────────────────────────────────────
         self._fps_samples: List[float] = []
 
@@ -145,7 +180,10 @@ class RTSPStreamHandler:
         # ── Firebase ────────────────────────────────────────────────────────
         self.firebase = get_firebase_service()
 
-        logger.info("RTSPStreamHandler created: %s → %s", stream_id, rtsp_url)
+        logger.info(
+            "RTSPStreamHandler created: %s → %s (classroom=%s)",
+            stream_id, rtsp_url, classroom_id or "ALL",
+        )
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -153,10 +191,15 @@ class RTSPStreamHandler:
         """
         Open the RTSP stream and start the processing thread.
 
+        Also immediately launches a *separate* background thread to fetch
+        student embeddings from Firebase.  The main processing thread is
+        not blocked — frames are processed even while the FAISS index is
+        being populated.
+
         Returns
         -------
         bool
-            True if the thread was launched successfully.
+            True if the processing thread was launched successfully.
         """
         if self.is_running:
             logger.warning("Stream %s already running", self.stream_id)
@@ -175,13 +218,25 @@ class RTSPStreamHandler:
 
             self._stop_event.clear()
             self.is_running = True
+
+            # ── Background thread: load students into FAISS (non-blocking) ──
+            loader = threading.Thread(
+                target=self._load_students_from_firebase_bg,
+                daemon=True,
+                name=f"student-loader-{self.stream_id}",
+            )
+            loader.start()
+
+            # ── Main processing thread ──────────────────────────────────────
             self._thread = threading.Thread(
-                target=self._run_loop, daemon=True, name=f"stream-{self.stream_id}"
+                target=self._run_loop,
+                daemon=True,
+                name=f"stream-{self.stream_id}",
             )
             self._thread.start()
 
             self.metrics.status = "running"
-            logger.info("✅ Stream started: %s", self.stream_id)
+            logger.info("✅ Stream started: %s (student index loading in background)", self.stream_id)
             return True
 
         except Exception as exc:
@@ -231,6 +286,127 @@ class RTSPStreamHandler:
         logger.info("Stream resumed: %s", self.stream_id)
         return True
 
+    # ── Student auto-loading (background thread) ───────────────────────────────
+
+    def _load_students_from_firebase_bg(self) -> None:
+        """
+        Fetch students from Firebase and inject their stored embeddings
+        directly into the pipeline's FAISS index.
+
+        Why direct injection instead of pipeline.register_students()
+        ------------------------------------------------------------
+        ``OptimizedAttendancePipeline.register_students()`` expects raw face
+        *images* (BGR numpy arrays) and calls ``generate_embeddings()`` on
+        them — a full FaceNet forward pass per image.  Firebase already stores
+        precomputed float32 vectors produced by FaceNet at registration time.
+        Re-running FaceNet on stored vectors is meaningless; instead we
+        average the stored vectors per student and add them to FAISS directly
+        via ``embedding_search.add_students()``.
+
+        Classroom filtering
+        -------------------
+        If ``self.classroom_id`` is set, only students whose
+        ``metadata.classroom_id`` matches are loaded.  This keeps each stream's
+        FAISS index small — O(class_size) rather than O(whole_school).
+        """
+        logger.info(
+            "🔄 Loading student embeddings for stream %s (classroom=%s)…",
+            self.stream_id, self.classroom_id or "ALL",
+        )
+
+        try:
+            if not self.firebase:
+                raise RuntimeError("Firebase service not available")
+
+            all_students = self.firebase.get_all_students()
+
+            # ── Filter by classroom ─────────────────────────────────────────
+            if self.classroom_id:
+                students = [
+                    s for s in all_students
+                    if s.get("metadata", {}).get("classroom_id") == self.classroom_id
+                ]
+                logger.info(
+                    "Classroom filter '%s': %d/%d students match",
+                    self.classroom_id, len(students), len(all_students),
+                )
+            else:
+                students = all_students
+
+            if not students:
+                logger.warning(
+                    "No students found for stream %s (classroom=%s). "
+                    "Attendance recognition will be unavailable until students are registered.",
+                    self.stream_id, self.classroom_id or "ALL",
+                )
+                self._students_loaded = True   # mark done — nothing to load
+                return
+
+            # ── Build averaged embedding per student ────────────────────────
+            student_ids: List[str] = []
+            embeddings_list: List[np.ndarray] = []
+            metadata: Dict[str, Any] = {}
+            skipped = 0
+
+            for student in students:
+                sid = student.get("student_id")
+                if not sid:
+                    skipped += 1
+                    continue
+
+                stored_embs = FirebaseService.get_all_embeddings(student)
+                if not stored_embs:
+                    logger.debug("No embeddings for student %s — skipping", sid)
+                    skipped += 1
+                    continue
+
+                # Average all face shots and L2-normalise (matches FaceNet convention)
+                avg = np.mean(stored_embs, axis=0).astype(np.float32)
+                norm = np.linalg.norm(avg)
+                if norm > 0:
+                    avg = avg / norm
+
+                student_ids.append(sid)
+                embeddings_list.append(avg)
+                metadata[sid] = {
+                    "name": student.get("name", sid),
+                    "registered_at": student.get("registered_at", ""),
+                    "samples": len(stored_embs),
+                }
+
+            if not student_ids:
+                logger.warning(
+                    "All %d student records lacked valid embeddings for stream %s.",
+                    len(students), self.stream_id,
+                )
+                self._student_load_error = "No valid embeddings found"
+                self._students_loaded = True
+                return
+
+            # ── Inject into FAISS — bypasses generate_embeddings() ──────────
+            embeddings_array = np.array(embeddings_list, dtype=np.float32)
+            self.pipeline.embedding_search.add_students(
+                student_ids, embeddings_array, metadata
+            )
+
+            self._students_loaded_count = len(student_ids)
+            self._students_loaded = True
+
+            logger.info(
+                "✅ FAISS index ready for stream %s: %d students loaded "
+                "(%d skipped, classroom=%s)",
+                self.stream_id, len(student_ids), skipped,
+                self.classroom_id or "ALL",
+            )
+
+        except Exception as exc:
+            self._student_load_error = str(exc)
+            self._students_loaded = True   # mark done so metrics are honest
+            logger.error(
+                "Failed to load students for stream %s: %s",
+                self.stream_id, exc,
+            )
+
     # ── Main processing loop ───────────────────────────────────────────────────
 
     def _run_loop(self) -> None:
@@ -259,7 +435,7 @@ class RTSPStreamHandler:
                     )
                     if consecutive_read_failures >= 5:
                         if not self._reconnect():
-                            break          # give up after reconnect failure
+                            break
                     else:
                         time.sleep(0.2)
                     continue
@@ -291,11 +467,7 @@ class RTSPStreamHandler:
             logger.info("Processing thread ended: %s", self.stream_id)
 
     def _reconnect(self) -> bool:
-        """
-        Try to reopen the RTSP stream after a drop.
-
-        Returns True if reconnection succeeded.
-        """
+        """Try to reopen the RTSP stream after a drop."""
         logger.info(
             "Reconnecting stream %s in %.1f s…", self.stream_id, self.reconnect_delay
         )
@@ -308,7 +480,6 @@ class RTSPStreamHandler:
             if not self.cap.isOpened():
                 raise RuntimeError("Failed to reopen stream")
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            # Reset motion state so the re-opened scene is treated as fresh
             self.pipeline.motion_detector.reset()
             logger.info("✅ Reconnected: %s", self.stream_id)
             return True
@@ -319,26 +490,34 @@ class RTSPStreamHandler:
             self.metrics.errors += 1
             return False
 
-    # ── Per-frame processing (motion-gated Super Pipeline) ────────────────────
+    # ── Per-frame processing ───────────────────────────────────────────────────
 
     def _process_frame(self, frame) -> None:
         """
-        Run one frame through the Super Pipeline.
+        Run one frame through the Super Pipeline and update AI-active state.
 
-        The pipeline internally:
-        1. Checks motion detector (μs) — exits early if static
-        2. Checks frame-skip counter   — exits early if not this frame
-        3. Runs YOLO + FaceNet + FAISS + SORT + temporal verifier
-
-        Side effects
-        ------------
-        - Updates ``self.metrics``
-        - Fires ``self.on_detection`` and ``self.on_attendance`` callbacks
-        - Persists new attendance records to Firebase via callback
+        AI-active cooldown
+        ------------------
+        When ``result.ai_triggered`` is True, ``_last_ai_trigger_time`` is
+        stamped to now.  ``_is_ai_active`` is then True as long as the elapsed
+        time since that stamp is within ``_AI_ACTIVE_COOLDOWN_SECONDS``.
+        This means the teacher's "Live Monitoring" indicator stays green for
+        3 s after motion stops — preventing distracting rapid toggling.
         """
         result: PipelineFrameResult = self.pipeline.process_frame(
             frame, self._fps_samples
         )
+
+        # ── Update AI-active state ──────────────────────────────────────────
+        now = datetime.now()
+        if result.ai_triggered:
+            self._last_ai_trigger_time = now
+
+        if self._last_ai_trigger_time is not None:
+            elapsed = (now - self._last_ai_trigger_time).total_seconds()
+            self._is_ai_active = elapsed < _AI_ACTIVE_COOLDOWN_SECONDS
+        else:
+            self._is_ai_active = False
 
         # ── Update metrics ──────────────────────────────────────────────────
         self.metrics.current_fps = result.fps
@@ -356,7 +535,7 @@ class RTSPStreamHandler:
         if result.detections and self.on_detection:
             self.on_detection(self.stream_id, result)
 
-        # ── Attendance callback: fire once per newly confirmed student ──────
+        # ── Attendance callback ─────────────────────────────────────────────
         if self.on_attendance and self.firebase:
             for student_id, info in result.marked_students.items():
                 if info.get("just_confirmed"):
@@ -371,6 +550,7 @@ class RTSPStreamHandler:
                                 "method": "rtsp_super_pipeline",
                                 "motion_score": result.motion_result.motion_score,
                                 "ai_triggered": result.ai_triggered,
+                                "classroom_id": self.classroom_id,
                             },
                         )
                         self.on_attendance(self.stream_id, student_id)
@@ -387,16 +567,17 @@ class RTSPStreamHandler:
 
     def register_students(self, students_data: Dict[str, Any]) -> bool:
         """
-        Load student face embeddings into the pipeline's FAISS index.
+        Manually load student face embeddings into the pipeline's FAISS index.
+
+        This is the *manual* path — auto-loading happens automatically in
+        ``start()`` via ``_load_students_from_firebase_bg()``.  Use this
+        method to push updates (new registrations) at runtime without
+        restarting the stream.
 
         Parameters
         ----------
         students_data:
             ``{student_id: [face_np_array, …]}``
-
-        Returns
-        -------
-        bool
         """
         try:
             result = self.pipeline.register_students(students_data)
@@ -408,6 +589,22 @@ class RTSPStreamHandler:
         except Exception as exc:
             logger.error("Failed to register students for %s: %s", self.stream_id, exc)
             return False
+
+    def reload_students(self) -> None:
+        """
+        Trigger a fresh student reload from Firebase in the background.
+
+        Useful after new students are registered mid-session without restarting
+        the stream.  The existing FAISS index continues to serve recognition
+        requests until the reload completes.
+        """
+        loader = threading.Thread(
+            target=self._load_students_from_firebase_bg,
+            daemon=True,
+            name=f"student-reload-{self.stream_id}",
+        )
+        loader.start()
+        logger.info("Student reload triggered for stream %s", self.stream_id)
 
     # ── Runtime configuration ──────────────────────────────────────────────────
 
@@ -424,8 +621,7 @@ class RTSPStreamHandler:
         enabled:
             If not None, enable or disable the gate entirely.
         **motion_kwargs:
-            Forwarded to ``MotionDetector.update_config``, e.g.
-            ``diff_threshold=30``, ``cooldown_frames=12``.
+            Forwarded to ``MotionDetector.update_config``.
 
         Example
         -------
@@ -442,39 +638,72 @@ class RTSPStreamHandler:
         """
         Return a JSON-serialisable metrics snapshot.
 
-        Includes motion gate efficiency stats from the pipeline so the
-        admin dashboard can display per-stream AI skip rates.
+        Key fields for the teacher dashboard
+        -------------------------------------
+        ``is_ai_active``
+            True when the AI models (YOLO + FaceNet) ran within the last
+            ``_AI_ACTIVE_COOLDOWN_SECONDS`` seconds.  Drives the
+            "Live Monitoring" / "System Idle" indicator.
+        ``students_loaded``
+            True once the background student loader has finished (success or
+            failure).  While False, the FAISS index may be empty.
+        ``students_loaded_count``
+            Number of students successfully indexed.
+        ``student_load_error``
+            Non-null if the background loader encountered an error.
         """
         uptime = (datetime.now() - self.metrics.start_time).total_seconds()
         pipeline_stats = self.pipeline.get_statistics()
         md_stats = self.pipeline.motion_detector.get_stats()
 
         return {
+            # ── Identity ──────────────────────────────────────────────────
             "stream_id": self.stream_id,
+            "classroom_id": self.classroom_id,
             "status": self.metrics.status,
             "is_running": self.is_running,
             "is_paused": self.is_paused,
             "uptime_seconds": int(uptime),
-            # Frame counts
+
+            # ── AI status (teacher dashboard) ─────────────────────────────
+            #
+            # is_ai_active: True  → motion was detected recently; YOLO +
+            #                        FaceNet are running → "Live Monitoring"
+            # is_ai_active: False → no motion for >3 s; models idle       →
+            #                        "System Idle"
+            "is_ai_active": self._is_ai_active,
+            "last_ai_trigger": (
+                self._last_ai_trigger_time.isoformat()
+                if self._last_ai_trigger_time else None
+            ),
+
+            # ── Student index ─────────────────────────────────────────────
+            "students_loaded": self._students_loaded,
+            "students_loaded_count": self._students_loaded_count,
+            "student_load_error": self._student_load_error,
+
+            # ── Frame counts ──────────────────────────────────────────────
             "frames_read": self.metrics.frames_read,
             "frames_processed_by_ai": self.metrics.frames_processed,
             "frames_motion_gated": self.metrics.frames_motion_gated,
             "frames_frame_skipped": self.metrics.frames_frame_skipped,
-            # Efficiency
+
+            # ── Efficiency ────────────────────────────────────────────────
             "ai_skip_rate_pct": round(md_stats["ml_skip_rate"] * 100, 1),
             "motion_gate_enabled": pipeline_stats["motion_gate_enabled"],
-            # Quality
+
+            # ── Quality ───────────────────────────────────────────────────
             "fps": round(self.metrics.current_fps, 2),
             "active_tracks": self.metrics.active_tracks,
             "total_detections": self.metrics.total_detections,
             "marked_students": pipeline_stats["marked_students"],
-            # Errors
+
+            # ── Errors ────────────────────────────────────────────────────
             "errors": self.metrics.errors,
             "last_error": self.metrics.last_error,
             "last_frame": (
                 self.metrics.last_frame_time.isoformat()
-                if self.metrics.last_frame_time
-                else None
+                if self.metrics.last_frame_time else None
             ),
         }
 
@@ -499,6 +728,7 @@ class StreamManager:
         self,
         stream_id: str,
         rtsp_url: str,
+        classroom_id: Optional[str] = None,
         **kwargs,
     ) -> Optional[RTSPStreamHandler]:
         """
@@ -510,6 +740,9 @@ class StreamManager:
             Unique key, e.g. ``"cam_entrance"``.
         rtsp_url:
             Full RTSP URL.
+        classroom_id:
+            Classroom identifier for student filtering.  ``None`` loads all
+            students.
         **kwargs:
             Forwarded to ``RTSPStreamHandler.__init__``.
             Useful keys: ``frame_skip``, ``confidence_threshold``,
@@ -526,10 +759,13 @@ class StreamManager:
                     return self.streams[stream_id]
 
                 handler = RTSPStreamHandler(
-                    stream_id=stream_id, rtsp_url=rtsp_url, **kwargs
+                    stream_id=stream_id,
+                    rtsp_url=rtsp_url,
+                    classroom_id=classroom_id,
+                    **kwargs,
                 )
                 self.streams[stream_id] = handler
-                logger.info("Stream registered: %s", stream_id)
+                logger.info("Stream registered: %s (classroom=%s)", stream_id, classroom_id or "ALL")
                 return handler
 
         except Exception as exc:
@@ -537,7 +773,7 @@ class StreamManager:
             return None
 
     def start_stream(self, stream_id: str) -> bool:
-        """Start a registered stream."""
+        """Start a registered stream (also triggers student auto-loading)."""
         with self._lock:
             handler = self.streams.get(stream_id)
         if handler is None:
@@ -563,6 +799,14 @@ class StreamManager:
         """Resume a paused stream."""
         handler = self._get(stream_id)
         return handler.resume() if handler else False
+
+    def reload_students(self, stream_id: str) -> bool:
+        """Trigger a background student reload for a specific stream."""
+        handler = self._get(stream_id)
+        if handler is None:
+            return False
+        handler.reload_students()
+        return True
 
     def get_stream(self, stream_id: str) -> Optional[RTSPStreamHandler]:
         return self._get(stream_id)
