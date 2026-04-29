@@ -1,16 +1,25 @@
 """
 REST API endpoints for attendance system.
 Two-step attendance: detect-face (identify only) → confirm-attendance (write to DB).
+
+Optimisations applied (2026-04):
+  1. Pre-detection resize to 640 px long-edge  → RAM stays bounded
+  2. Blocking ML inference moved to a thread-pool → event loop stays live
+  3. Explicit gc.collect() + del after inference  → no tensor/array leaks
 """
 
+import gc
 import logging
 import base64
 import io
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional, List
 
 from fastapi import APIRouter, HTTPException, Query, Body, File, UploadFile, status
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool   # ← thin wrapper around loop.run_in_executor
 
 from schemas.attendance_schemas import (
     StudentRegistrationRequest, StudentRegistrationResponse,
@@ -33,98 +42,180 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
 
+# ── Constants ──────────────────────────────────────────────────────────────────
 
-# ── Shared face-extraction helper ─────────────────────────────────────────────
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024   # 10 MB
+TARGET_LONG_EDGE = 640                 # resize before YOLO inference
+COSINE_THRESHOLD = 0.55
+
+
+# ── Image pre-processing helper (runs in thread) ───────────────────────────────
+
+def _resize_if_needed(image_array: np.ndarray, long_edge: int = TARGET_LONG_EDGE) -> np.ndarray:
+    """
+    Downscale image so its longest dimension equals `long_edge`.
+    Images smaller than `long_edge` are returned unchanged.
+
+    Why this matters
+    ----------------
+    A 4032×3024 phone photo → 36 MB RGB array in RAM before we even touch YOLO.
+    At 640×480 the same array is only ~900 KB, and YOLOv8n runs ~3× faster.
+    """
+    h, w = image_array.shape[:2]
+    max_dim = max(h, w)
+    if max_dim <= long_edge:
+        return image_array                  # already small enough
+
+    import cv2
+    scale = long_edge / max_dim
+    new_w = max(1, int(w * scale))
+    new_h = max(1, int(h * scale))
+    resized = cv2.resize(image_array, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    logger.debug("Resized image %dx%d → %dx%d (scale=%.2f)", w, h, new_w, new_h, scale)
+    return resized
+
+
+# ── Synchronous inference block (runs in thread, NOT on event loop) ────────────
+
+def _run_detection_and_embedding(image_array: np.ndarray):
+    """
+    CPU-bound work: YOLO face detection + FaceNet embedding extraction.
+
+    This function is intentionally *synchronous* and is always called via
+    ``run_in_threadpool`` so the FastAPI event loop is never blocked.
+    If this takes 2–3 seconds on large images, health-check requests are
+    still served immediately by the event loop.
+
+    Returns
+    -------
+    embedding : np.ndarray | None
+    error_content : dict | None  — if not None, return as JSONResponse(200)
+    """
+    import cv2
+
+    # ── Step A: resize (RAM guard) ─────────────────────────────────────────
+    image_array = _resize_if_needed(image_array)
+
+    # ── Step B: YOLO detection ─────────────────────────────────────────────
+    try:
+        detector = ModelManager.get_yolov8_detector()
+        image_bgr = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
+        detections = detector.detect(image_bgr)
+    except Exception as e:
+        logger.error("Face detection error: %s", e)
+        return None, {"matched": False, "message": f"Face detection failed: {e}"}
+    finally:
+        # Free the BGR copy immediately — it's a full duplicate of the array
+        try:
+            del image_bgr
+        except NameError:
+            pass
+        gc.collect()
+
+    if not detections:
+        return None, {
+            "matched": False,
+            "message": "No face detected in the image. Ensure your face is clearly visible.",
+        }
+
+    # ── Step C: crop best face ─────────────────────────────────────────────
+    best_face = max(detections, key=lambda x: x[4])
+    x1, y1, x2, y2, conf = best_face
+    h, w = image_array.shape[:2]
+    pad_x = int((x2 - x1) * 0.1)
+    pad_y = int((y2 - y1) * 0.1)
+    x1 = max(0, int(x1) - pad_x)
+    y1 = max(0, int(y1) - pad_y)
+    x2 = min(w, int(x2) + pad_x)
+    y2 = min(h, int(y2) + pad_y)
+    face_crop = image_array[y1:y2, x1:x2].copy()   # .copy() lets image_array be freed
+
+    # Free the full-resolution array as soon as the crop is taken
+    del image_array, detections
+    gc.collect()
+
+    # ── Step D: FaceNet embedding ─────────────────────────────────────────
+    try:
+        extractor = ModelManager.get_facenet_extractor()
+        embedding = extractor.extract_embedding(face_crop)
+    except ImportError:
+        return None, {
+            "matched": False,
+            "message": "Face recognition model not loaded on server. Contact admin.",
+        }
+    except Exception as e:
+        logger.error("Embedding extraction error: %s", e)
+        return None, {"matched": False, "message": f"Could not process face: {e}"}
+    finally:
+        del face_crop
+        gc.collect()
+
+    if embedding is None:
+        return None, {
+            "matched": False,
+            "message": "Could not extract face features from the cropped face.",
+        }
+
+    return embedding, None
+
+
+# ── Async wrapper used by every endpoint ──────────────────────────────────────
 
 async def _extract_embedding_from_upload(file: UploadFile):
     """
-    Read an uploaded image file, detect the face with YOLOv8, crop it,
-    and return (embedding: np.ndarray, error_response: JSONResponse | None).
-    On any failure the embedding is None and error_response carries the reply.
+    Read the uploaded file, decode the image, then dispatch all blocking
+    CPU work to a thread via ``run_in_threadpool``.
+
+    Returns (embedding, error_response) — exactly one of them is None.
     """
-    MAX_BYTES = 10 * 1024 * 1024
+    # -- I/O: read bytes (fast, stays on event loop) -----------------------
     try:
         contents = await file.read()
         if not contents:
             raise HTTPException(status_code=400, detail="Empty file received")
-        if len(contents) > MAX_BYTES:
+        if len(contents) > MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=413, detail="Image exceeds 10 MB limit")
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {e}")
 
+    # -- Decode to numpy array (fast, stays on event loop) -----------------
     try:
         from PIL import Image
-        image = Image.open(io.BytesIO(contents)).convert("RGB")
-        image_array = np.array(image)
+        image_array = np.array(Image.open(io.BytesIO(contents)).convert("RGB"))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid image format: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Invalid image format: {e}")
+    finally:
+        del contents           # release raw bytes before spawning thread
+        gc.collect()
 
-    try:
-        import cv2
-        detector = ModelManager.get_yolov8_detector()
-        image_bgr = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
-        detections = detector.detect(image_bgr)
+    # -- CPU-bound inference → thread pool (event loop is FREE here) -------
+    #
+    #    run_in_threadpool(fn, *args) is starlette's thin wrapper around
+    #    loop.run_in_executor(None, fn, *args).  The event loop is not
+    #    blocked while the thread runs, so /health checks continue to work.
+    #
+    embedding, error_content = await run_in_threadpool(
+        _run_detection_and_embedding, image_array
+    )
 
-        if not detections:
-            return None, JSONResponse(
-                status_code=200,
-                content={
-                    "matched": False,
-                    "message": "No face detected in the image. Ensure your face is clearly visible.",
-                }
-            )
+    del image_array
+    gc.collect()
 
-        best_face = max(detections, key=lambda x: x[4])
-        x1, y1, x2, y2, conf = best_face
-        h, w = image_array.shape[:2]
-        pad_x = int((x2 - x1) * 0.1)
-        pad_y = int((y2 - y1) * 0.1)
-        x1 = max(0, int(x1) - pad_x)
-        y1 = max(0, int(y1) - pad_y)
-        x2 = min(w, int(x2) + pad_x)
-        y2 = min(h, int(y2) + pad_y)
-        face_crop = image_array[y1:y2, x1:x2]
-    except Exception as e:
-        logger.error(f"Face detection error: {e}")
-        return None, JSONResponse(
-            status_code=200,
-            content={"matched": False, "message": f"Face detection failed: {str(e)}"}
-        )
-
-    try:
-        extractor = ModelManager.get_facenet_extractor()
-        embedding = extractor.extract_embedding(face_crop)
-        if embedding is None:
-            return None, JSONResponse(
-                status_code=200,
-                content={
-                    "matched": False,
-                    "message": "Could not extract face features from the cropped face.",
-                }
-            )
-        return embedding, None
-    except ImportError:
-        return None, JSONResponse(
-            status_code=200,
-            content={
-                "matched": False,
-                "message": "Face recognition model not loaded on server. Contact admin.",
-            }
-        )
-    except Exception as e:
-        logger.error(f"Embedding extraction error: {e}")
-        return None, JSONResponse(
-            status_code=200,
-            content={"matched": False, "message": f"Could not process face: {str(e)}"}
-        )
+    if error_content is not None:
+        return None, JSONResponse(status_code=200, content=error_content)
+    return embedding, None
 
 
-def _match_embedding(embedding: np.ndarray, firebase, threshold: float = 0.55):
+# ── Synchronous embedding matching (also runs in thread) ──────────────────────
+
+def _match_embedding_sync(embedding: np.ndarray, firebase, threshold: float = COSINE_THRESHOLD):
     """
-    Compare embedding against all registered students.
-    Returns (best_student | None, confidence: float, best_distance: float).
+    Compare embedding against every registered student.
+
+    Kept synchronous so it can be called via run_in_threadpool from async
+    endpoints.  Returns (best_student | None, confidence, best_distance).
     """
     all_students = firebase.get_all_students()
     best_distance = float("inf")
@@ -135,8 +226,8 @@ def _match_embedding(embedding: np.ndarray, firebase, threshold: float = 0.55):
         for arr in stored_embs:
             if arr.shape != embedding.shape:
                 logger.debug(
-                    f"Shape mismatch for {student.get('student_id')}: "
-                    f"{arr.shape} vs {embedding.shape}"
+                    "Shape mismatch for %s: %s vs %s",
+                    student.get("student_id"), arr.shape, embedding.shape,
                 )
                 continue
             dist = float(cosine(embedding, arr))
@@ -164,7 +255,7 @@ async def detect_face_only(
     Accepts a **multipart/form-data** image (field ``file``), extracts the face
     embedding, and matches it against registered students.
 
-    **No attendance record is written.** The caller receives identification
+    **No attendance record is written.**  The caller receives identification
     data and must call ``POST /confirm-attendance`` to persist the record.
 
     Returns:
@@ -185,12 +276,15 @@ async def detect_face_only(
         raise HTTPException(status_code=503, detail="Firebase service not initialised")
 
     try:
-        THRESHOLD = 0.55
-        best_student, confidence, best_distance = _match_embedding(
-            embedding, firebase, THRESHOLD
+        # Matching is also CPU-bound (iterates all students) → thread pool
+        best_student, confidence, best_distance = await run_in_threadpool(
+            _match_embedding_sync, embedding, firebase, COSINE_THRESHOLD
         )
 
-        if best_student is None or best_distance > THRESHOLD:
+        del embedding
+        gc.collect()
+
+        if best_student is None or best_distance > COSINE_THRESHOLD:
             return JSONResponse(
                 status_code=200,
                 content={
@@ -198,7 +292,7 @@ async def detect_face_only(
                     "message": (
                         "Face not recognised. "
                         f"Best similarity: {max(0.0, 1 - best_distance):.2f} "
-                        f"(threshold: {1 - THRESHOLD:.2f}). "
+                        f"(threshold: {1 - COSINE_THRESHOLD:.2f}). "
                         "Ensure your face is clearly visible and well-lit, "
                         "or ask admin to register your face profile."
                     ),
@@ -207,10 +301,9 @@ async def detect_face_only(
 
         student_id = best_student.get("student_id", "")
         student_name = best_student.get("name", "Unknown")
-
         logger.info(
-            f"Face identified (detection only, NOT recorded): "
-            f"{student_id} ({student_name}) conf={confidence:.2f}"
+            "Face identified (detection only, NOT recorded): %s (%s) conf=%.2f",
+            student_id, student_name, confidence,
         )
 
         return JSONResponse(
@@ -230,8 +323,8 @@ async def detect_face_only(
             content={"matched": False, "message": "Server missing scipy library for face matching."}
         )
     except Exception as e:
-        logger.error(f"Matching error: {e}")
-        raise HTTPException(status_code=500, detail=f"Face matching failed: {str(e)}")
+        logger.error("Matching error: %s", e)
+        raise HTTPException(status_code=500, detail=f"Face matching failed: {e}")
 
 
 # ── Step 2: Confirm attendance (writes to database) ───────────────────────────
@@ -249,22 +342,10 @@ async def confirm_attendance(
     Step 2 of the two-step attendance flow.
 
     Called **only after the user has confirmed** the detected identity in the
-    frontend UI. Writes the attendance record to Firestore / Realtime DB.
+    frontend UI.  Writes the attendance record to Firestore / Realtime DB.
 
     Body (JSON):
-        {
-          "student_id": "STU001",
-          "confidence": 0.97
-        }
-
-    Returns:
-        {
-          "success": true,
-          "record_id": "...",
-          "student_id": "STU001",
-          "student_name": "Alice Smith",
-          "timestamp": "2026-04-27T10:00:00"
-        }
+        { "student_id": "STU001", "confidence": 0.97 }
     """
     firebase = get_firebase_service()
     if not firebase:
@@ -293,8 +374,8 @@ async def confirm_attendance(
 
         student_name = student.get("name", "Unknown")
         logger.info(
-            f"Attendance confirmed and recorded: {student_id} ({student_name}) "
-            f"conf={confidence:.2f} record={result.get('record_id', '')}"
+            "Attendance confirmed and recorded: %s (%s) conf=%.2f record=%s",
+            student_id, student_name, confidence, result.get("record_id", ""),
         )
 
         return JSONResponse(
@@ -310,11 +391,8 @@ async def confirm_attendance(
             }
         )
     except Exception as e:
-        logger.error(f"Failed to save confirmed attendance: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Attendance recording failed: {str(e)}"
-        )
+        logger.error("Failed to save confirmed attendance: %s", e)
+        raise HTTPException(status_code=500, detail=f"Attendance recording failed: {e}")
 
 
 # ── Legacy: Detect + mark in one step (kept for backward compat) ──────────────
@@ -328,10 +406,8 @@ async def detect_face_and_mark(
     file: UploadFile = File(..., description="JPEG or PNG image containing a face"),
 ):
     """
-    Legacy single-step endpoint. Prefer the two-step flow:
+    Legacy single-step endpoint.  Prefer the two-step flow:
       POST /detect-face-only  →  user confirms  →  POST /confirm-attendance
-
-    Kept for backward compatibility with older integrations.
     """
     embedding, err = await _extract_embedding_from_upload(file)
     if err is not None:
@@ -342,12 +418,14 @@ async def detect_face_and_mark(
         raise HTTPException(status_code=503, detail="Firebase service not initialised")
 
     try:
-        THRESHOLD = 0.55
-        best_student, confidence, best_distance = _match_embedding(
-            embedding, firebase, THRESHOLD
+        best_student, confidence, best_distance = await run_in_threadpool(
+            _match_embedding_sync, embedding, firebase, COSINE_THRESHOLD
         )
 
-        if best_student is None or best_distance > THRESHOLD:
+        del embedding
+        gc.collect()
+
+        if best_student is None or best_distance > COSINE_THRESHOLD:
             return JSONResponse(
                 status_code=200,
                 content={
@@ -355,7 +433,7 @@ async def detect_face_and_mark(
                     "message": (
                         "Face not recognised. "
                         f"Best similarity: {max(0.0, 1 - best_distance):.2f} "
-                        f"(threshold: {1 - THRESHOLD:.2f}). "
+                        f"(threshold: {1 - COSINE_THRESHOLD:.2f}). "
                         "Ensure your face is clearly visible and well-lit, "
                         "or ask admin to register your face profile."
                     ),
@@ -364,8 +442,8 @@ async def detect_face_and_mark(
 
         student_id = best_student.get("student_id", "")
         student_name = best_student.get("name", "Unknown")
-
         timestamp = datetime.now()
+
         result = firebase.mark_attendance(
             student_id=student_id,
             timestamp=timestamp,
@@ -374,13 +452,13 @@ async def detect_face_and_mark(
             camera_id="web_upload",
             metadata={
                 "method": "face_recognition_upload",
-                "threshold": THRESHOLD,
+                "threshold": COSINE_THRESHOLD,
                 "distance": best_distance,
             }
         )
         logger.info(
-            f"Attendance marked via legacy upload: {student_id} ({student_name}) "
-            f"conf={confidence:.2f}"
+            "Attendance marked via legacy upload: %s (%s) conf=%.2f",
+            student_id, student_name, confidence,
         )
 
         return JSONResponse(
@@ -401,8 +479,8 @@ async def detect_face_and_mark(
             content={"matched": False, "message": "Server missing scipy library for face matching."}
         )
     except Exception as e:
-        logger.error(f"Matching error: {e}")
-        raise HTTPException(status_code=500, detail=f"Face matching failed: {str(e)}")
+        logger.error("Matching error: %s", e)
+        raise HTTPException(status_code=500, detail=f"Face matching failed: {e}")
 
 
 # ── Student Management ────────────────────────────────────────────────────────
@@ -420,7 +498,10 @@ async def register_student(request: StudentRegistrationRequest) -> StudentRegist
 
         existing = firebase.get_student(request.student_id)
         if existing:
-            raise HTTPException(status_code=409, detail=f"Student {request.student_id} already registered")
+            raise HTTPException(
+                status_code=409,
+                detail=f"Student {request.student_id} already registered"
+            )
 
         embeddings_array = np.array(request.embeddings[0])
         firebase.register_student(
@@ -442,8 +523,8 @@ async def register_student(request: StudentRegistrationRequest) -> StudentRegist
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error registering student: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to register student: {str(e)}")
+        logger.error("Error registering student: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to register student: {e}")
 
 
 @router.get("/students", response_model=StudentListResponse)
@@ -472,11 +553,13 @@ async def get_students(
             )
             for s in paginated
         ]
-        return StudentListResponse(success=True, count=len(students_info), students=students_info)
+        return StudentListResponse(
+            success=True, count=len(students_info), students=students_info
+        )
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve students: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve students: {e}")
 
 
 @router.get("/students/{student_id}", response_model=StudentInfo)
@@ -504,12 +587,16 @@ async def get_student(student_id: str) -> StudentInfo:
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get student: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get student: {e}")
 
 
 # ── Attendance Management ─────────────────────────────────────────────────────
 
-@router.post("/mark-attendance", response_model=MarkAttendanceResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/mark-attendance",
+    response_model=MarkAttendanceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def mark_attendance(request: MarkAttendanceRequest) -> MarkAttendanceResponse:
     try:
         firebase = get_firebase_service()
@@ -518,7 +605,9 @@ async def mark_attendance(request: MarkAttendanceRequest) -> MarkAttendanceRespo
 
         student = firebase.get_student(request.student_id)
         if not student:
-            raise HTTPException(status_code=404, detail=f"Student {request.student_id} not found")
+            raise HTTPException(
+                status_code=404, detail=f"Student {request.student_id} not found"
+            )
 
         timestamp = request.timestamp or datetime.now()
         result = firebase.mark_attendance(
@@ -531,7 +620,7 @@ async def mark_attendance(request: MarkAttendanceRequest) -> MarkAttendanceRespo
         )
         return MarkAttendanceResponse(
             success=True,
-            record_id=result['record_id'],
+            record_id=result["record_id"],
             student_id=request.student_id,
             timestamp=timestamp.isoformat(),
             message="Attendance marked successfully"
@@ -539,10 +628,14 @@ async def mark_attendance(request: MarkAttendanceRequest) -> MarkAttendanceRespo
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to mark attendance: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to mark attendance: {e}")
 
 
-@router.post("/mark-mobile", response_model=MarkAttendanceResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/mark-mobile",
+    response_model=MarkAttendanceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def mark_attendance_mobile(
     student_id: str = Query(...),
     image_base64: str = Query(...)
@@ -558,37 +651,45 @@ async def mark_attendance_mobile(
             raise HTTPException(status_code=404, detail=f"Student {student_id} not found")
 
         from PIL import Image
-        try:
-            image_data = base64.b64decode(image_base64)
-            image = Image.open(io.BytesIO(image_data)).convert("RGB")
-            image_array = np.array(image)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid image format: {str(e)}")
 
         try:
+            image_data = base64.b64decode(image_base64)
+            image_array = np.array(Image.open(io.BytesIO(image_data)).convert("RGB"))
+            del image_data
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid image format: {e}")
+
+        # Resize before inference, then push to thread
+        image_array = _resize_if_needed(image_array)
+
+        def _mobile_inference():
             THRESHOLD = 0.6
             extractor = ModelManager.get_facenet_extractor()
             embedding = extractor.extract_embedding(image_array)
             if embedding is None:
-                raise HTTPException(status_code=400, detail="No face detected")
+                raise ValueError("No face detected")
 
             embeddings = FirebaseService.get_all_embeddings(student)
             if not embeddings:
-                raise HTTPException(status_code=404, detail="No face profile found for student")
+                raise ValueError("No face profile found for student")
 
-            best_match = None
-            for arr in embeddings:
-                dist = float(cosine(embedding, arr))
-                if best_match is None or dist < best_match:
-                    best_match = dist
-
-            confidence = float(1.0 - min(best_match, 1.0)) if best_match is not None else 0.0
+            best_match = min(float(cosine(embedding, arr)) for arr in embeddings)
+            confidence = float(1.0 - min(best_match, 1.0))
             if best_match > THRESHOLD:
-                raise HTTPException(status_code=404, detail=f"Face does not match. Confidence: {confidence:.2f}")
+                raise ValueError(f"Face does not match. Confidence: {confidence:.2f}")
+            return confidence
+
+        try:
+            confidence = await run_in_threadpool(_mobile_inference)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except (ImportError, HTTPException):
             raise
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
+        finally:
+            del image_array
+            gc.collect()
 
         timestamp = datetime.now()
         result = firebase.mark_attendance(
@@ -601,7 +702,7 @@ async def mark_attendance_mobile(
         )
         return MarkAttendanceResponse(
             success=True,
-            record_id=result['record_id'],
+            record_id=result["record_id"],
             student_id=student_id,
             timestamp=timestamp.isoformat(),
             message=f"Attendance marked (confidence: {confidence:.2f})"
@@ -609,7 +710,7 @@ async def mark_attendance_mobile(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to mark attendance: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to mark attendance: {e}")
 
 
 @router.get("/attendance", response_model=AttendanceListResponse)
@@ -650,15 +751,19 @@ async def get_attendance(
             )
             for r in paginated
         ]
-        return AttendanceListResponse(success=True, count=len(attendance_records), records=attendance_records)
+        return AttendanceListResponse(
+            success=True, count=len(attendance_records), records=attendance_records
+        )
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve attendance: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve attendance: {e}")
 
 
 @router.get("/attendance/daily-report", response_model=DailyReportResponse)
-async def get_daily_report(date: Optional[str] = Query(None)) -> DailyReportResponse:
+async def get_daily_report(
+    date: Optional[str] = Query(None)
+) -> DailyReportResponse:
     try:
         firebase = get_firebase_service()
         if not firebase:
@@ -679,7 +784,7 @@ async def get_daily_report(date: Optional[str] = Query(None)) -> DailyReportResp
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate report: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate report: {e}")
 
 
 # ── Stream Management ─────────────────────────────────────────────────────────
@@ -699,9 +804,12 @@ async def add_stream(request: StreamConfig) -> StreamHealth:
             raise HTTPException(status_code=400, detail="Failed to add stream")
         if request.enabled:
             manager.start_stream(request.stream_id)
-        return StreamHealth(stream_id=request.stream_id, status="idle", last_frame=None, frames_processed=0, fps=0.0, errors=0)
+        return StreamHealth(
+            stream_id=request.stream_id, status="idle",
+            last_frame=None, frames_processed=0, fps=0.0, errors=0
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to add stream: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to add stream: {e}")
 
 
 @router.get("/streams")
@@ -711,7 +819,7 @@ async def get_streams():
         streams = manager.get_all_streams()
         return {"success": True, "count": len(streams), "streams": streams}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get streams: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get streams: {e}")
 
 
 @router.post("/streams/{stream_id}/start")
@@ -722,7 +830,7 @@ async def start_stream(stream_id: str):
             raise HTTPException(status_code=404, detail=f"Stream {stream_id} not found")
         return {"success": True, "message": f"Stream {stream_id} started"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to start stream: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to start stream: {e}")
 
 
 @router.post("/streams/{stream_id}/stop")
@@ -733,23 +841,37 @@ async def stop_stream(stream_id: str):
             raise HTTPException(status_code=404, detail=f"Stream {stream_id} not found")
         return {"success": True, "message": f"Stream {stream_id} stopped"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to stop stream: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to stop stream: {e}")
 
 
 # ── System Health / Stats ─────────────────────────────────────────────────────
 
 @router.get("/health", response_model=HealthCheckResponse)
 async def health_check() -> HealthCheckResponse:
+    """
+    Health check is a pure async function with no blocking work.
+    Because inference is now in a thread pool, this endpoint continues to
+    respond even while a face-detection request is being processed.
+    """
     try:
         firebase = get_firebase_service()
         manager = get_stream_manager()
         services = {
             "firebase": "healthy" if firebase else "unavailable",
-            "streams": "healthy" if manager else "unavailable"
+            "streams": "healthy" if manager else "unavailable",
+            "models": (
+                "healthy"
+                if ModelManager.is_initialized()
+                else "not_initialized"
+            ),
         }
-        return HealthCheckResponse(status="healthy", services=services, uptime_seconds=0)
+        return HealthCheckResponse(
+            status="healthy", services=services, uptime_seconds=0
+        )
     except Exception as e:
-        return HealthCheckResponse(status="error", services={"error": str(e)}, uptime_seconds=0)
+        return HealthCheckResponse(
+            status="error", services={"error": str(e)}, uptime_seconds=0
+        )
 
 
 @router.get("/stats", response_model=SystemStatsResponse)
@@ -776,8 +898,9 @@ async def get_stats() -> SystemStatsResponse:
             total_detections_today=len(today_records),
             average_confidence=(
                 sum(r.get("confidence", 0) for r in attendance_records) /
-                len(attendance_records) if attendance_records else 0
+                len(attendance_records)
+                if attendance_records else 0
             )
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get stats: {e}")
