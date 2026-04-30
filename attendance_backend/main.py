@@ -1,272 +1,210 @@
 """
-Main FastAPI application for Smart Attendance System.
+main.py
+─────────────────────────────────────────────────────────────────────────────
+FastAPI application entry-point for the Smart Attendance System.
 
-Entry point for the face recognition attendance backend API.
+Startup sequence
+----------------
+1. Initialise Firebase / Firestore client
+2. Initialise ModelManager (YOLOv8 + FaceNet) — done lazily on first request
+3. Initialise FirebaseService singleton
+4. Initialise TimetableService (requires Firestore client)
+5. Initialise PeriodDetectionService (requires TimetableService)
+6. Start PeriodDetectionService background loop (async task)
+7. Initialise RTSPStreamManager
+
+Shutdown sequence
+-----------------
+1. Stop PeriodDetectionService (graceful cancel + join)
+2. Stop all RTSP streams
+3. Clean up model resources
+
+All services expose module-level get_*() functions so routers can access
+singletons without circular imports.
 """
 
+from __future__ import annotations
+
 import logging
-import asyncio
-import socket
+import os
 from contextlib import asynccontextmanager
-from typing import Dict, Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
-from config.settings import get_settings
-from config.constants import API_PREFIX, CORS_ALLOWED_ORIGINS, SYSTEM_NAME, SYSTEM_VERSION
-from config.logging_config import setup_logging
-from models.model_manager import ModelManager
-from api import health
-from api import attendance
-from api import user
-from api import admin
-from api import student
-from api import admin_students
-from api import courses
-from api import qr_attendance
-from services.firebase_service import initialize_firebase
-from services.rtsp_stream_handler import get_stream_manager
+# ── Routers ────────────────────────────────────────────────────────────────────
+from api.admin      import router as admin_router
+from api.attendance import router as attendance_router
+from api.timetable  import router as timetable_router   # NEW
 
+# ── Services ───────────────────────────────────────────────────────────────────
+from services.firebase_service        import init_firebase_service
+from services.rtsp_stream_handler     import init_stream_manager
+from services.timetable_service       import init_timetable_service        # NEW
+from services.period_detection_service import init_period_detection_service  # NEW
 
-# Setup logging
-setup_logging()
+# ── Config ─────────────────────────────────────────────────────────────────────
+from config.constants import (
+    CORS_ALLOWED_HEADERS,
+    CORS_ALLOWED_METHODS,
+    CORS_ALLOWED_ORIGINS,
+    CORS_ALLOW_CREDENTIALS,
+    ENABLE_PERIOD_DETECTION,
+    PERIOD_DETECTION_POLL_INTERVAL,
+    SYSTEM_NAME,
+    SYSTEM_VERSION,
+)
+
 logger = logging.getLogger(__name__)
 
-
-# Suppress spurious Windows socket errors (WinError 10054)
-def suppress_windows_socket_errors():
-    """
-    Suppress spurious Windows socket errors that occur during connection cleanup.
-    These are harmless and can be safely ignored.
-    Reference: https://github.com/encode/uvicorn/issues/1014
-    """
-    def exception_handler(loop, context):
-        exception = context.get("exception")
-        
-        # Suppress WinError 10054: An existing connection was forcibly closed by the remote host
-        if isinstance(exception, OSError):
-            if exception.winerror == 10054:  # type: ignore
-                logger.debug(f"Suppressed spurious Windows socket error: {exception}")
-                return
-        
-        # For other exceptions, use default handler
-        loop.default_exception_handler(context)
-    
-    if asyncio.sys.platform == "win32":
-        loop = asyncio.get_event_loop()
-        loop.set_exception_handler(exception_handler)
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] %(name)s — %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 
-# Lifespan context manager for startup/shutdown
+# ══════════════════════════════════════════════════════════════════════════════
+# Lifespan (replaces deprecated on_event)
+# ══════════════════════════════════════════════════════════════════════════════
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Manage application startup and shutdown events.
+    Async context manager that owns the full service lifecycle.
+
+    Everything before ``yield`` runs at startup; everything after at shutdown.
     """
-    # Suppress Windows socket errors
-    suppress_windows_socket_errors()
-    
-    # Startup
-    logger.info(f"Starting {SYSTEM_NAME} v{SYSTEM_VERSION}")
-    
-    settings = get_settings()
-    
-    # Initialize Firebase
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # STARTUP
+    # ──────────────────────────────────────────────────────────────────────────
+    logger.info("═══ %s v%s — STARTUP ═══", SYSTEM_NAME, SYSTEM_VERSION)
+
+    # 1. Firebase / Firestore
+    firebase_svc = None
+    firestore_db = None
     try:
-        if settings.firebase_credentials_path:
-            logger.info("Initializing Firebase...")
-            initialize_firebase(
-                credentials_path=settings.firebase_credentials_path,
-                database_url=getattr(settings, 'firebase_database_url', None),
-                storage_bucket=getattr(settings, 'firebase_storage_bucket', None),
-                use_firestore=getattr(settings, 'use_firestore', True)
+        firebase_svc = init_firebase_service()
+        # Obtain the Firestore client from the service (adjust to your impl)
+        firestore_db = getattr(firebase_svc, "firestore_db", None) or \
+                       getattr(firebase_svc, "_firestore", None)
+        logger.info("✓ FirebaseService initialised")
+    except Exception as exc:
+        logger.error("✗ FirebaseService init failed: %s", exc)
+
+    # 2. RTSP stream manager
+    try:
+        init_stream_manager()
+        logger.info("✓ RTSPStreamManager initialised")
+    except Exception as exc:
+        logger.error("✗ RTSPStreamManager init failed: %s", exc)
+
+    # 3. TimetableService  [NEW]
+    timetable_svc = None
+    if firestore_db is not None:
+        try:
+            timetable_svc = init_timetable_service(firestore_db)
+            logger.info("✓ TimetableService initialised")
+        except Exception as exc:
+            logger.error("✗ TimetableService init failed: %s", exc)
+    else:
+        logger.warning(
+            "⚠ TimetableService skipped — Firestore client unavailable."
+        )
+
+    # 4. PeriodDetectionService  [NEW]
+    period_svc = None
+    if ENABLE_PERIOD_DETECTION and timetable_svc is not None and firestore_db is not None:
+        try:
+            period_svc = init_period_detection_service(
+                firestore_db=firestore_db,
+                timetable_service=timetable_svc,
+                poll_interval=PERIOD_DETECTION_POLL_INTERVAL,
             )
-            logger.info("✓ Firebase initialized successfully")
+            await period_svc.start()
+            logger.info(
+                "✓ PeriodDetectionService started (poll=%ds)",
+                PERIOD_DETECTION_POLL_INTERVAL,
+            )
+        except Exception as exc:
+            logger.error("✗ PeriodDetectionService start failed: %s", exc)
+    else:
+        if not ENABLE_PERIOD_DETECTION:
+            logger.info(
+                "⚠ PeriodDetectionService disabled via ENABLE_PERIOD_DETECTION=False"
+            )
         else:
-            logger.warning("Firebase credentials path not configured")
-    except Exception as e:
-        logger.error(f"Failed to initialize Firebase: {e}")
-        logger.warning("Operating without Firebase (data won't be persisted)")
-    
-    try:
-        # Initialize models — use CPU if CUDA is not available
-        import torch
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info(f"Initializing ML models on device: {device}")
-        ModelManager.initialize(device=device)
-        logger.info("✓ ML models initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize models: {e}")
-        # Continue anyway - models can be loaded on-demand
-    
-    # Initialize stream manager
-    try:
-        logger.info("Initializing stream manager...")
-        stream_manager = get_stream_manager()
-        logger.info("✓ Stream manager initialized")
-    except Exception as e:
-        logger.error(f"Failed to initialize stream manager: {e}")
-    
+            logger.warning(
+                "⚠ PeriodDetectionService skipped — dependencies unavailable."
+            )
+
+    logger.info("═══ Startup complete — all services ready ═══")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # HAND CONTROL TO FASTAPI
+    # ──────────────────────────────────────────────────────────────────────────
     yield
-    
-    # Shutdown
-    logger.info("Shutting down application...")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # SHUTDOWN
+    # ──────────────────────────────────────────────────────────────────────────
+    logger.info("═══ %s — SHUTDOWN ═══", SYSTEM_NAME)
+
+    if period_svc is not None:
+        try:
+            await period_svc.stop()
+            logger.info("✓ PeriodDetectionService stopped")
+        except Exception as exc:
+            logger.error("✗ PeriodDetectionService stop error: %s", exc)
+
+    # Stop all RTSP streams (if the manager exposes a shutdown method)
     try:
-        ModelManager.cleanup()
-        logger.info("Models cleaned up")
-    except Exception as e:
-        logger.warning(f"Error during cleanup: {e}")
-    
-    logger.info("Application shut down successfully")
+        from services.rtsp_stream_handler import get_stream_manager
+        mgr = get_stream_manager()
+        if mgr and hasattr(mgr, "stop_all"):
+            mgr.stop_all()
+            logger.info("✓ All RTSP streams stopped")
+    except Exception as exc:
+        logger.error("✗ RTSP shutdown error: %s", exc)
+
+    logger.info("═══ Shutdown complete ═══")
 
 
-# Create FastAPI app
+# ══════════════════════════════════════════════════════════════════════════════
+# Application
+# ══════════════════════════════════════════════════════════════════════════════
+
 app = FastAPI(
     title=SYSTEM_NAME,
-    description="Face Recognition Attendance System API",
     version=SYSTEM_VERSION,
+    description=(
+        "AI-powered face recognition attendance system with real-time "
+        "timetable & period detection."
+    ),
     lifespan=lifespan,
 )
 
-# Add CORS middleware
+# ── CORS ───────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=CORS_ALLOW_CREDENTIALS,
+    allow_methods=CORS_ALLOWED_METHODS,
+    allow_headers=CORS_ALLOWED_HEADERS,
 )
 
+# ── Routers ────────────────────────────────────────────────────────────────────
+app.include_router(attendance_router)
+app.include_router(admin_router)
+app.include_router(timetable_router)    # NEW
 
-# ============ Root Endpoints ============
-
-@app.get(
-    "/",
-    tags=["root"],
-    summary="API Root",
-    description="Get API information"
-)
-async def root() -> Dict[str, Any]:
-    """
-    Get API root information.
-    
-    Returns:
-        Dictionary with API metadata
-    """
-    return {
-        "name": SYSTEM_NAME,
-        "version": SYSTEM_VERSION,
-        "docs": "/docs",
-        "api_prefix": API_PREFIX,
-    }
-
-
-@app.get(
-    "/info",
-    tags=["root"],
-    summary="System Information",
-    description="Get detailed system information"
-)
-async def system_info() -> Dict[str, Any]:
-    """
-    Get system information.
-    
-    Returns:
-        Dictionary with system details
-    """
-    settings = get_settings()
-    
+# ── Root health check ──────────────────────────────────────────────────────────
+@app.get("/", tags=["root"])
+async def root():
     return {
         "system": SYSTEM_NAME,
         "version": SYSTEM_VERSION,
-        "environment": settings.fastapi_env,
-        "api_prefix": API_PREFIX,
-        "server": {
-            "host": settings.host,
-            "port": settings.port,
-        },
-        "models": ModelManager.get_status(),
+        "status": "running",
+        "docs": "/docs",
     }
-
-
-# ============ Route Registration ============
-
-# Include health routes
-app.include_router(health.router, prefix=API_PREFIX, tags=["health"])
-
-# Include attendance routes
-app.include_router(attendance.router, prefix=API_PREFIX, tags=["attendance"])
-
-# Include user routes
-app.include_router(user.router, prefix=API_PREFIX, tags=["user"])
-
-# Include admin routes
-app.include_router(admin.router, tags=["admin"])
-
-# Include student routes
-app.include_router(student.router, tags=["student"])
-
-# Include admin student management routes
-app.include_router(admin_students.router, prefix=API_PREFIX, tags=["admin-students"])
-
-# Include course management routes
-app.include_router(courses.router, prefix=API_PREFIX, tags=["admin-courses"])
-# Backward compatibility for frontend calls using /api/v1/admin/courses
-app.include_router(courses.router, prefix=f"{API_PREFIX}/admin", tags=["admin-courses"])
-
-# Include QR attendance routes
-app.include_router(qr_attendance.router, prefix=API_PREFIX, tags=["qr-attendance"])
-
-
-# ============ Error Handlers ============
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
-    """
-    Global exception handler for unhandled errors.
-    
-    Args:
-        request: Request object
-        exc: Exception that occurred
-    
-    Returns:
-        JSON error response
-    """
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "Internal Server Error",
-            "detail": "An unexpected error occurred",
-        }
-    )
-
-
-# ============ Startup Event ============
-
-@app.on_event("startup")
-async def startup_event():
-    """
-    Handle startup events.
-    """
-    settings = get_settings()
-    logger.info(f"API started in {settings.fastapi_env} mode")
-    logger.info(f"Listening on {settings.host}:{settings.port}")
-
-
-if __name__ == "__main__":
-    import uvicorn
-    
-    settings = get_settings()
-    
-    # Run development server
-    uvicorn.run(
-        "main:app",
-        host=settings.host,
-        port=settings.port,
-        reload=settings.fastapi_reload,
-        log_level=settings.log_level.lower(),
-    )

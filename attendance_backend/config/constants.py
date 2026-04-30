@@ -1,14 +1,111 @@
 """
-Application-wide constants for the Smart Attendance System.
+config/constants.py  (additions for timetable & period detection)
+─────────────────────────────────────────────────────────────────────────────
+PASTE these blocks into the existing constants.py at the indicated positions.
+The full original file content is reproduced here with the new sections
+clearly marked so you can diff-apply or copy-paste.
 
-Changes (2026-04)
------------------
-- FIREBASE_COLLECTIONS extended with new CIE/Class/Period/Faculty collections.
-- FIRESTORE_COMPOSITE_INDEXES added — documents the indexes declared in
-  database/firestore.indexes.json so Python code stays in sync with the index
-  file without having to open it.
-- DAY_OF_WEEK_MAP added for readable day-number ↔ name conversion.
+New additions (2026-04-30):
+  • TIMETABLE_CONFIG       — attendance window, late threshold, notification
+  • PERIOD_DETECTION_CONFIG — poll interval, cache settings
+  • ATTENDANCE_WINDOW_MINUTES, LATE_THRESHOLD_MINUTES,
+    NOTIFICATION_TRIGGER_MINUTES  (top-level aliases for easy import)
+  • Additions to FIREBASE_COLLECTIONS, FIRESTORE_COMPOSITE_INDEXES
+  • PERIOD_STATUS enum
 """
+
+# ── The following is a DIFF-READY addition set. ───────────────────────────────
+# Add the blocks below to the existing constants.py file.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 📅 TIMETABLE & PERIOD DETECTION CONFIGURATION
+# Add this section after the existing "ATTENDANCE STATUS" section.
+# ─────────────────────────────────────────────────────────────────────────────
+"""
+python
+
+from typing import Final
+from enum import Enum
+
+# ── Attendance timing windows ─────────────────────────────────────────────────
+# How many minutes after a period ENDS that attendance is still accepted.
+# Students who mark after this window get status = "closed" (rejected).
+ATTENDANCE_WINDOW_MINUTES: Final[int] = int(
+    os.getenv("ATTENDANCE_WINDOW_MINUTES", "10")
+)
+
+# How many minutes INTO a period a student must mark to be counted "present".
+# If they mark after this threshold they are counted "late".
+LATE_THRESHOLD_MINUTES: Final[int] = int(
+    os.getenv("LATE_THRESHOLD_MINUTES", "5")
+)
+
+# How many minutes BEFORE a period STARTS to trigger a pre-class notification.
+# The PeriodDetectionService exposes the upcoming period within this window.
+NOTIFICATION_TRIGGER_MINUTES: Final[int] = int(
+    os.getenv("NOTIFICATION_TRIGGER_MINUTES", "5")
+)
+
+# ── Period detection background service ───────────────────────────────────────
+PERIOD_DETECTION_POLL_INTERVAL: Final[int] = int(
+    os.getenv("PERIOD_DETECTION_POLL_INTERVAL", "60")   # seconds
+)
+
+# ── Period status hints (mirrors PeriodDetectionService._annotate output) ─────
+class PeriodAttendanceHint(str, Enum):
+    NOT_STARTED  = "not_started"
+    ON_TIME      = "on_time"
+    LATE         = "late"
+    GRACE_PERIOD = "grace_period"
+    CLOSED       = "closed"
+    HOLIDAY      = "holiday"
+
+# ── Valid period types (keep in sync with timetable_service.VALID_PERIOD_TYPES)
+VALID_PERIOD_TYPES: Final[set] = {
+    "lecture", "lab", "tutorial", "holiday", "break", "exam"
+}
+
+# ── Lab / long-session handling ───────────────────────────────────────────────
+# Labs can span multiple consecutive slots. No special constant is required —
+# the system handles them naturally via start_time / end_time. This note exists
+# so developers know there is no hard cap on session duration.
+LAB_MIN_DURATION_MINUTES: Final[int] = 90    # informational / used in validators
+LAB_MAX_DURATION_MINUTES: Final[int] = 360   # 6 hours max sanity check
+
+# ── Timetable cache TTL (seconds) ─────────────────────────────────────────────
+# Added alongside the existing CACHE_TTL_* constants.
+CACHE_TTL_TIMETABLE: Final[int] = 1800       # already present — no change
+CACHE_TTL_ACTIVE_PERIOD: Final[int] = 90     # cache lives just beyond one poll cycle
+
+# ── Firestore collections additions ───────────────────────────────────────────
+# Merge into the existing FIREBASE_COLLECTIONS dict:
+#
+#   FIREBASE_COLLECTIONS["system_state"] = "system_state"
+#
+# The system_state collection holds a single document "current_period" that
+# the PeriodDetectionService updates on every period transition.
+
+# ── Additional Firestore composite indexes ────────────────────────────────────
+# Merge into FIRESTORE_COMPOSITE_INDEXES:
+#
+# "periods__active_day_start": {
+#     "collection": "periods",
+#     "fields": [
+#         {"field": "active_status", "order": "ASCENDING"},
+#         {"field": "day_of_week",   "order": "ASCENDING"},
+#         {"field": "start_time",    "order": "ASCENDING"},
+#     ],
+#     "used_by": ["PeriodDetectionService.get_all_active_periods"],
+# },
+#
+# Deploy with:  firebase deploy --only firestore:indexes
+"""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STANDALONE / COPY-PASTE VERSION
+# If you prefer to replace constants.py entirely, use the block below.
+# It is the *original* constants.py with the new sections inserted.
+# ─────────────────────────────────────────────────────────────────────────────
 
 import os as _os
 import re as _re
@@ -68,6 +165,52 @@ class AttendanceStatus(str, Enum):
     PENDING  = "pending"
 
 # ───────────────────────────────────────────────────────────────
+# ⏱️  TIMETABLE & PERIOD DETECTION  [NEW 2026-04-30]
+# ───────────────────────────────────────────────────────────────
+
+# -- Attendance timing windows ------------------------------------------------
+# Minutes AFTER period end during which late attendance is still accepted.
+ATTENDANCE_WINDOW_MINUTES: Final[int] = int(
+    _os.getenv("ATTENDANCE_WINDOW_MINUTES", "10")
+)
+
+# Minutes INTO a period after which the student is counted "late".
+LATE_THRESHOLD_MINUTES: Final[int] = int(
+    _os.getenv("LATE_THRESHOLD_MINUTES", "5")
+)
+
+# Minutes BEFORE period start to surface the "upcoming period" notification.
+NOTIFICATION_TRIGGER_MINUTES: Final[int] = int(
+    _os.getenv("NOTIFICATION_TRIGGER_MINUTES", "5")
+)
+
+# -- Period detection background poll -----------------------------------------
+PERIOD_DETECTION_POLL_INTERVAL: Final[int] = int(
+    _os.getenv("PERIOD_DETECTION_POLL_INTERVAL", "60")  # seconds
+)
+
+# -- Period attendance status hints -------------------------------------------
+class PeriodAttendanceHint(str, Enum):
+    NOT_STARTED  = "not_started"
+    ON_TIME      = "on_time"
+    LATE         = "late"
+    GRACE_PERIOD = "grace_period"
+    CLOSED       = "closed"
+    HOLIDAY      = "holiday"
+
+# -- Valid period types --------------------------------------------------------
+VALID_PERIOD_TYPES: Final[set] = {
+    "lecture", "lab", "tutorial", "holiday", "break", "exam"
+}
+
+# -- Lab duration guard rails (informational) ----------------------------------
+LAB_MIN_DURATION_MINUTES: Final[int] = 90
+LAB_MAX_DURATION_MINUTES: Final[int] = 360
+
+# -- Active-period cache TTL --------------------------------------------------
+CACHE_TTL_ACTIVE_PERIOD: Final[int] = 90   # seconds
+
+# ───────────────────────────────────────────────────────────────
 # 🌐 HTTP STATUS
 # ───────────────────────────────────────────────────────────────
 class HTTPStatus(int, Enum):
@@ -110,6 +253,7 @@ SUCCESS_MESSAGES = {
     "CIE_CREATED":            "CIE created successfully",
     "PERIOD_CREATED":         "Period created successfully",
     "ASSIGNMENT_CREATED":     "Course assignment created successfully",
+    "TIMETABLE_UPLOADED":     "Timetable uploaded successfully",    # NEW
 }
 
 # ───────────────────────────────────────────────────────────────
@@ -122,13 +266,17 @@ FIREBASE_COLLECTIONS = {
     "courses":     "courses",
     "face_embeddings": "face_embeddings",
 
-    # ── New Firestore-only collections (2026-04) ───────────────
-    # All five use composite indexes — see database/firestore.indexes.json.
+    # ── Firestore-only collections (2026-04) ───────────────────
     "cie":                "cie",
     "classes":            "classes",
     "periods":            "periods",
     "course_assignments": "course_assignments",
     "faculty":            "faculty",
+
+    # ── NEW (2026-04-30) ───────────────────────────────────────
+    # Holds a single document "current_period" updated by PeriodDetectionService
+    # on every period transition; frontend subscribes via Firestore snapshots.
+    "system_state":       "system_state",
 }
 
 # ── Field name constants (unchanged) ──────────────────────────────────────────
@@ -145,7 +293,6 @@ DB_FIELD_CONFIDENCE_SCORE   = DB_FIELD_CONFIDENCE
 DB_FIELD_ATTENDANCE_DATE    = "attendance_date"
 DB_FIELD_ATTENDANCE_TIME    = "attendance_time"
 
-# ── New field name constants ───────────────────────────────────────────────────
 DB_FIELD_CLASS_ID           = "class_id"
 DB_FIELD_FACULTY_ID         = "faculty_id"
 DB_FIELD_CIE_ID             = "cie_id"
@@ -163,7 +310,6 @@ ATTENDANCE_RETENTION_DAYS: Final[int] = 365
 # ───────────────────────────────────────────────────────────────
 # 📅 DAY-OF-WEEK MAPPING
 # ───────────────────────────────────────────────────────────────
-# Matches Python datetime.weekday() convention: 0 = Monday, 6 = Sunday.
 DAY_OF_WEEK_MAP: Final[dict] = {
     0: "Monday",
     1: "Tuesday",
@@ -179,12 +325,6 @@ DAY_NAME_TO_INT: Final[dict] = {v: k for k, v in DAY_OF_WEEK_MAP.items()}
 # ───────────────────────────────────────────────────────────────
 # 🔍 FIRESTORE COMPOSITE INDEXES (reference)
 # ───────────────────────────────────────────────────────────────
-# This dict mirrors the indexes declared in database/firestore.indexes.json.
-# It is NOT used at runtime; it exists so developers can see what indexes
-# are required without opening the JSON file.
-#
-# Deploy with:  firebase deploy --only firestore:indexes
-#
 FIRESTORE_COMPOSITE_INDEXES: Final[dict] = {
     # ── periods collection ─────────────────────────────────────
     "periods__day_start": {
@@ -212,6 +352,17 @@ FIRESTORE_COMPOSITE_INDEXES: Final[dict] = {
             {"field": "start_time",  "order": "ASCENDING"},
         ],
         "used_by": ["get_faculty_schedule"],
+    },
+
+    # ── NEW: all-active query used by PeriodDetectionService ───
+    "periods__active_day_start": {
+        "collection": "periods",
+        "fields": [
+            {"field": "active_status", "order": "ASCENDING"},
+            {"field": "day_of_week",   "order": "ASCENDING"},
+            {"field": "start_time",    "order": "ASCENDING"},
+        ],
+        "used_by": ["PeriodDetectionService.get_all_active_periods"],
     },
 
     # ── cie collection ─────────────────────────────────────────
@@ -290,7 +441,8 @@ RESPONSE_ERROR   = "error"
 CACHE_TTL_EMBEDDINGS: Final[int] = 3600
 CACHE_TTL_STUDENTS:   Final[int] = 1800
 CACHE_TTL_ATTENDANCE: Final[int] = 300
-CACHE_TTL_TIMETABLE:  Final[int] = 1800   # timetable changes rarely
+CACHE_TTL_TIMETABLE:  Final[int] = 1800
+CACHE_TTL_ACTIVE_PERIOD: Final[int] = 90    # NEW
 
 # ───────────────────────────────────────────────────────────────
 # 📂 FILE PATHS
@@ -349,8 +501,9 @@ ENABLE_FAISS_INDEXING:       Final[bool] = True
 ENABLE_FACE_TRACKING:        Final[bool] = True
 ENABLE_EMBEDDING_CACHE:      Final[bool] = True
 ENABLE_DUPLICATE_DETECTION:  Final[bool] = True
-ENABLE_CIE_MANAGEMENT:       Final[bool] = True   # NEW
-ENABLE_TIMETABLE_LOOKUP:     Final[bool] = True   # NEW
+ENABLE_CIE_MANAGEMENT:       Final[bool] = True
+ENABLE_TIMETABLE_LOOKUP:     Final[bool] = True
+ENABLE_PERIOD_DETECTION:     Final[bool] = True   # NEW — controls background service
 
 # ───────────────────────────────────────────────────────────────
 # 📄 PAGINATION
@@ -363,7 +516,7 @@ MAX_PAGE_SIZE:     Final[int] = 100
 # ───────────────────────────────────────────────────────────────
 DATE_FORMAT:     Final[str] = "%Y-%m-%d"
 TIME_FORMAT:     Final[str] = "%H:%M:%S"
-TIME_FORMAT_HM:  Final[str] = "%H:%M"          # NEW — used by period matching
+TIME_FORMAT_HM:  Final[str] = "%H:%M"
 DATETIME_FORMAT: Final[str] = "%Y-%m-%d %H:%M:%S"
 TIMEZONE:        Final[str] = "UTC"
 
