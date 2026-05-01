@@ -40,8 +40,8 @@ from api.teacher    import router as teacher_router    # NEW (Module 3)
 from api.student    import router as student_router    # NEW (Module 4)
 
 # ── Services ───────────────────────────────────────────────────────────────────
-from services.firebase_service        import init_firebase_service
-from services.rtsp_stream_handler     import init_stream_manager
+from services.firebase_service        import initialize_firebase
+from services.rtsp_stream_handler     import get_stream_manager
 from services.timetable_service       import init_timetable_service        # NEW
 from services.period_detection_service import init_period_detection_service  # NEW
 
@@ -87,7 +87,7 @@ async def lifespan(app: FastAPI):
     firebase_svc = None
     firestore_db = None
     try:
-        firebase_svc = init_firebase_service()
+        firebase_svc = initialize_firebase(credentials_path="config/firebase-credentials.json")
         # Obtain the Firestore client from the service (adjust to your impl)
         firestore_db = getattr(firebase_svc, "firestore_db", None) or \
                        getattr(firebase_svc, "_firestore", None)
@@ -97,7 +97,7 @@ async def lifespan(app: FastAPI):
 
     # 2. RTSP stream manager
     try:
-        init_stream_manager()
+        get_stream_manager()
         logger.info("✓ RTSPStreamManager initialised")
     except Exception as exc:
         logger.error("✗ RTSPStreamManager init failed: %s", exc)
@@ -212,3 +212,12 @@ async def root():
         "status": "running",
         "docs": "/docs",
     }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="info",
+    )

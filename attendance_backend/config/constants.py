@@ -279,6 +279,17 @@ FIREBASE_COLLECTIONS = {
     "system_state":       "system_state",
 }
 
+# ── Collection name constants ──────────────────────────────────────────────────
+COLLECTION_CIES            = "cie"
+COLLECTION_CLASSES         = "classes"
+COLLECTION_STUDENTS        = "students"
+COLLECTION_TIMETABLE       = "periods"
+COLLECTION_ATTENDANCE      = "attendance"
+COLLECTION_FACULTY         = "faculty"
+COLLECTION_COURSES         = "courses"
+COLLECTION_FACE_EMBEDDINGS = "face_embeddings"
+COLLECTION_SYSTEM_STATE    = "system_state"
+
 # ── Field name constants (unchanged) ──────────────────────────────────────────
 DB_FIELD_STUDENT_ID         = "student_id"
 DB_FIELD_COURSE_ID          = "course_id"

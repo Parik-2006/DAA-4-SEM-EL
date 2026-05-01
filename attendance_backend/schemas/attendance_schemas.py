@@ -29,7 +29,7 @@ from datetime import datetime, date
 from typing import Any, Dict, List, Optional
 from enum import Enum
 
-from pydantic import BaseModel, Field, EmailStr, validator, root_validator
+from pydantic import BaseModel, Field, EmailStr, validator, root_validator, model_validator
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -354,7 +354,7 @@ class CIECreateRequest(BaseModel):
     def validate_end_date(cls, v):
         return _validate_date_str(v, "end_date")
 
-    @root_validator
+    @root_validator(skip_on_failure=True)
     def end_after_start(cls, values):
         s, e = values.get("start_date"), values.get("end_date")
         if s and e and e < s:
@@ -438,7 +438,7 @@ class PeriodCreateRequest(BaseModel):
     def validate_end_time(cls, v):
         return _validate_time_str(v, "end_time")
 
-    @root_validator
+    @root_validator(skip_on_failure=True)
     def end_after_start(cls, values):
         s, e = values.get("start_time"), values.get("end_time")
         if s and e and e <= s:

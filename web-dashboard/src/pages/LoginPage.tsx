@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { signInWithEmail } from '../services/firebase/auth.service';
+import { signIn } from '../services/firebase/auth.service';
 
 export const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -15,7 +15,7 @@ export const LoginPage: React.FC = () => {
     setLoading(true);
 
     try {
-      await signInWithEmail(email, password);
+      await signIn(email, password);
       navigate('/dashboard');
     } catch (err: any) {
       setError(err.message || 'Login failed');

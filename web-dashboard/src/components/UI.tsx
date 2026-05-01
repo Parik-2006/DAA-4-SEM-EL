@@ -275,3 +275,64 @@ export const Badge: React.FC<BadgeProps> = ({ children, variant = 'primary', siz
     </span>
   );
 };
+
+/* ── Alert ────────────────────────────────────────────────────────────────── */
+interface AlertProps {
+  type: 'info' | 'warning' | 'error' | 'success';
+  message: string;
+  onClose?: () => void;
+}
+
+const alertStyles = {
+  info: {
+    bg: 'rgba(59, 130, 246, 0.1)',
+    border: 'rgba(59, 130, 246, 0.3)',
+    text: 'rgb(37, 99, 235)',
+    icon: 'ⓘ',
+  },
+  warning: {
+    bg: 'rgba(245, 158, 11, 0.1)',
+    border: 'rgba(245, 158, 11, 0.3)',
+    text: 'rgb(217, 119, 6)',
+    icon: '⚠',
+  },
+  error: {
+    bg: 'rgba(239, 68, 68, 0.1)',
+    border: 'rgba(239, 68, 68, 0.3)',
+    text: 'rgb(220, 38, 38)',
+    icon: '✕',
+  },
+  success: {
+    bg: 'rgba(34, 197, 94, 0.1)',
+    border: 'rgba(34, 197, 94, 0.3)',
+    text: 'rgb(22, 163, 74)',
+    icon: '✓',
+  },
+};
+
+export const Alert: React.FC<AlertProps> = ({ type, message, onClose }) => {
+  const style = alertStyles[type];
+  return (
+    <div
+      className="rounded-lg p-4 mb-4 flex items-start gap-3"
+      style={{ backgroundColor: style.bg, border: `1px solid ${style.border}` }}
+    >
+      <span style={{ color: style.text, fontSize: '1.2rem', flexShrink: 0 }}>
+        {style.icon}
+      </span>
+      <p style={{ color: style.text, flex: 1 }}>{message}</p>
+      {onClose && (
+        <button
+          onClick={onClose}
+          className="text-sm font-semibold flex-shrink-0"
+          style={{ color: style.text, cursor: 'pointer' }}
+        >
+          ✕
+        </button>
+      )}
+    </div>
+  );
+};
+
+// SystemAlert is an alias for Alert
+export const SystemAlert = Alert;

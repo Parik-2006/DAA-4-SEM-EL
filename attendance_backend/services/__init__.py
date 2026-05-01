@@ -20,7 +20,7 @@ Legacy Services (High-level abstractions):
 from services.face_detection_service import FaceDetectionService
 from services.face_recognition_service import FaceRecognitionService
 from services.tracking_service import TrackingService
-from services.attendance_service import AttendanceService
+from services.attendance_service import AttendanceLockService as AttendanceService
 
 # New core pipeline imports
 try:

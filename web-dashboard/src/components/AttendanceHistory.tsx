@@ -15,7 +15,7 @@ import {
   Search, Filter, Download, ChevronLeft, ChevronRight,
   CheckCircle, XCircle, Clock, Activity, X, SlidersHorizontal
 } from 'lucide-react';
-import { useStudentAttendance, type CourseAttendanceStat } from '../../hooks/useAttendanceHooks';
+import { useStudentAttendance, type CourseAttendanceStat } from '../hooks/useAttendanceHooks';
 
 // ── Types & constants ──────────────────────────────────────────────────────────
 

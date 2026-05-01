@@ -11,7 +11,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { BookOpen, Clock, User, MapPin, Beaker, ChevronLeft, ChevronRight } from 'lucide-react';
-import { useTimetable, type PeriodCard } from '../../hooks/useAttendanceHooks';
+import { useTimetable, type PeriodCard } from '../hooks/useAttendanceHooks';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 

@@ -11,7 +11,7 @@
 
 import React from 'react';
 import { AlertTriangle, TrendingUp, TrendingDown, Minus } from 'lucide-react';
-import type { CourseAttendanceStat, AttendanceSummary } from '../../hooks/useAttendanceHooks';
+import type { CourseAttendanceStat, AttendanceSummary } from '../hooks/useAttendanceHooks';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 

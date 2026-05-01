@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Upload, Loader, X, ShieldCheck, User, Check } from 'lucide-react';
 import { attendanceAPI, DetectFaceResponse, ConfirmAttendanceResponse } from '@/services/api';
-import { Card } from '@/components';
+import { Card } from './UI';
 
 interface UploadPhotoProps {
   onAttendanceMarked: (data: any) => void;

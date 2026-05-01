@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Play, StopCircle, Loader, AlertCircle, Camera, Check, X, ShieldCheck, User } from 'lucide-react';
 import { attendanceAPI, DetectFaceResponse, ConfirmAttendanceResponse } from '@/services/api';
-import { Card } from '@/components';
+import { Card } from './UI';
 
 interface LiveCameraProps {
   onAttendanceMarked: (data: any) => void;

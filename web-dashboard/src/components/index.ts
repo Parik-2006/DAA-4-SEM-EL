@@ -1,13 +1,11 @@
 // ── Student components ─────────────────────────────────────────────────────────
-export { StudentDashboard }  from './student/StudentDashboard';
-export { TimetableView }     from './student/TimetableView';
-export { AttendanceHistory } from './student/AttendanceHistory';
-export { StatsCard }         from './student/StatsCard';
+export { TimetableView }     from './TimetableView';
+export { AttendanceHistory } from './AttendanceHistory';
+export { StatsCard }         from './StatsCard';
 
 // ── Teacher components ────────────────────────────────────────────────────────
-export { TeacherDashboard }  from './teacher/TeacherDashboard';
-export { AttendanceSheet }   from './teacher/AttendanceSheet';
-export type { TeacherPeriod, AttendanceEntry, AttendanceStatus } from './teacher/AttendanceSheet';
+export { AttendanceSheet }   from './AttendanceSheet';
+export type { TeacherPeriod, AttendanceEntry, AttendanceStatus } from './AttendanceSheet';
 
 // ── Admin components ──────────────────────────────────────────────────────────
 export {
@@ -15,8 +13,18 @@ export {
   CIEManagement,
   FileUploadForm,
   ReportsPage,
-} from './admin/AdminComponents';
-export type { AdminKPIs, CIERecord, UploadMode, ReportData } from './admin/AdminComponents';
+} from './AdminComponents';
+export type { AdminKPIs, CIERecord, UploadMode, ReportData } from './AdminComponents';
+
+// ── Shared components ─────────────────────────────────────────────────────────
+export { Layout } from './Layout';
+export { LiveCamera } from './LiveCamera';
+export { UploadPhoto } from './UploadPhoto';
+export { AttendanceRecordCard } from './Cards';
+export { Table } from './Cards';
+
+// ── UI Components ─────────────────────────────────────────────────────────────
+export * from './UI';
 
 // ── Hooks ─────────────────────────────────────────────────────────────────────
 export {
