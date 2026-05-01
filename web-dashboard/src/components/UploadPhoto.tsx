@@ -207,7 +207,7 @@ const SuccessFlash: React.FC<{ name: string }> = ({ name }) => (
 
 // ── Main UploadPhoto component ─────────────────────────────────────────────────
 
-export const UploadPhotoComponent: React.FC<UploadPhotoProps> = ({
+export const UploadPhoto: React.FC<UploadPhotoProps> = ({
   onAttendanceMarked,
   onProcessing,
   isLoading,
@@ -500,3 +500,5 @@ export const UploadPhotoComponent: React.FC<UploadPhotoProps> = ({
     </>
   );
 };
+
+export default UploadPhoto;

@@ -9,12 +9,11 @@ import {
 } from '../utils/retry-handler';
 
 const apiClient: AxiosInstance = axios.create({
-  baseURL: (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, ''),
+  baseURL: (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, ''),
   timeout: parseInt(import.meta.env.VITE_API_TIMEOUT || '15000'),
   headers: {
     'Content-Type': 'application/json',
     Accept: 'application/json',
-    'Connection': 'keep-alive', // Maintain connection persistence
   },
   validateStatus: (status) => {
     // Accept all status codes so we can handle them in interceptors

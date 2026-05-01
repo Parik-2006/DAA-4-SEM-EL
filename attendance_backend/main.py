@@ -38,6 +38,7 @@ from api.attendance import router as attendance_router
 from api.timetable  import router as timetable_router   # NEW
 from api.teacher    import router as teacher_router    # NEW (Module 3)
 from api.student    import router as student_router    # NEW (Module 4)
+from api.health     import router as health_router     # NEW
 
 # ── Services ───────────────────────────────────────────────────────────────────
 from services.firebase_service        import initialize_firebase
@@ -162,7 +163,6 @@ async def lifespan(app: FastAPI):
 
     # Stop all RTSP streams (if the manager exposes a shutdown method)
     try:
-        from services.rtsp_stream_handler import get_stream_manager
         mgr = get_stream_manager()
         if mgr and hasattr(mgr, "stop_all"):
             mgr.stop_all()
@@ -202,6 +202,7 @@ app.include_router(admin_router)
 app.include_router(timetable_router)    # NEW (Module 2)
 app.include_router(teacher_router)      # NEW (Module 3)
 app.include_router(student_router)      # NEW (Module 4)
+app.include_router(health_router, prefix="/api/v1/attendance")  # NEW (match frontend expectation)
 
 # ── Root health check ──────────────────────────────────────────────────────────
 @app.get("/", tags=["root"])

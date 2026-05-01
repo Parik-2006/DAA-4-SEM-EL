@@ -219,7 +219,7 @@ const SuccessFlash: React.FC<{ name: string }> = ({ name }) => (
 
 // ── Main LiveCamera component ──────────────────────────────────────────────────
 
-export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
+export const LiveCamera: React.FC<LiveCameraProps> = ({
   onAttendanceMarked,
   onProcessing,
   isLoading,
@@ -642,3 +642,5 @@ export const LiveCameraComponent: React.FC<LiveCameraProps> = ({
     </>
   );
 };
+
+export default LiveCamera;

@@ -77,7 +77,7 @@ from config.constants import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/attendance", tags=["attendance"])
+router = APIRouter(prefix="/api/v1/attendance", tags=["attendance"])
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 MAX_UPLOAD_BYTES  = 10 * 1024 * 1024   # 10 MB
