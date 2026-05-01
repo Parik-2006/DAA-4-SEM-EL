@@ -70,40 +70,16 @@ class ModelManager:
             
             logger.info("Initializing ML models...")
             settings = get_settings()
-            
-            # Load YOLOv8 detector (optional — face detection for RTSP streams)
-            try:
-                logger.info("Loading YOLOv8 face detector...")
-                cls._yolov8_detector = YOLOv8Detector(
-                    model_path=settings.yolov8_model_path,
-                    confidence_threshold=settings.yolov8_confidence_threshold,
-                    device=device
-                )
-                logger.info("✓ YOLOv8 detector loaded successfully")
-            except Exception as e:
-                logger.warning(
-                    f"YOLOv8 detector could not be loaded (non-fatal): {e}. "
-                    "RTSP stream detection will be unavailable, but web camera still works."
-                )
-                cls._yolov8_detector = None
-            
-            # Load FaceNet extractor (required for all face recognition)
-            try:
-                logger.info("Loading FaceNet embedding extractor...")
-                cls._facenet_extractor = FaceNetExtractor(
-                    pretrained=True,
-                    device=device
-                )
-                logger.info("✓ FaceNet extractor loaded successfully")
-            except Exception as e:
-                logger.error(f"FaceNet extractor failed to load: {e}")
-                cls._facenet_extractor = None
-            
-            # Mark as initialized if at least FaceNet loaded
+
+            cls._load_yolov8(settings, device)
+            cls._load_facenet(device)
+
             cls._initialized = True
             if cls._facenet_extractor is not None:
-                logger.info("ML models ready (FaceNet: ✓, YOLOv8: %s)",
-                            "✓" if cls._yolov8_detector else "✗ missing weights")
+                logger.info(
+                    "ML models ready (FaceNet: ✓, YOLOv8: %s)",
+                    "✓" if cls._yolov8_detector else "✗ missing weights"
+                )
             else:
                 logger.error("FaceNet failed to load — face recognition will be unavailable")
         
@@ -120,6 +96,9 @@ class ModelManager:
         Raises:
             RuntimeError: If models not initialized
         """
+        if not cls._initialized:
+            cls.initialize()
+
         if cls._yolov8_detector is None:
             raise RuntimeError(
                 "YOLOv8 detector is not available. "
@@ -138,6 +117,9 @@ class ModelManager:
         Raises:
             RuntimeError: If models not initialized
         """
+        if not cls._initialized:
+            cls.initialize()
+
         if cls._facenet_extractor is None:
             raise RuntimeError(
                 "FaceNet extractor is not available. "
@@ -195,3 +177,40 @@ class ModelManager:
             
             cls._initialized = False
             logger.info("Model resources cleaned up")
+
+    @classmethod
+    def _load_yolov8(cls, settings, device: str) -> None:
+        if cls._yolov8_detector is not None:
+            return
+
+        try:
+            logger.info("Loading YOLOv8 face detector...")
+            cls._yolov8_detector = YOLOv8Detector(
+                model_path=settings.yolov8_model_path,
+                confidence_threshold=settings.yolov8_confidence_threshold,
+                device=device,
+            )
+            logger.info("✓ YOLOv8 detector loaded successfully")
+        except Exception as exc:
+            logger.warning(
+                "YOLOv8 detector could not be loaded (non-fatal): %s. "
+                "RTSP stream detection will be unavailable, but web camera still works.",
+                exc,
+            )
+            cls._yolov8_detector = None
+
+    @classmethod
+    def _load_facenet(cls, device: str) -> None:
+        if cls._facenet_extractor is not None:
+            return
+
+        try:
+            logger.info("Loading FaceNet embedding extractor...")
+            cls._facenet_extractor = FaceNetExtractor(
+                pretrained=True,
+                device=device,
+            )
+            logger.info("✓ FaceNet extractor loaded successfully")
+        except Exception as exc:
+            logger.error("FaceNet extractor failed to load: %s", exc)
+            cls._facenet_extractor = None

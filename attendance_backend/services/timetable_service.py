@@ -52,6 +52,7 @@ import uuid
 from datetime import datetime, time
 from typing import Any, Dict, List, Optional, Tuple
 
+from google.cloud.firestore_v1 import FieldFilter
 from config.constants import (
     DATE_FORMAT,
     DATETIME_FORMAT,
@@ -372,12 +373,12 @@ class TimetableService:
         """Return all periods for a class, ordered by day + start_time."""
         query = (
             self._periods_col()
-            .where(DB_FIELD_CLASS_ID, "==", class_id)
+            .where(filter=FieldFilter(DB_FIELD_CLASS_ID, "==", class_id))
             .order_by(DB_FIELD_DAY_OF_WEEK)
             .order_by(DB_FIELD_START_TIME)
         )
         if not include_inactive:
-            query = query.where(DB_FIELD_ACTIVE_STATUS, "==", True)
+            query = query.where(filter=FieldFilter(DB_FIELD_ACTIVE_STATUS, "==", True))
 
         docs = query.stream()
         return [d.to_dict() for d in docs]
@@ -391,7 +392,7 @@ class TimetableService:
         """Fetch all active periods across all classes (used by PeriodDetectionService)."""
         docs = (
             self._periods_col()
-            .where(DB_FIELD_ACTIVE_STATUS, "==", True)
+            .where(filter=FieldFilter(DB_FIELD_ACTIVE_STATUS, "==", True))
             .stream()
         )
         return [d.to_dict() for d in docs]

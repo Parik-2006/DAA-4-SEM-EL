@@ -85,7 +85,7 @@ class BulkAttendanceItem(BaseModel):
         return _validate_status(v)
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "student_id": "STU001",
                 "status":     "present",
@@ -122,7 +122,7 @@ class BulkMarkRequest(BaseModel):
         return v
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "period_id": "CS-A-SEM6_MON_0900",
                 "class_id":  "CS-A-SEM6",
@@ -190,7 +190,7 @@ class AttendanceEditRequest(BaseModel):
         return v
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "status": "excused",
                 "reason": "Medical certificate submitted",
@@ -430,7 +430,7 @@ class WindowAwareMarkResponse(BaseModel):
     audit_id:   Optional[str] = None
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "success":    True,
                 "record_id":  "2026-04-30_CS-A-SEM6_MON_0900_STU001",
@@ -454,7 +454,7 @@ class WindowClosedResponse(BaseModel):
     message:   str
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "success": False,
                 "message": "Attendance window closed. Period is locked.",

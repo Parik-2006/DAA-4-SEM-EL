@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { Badge } from './UI';
 import { onAuthChange, signOut } from '@/services/firebase/auth.service';
+import { useBackendHealthMonitor } from '../hooks/useBackendHealth';
 
 interface NavLink {
   label: string;
@@ -49,6 +50,9 @@ export const Layout: React.FC<LayoutProps> = ({
   systemRunning,
   lastSyncTime,
 }) => {
+  const { isHealthy, lastCheck } = useBackendHealthMonitor(5000);
+  const isSystemRunning = systemRunning ?? isHealthy;
+  const effectiveLastSyncTime = lastSyncTime ?? lastCheck;
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [currentUser, setCurrentUser] = useState<{ displayName: string | null; email: string | null; photoURL: string | null } | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -251,28 +255,28 @@ export const Layout: React.FC<LayoutProps> = ({
               <div
                 className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full"
                 style={{
-                  background: systemRunning ? 'rgba(107,138,113,0.10)' : 'rgba(193,123,91,0.10)',
-                  border: `1px solid ${systemRunning ? 'rgba(107,138,113,0.25)' : 'rgba(193,123,91,0.25)'}`,
+                  background: isSystemRunning ? 'rgba(107,138,113,0.10)' : 'rgba(193,123,91,0.10)',
+                  border: `1px solid ${isSystemRunning ? 'rgba(107,138,113,0.25)' : 'rgba(193,123,91,0.25)'}`,
                 }}
               >
                 <span
-                  className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${systemRunning ? 'pulse-gold' : ''}`}
-                  style={{ background: systemRunning ? 'var(--sage)' : 'var(--terra)' }}
+                  className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isSystemRunning ? 'pulse-gold' : ''}`}
+                  style={{ background: isSystemRunning ? 'var(--sage)' : 'var(--terra)' }}
                 />
-                <span className="text-xs font-medium" style={{ color: systemRunning ? 'var(--sage)' : 'var(--terra)' }}>
-                  {systemRunning ? 'Online' : 'Offline'}
+                <span className="text-xs font-medium" style={{ color: isSystemRunning ? 'var(--sage)' : 'var(--terra)' }}>
+                  {isSystemRunning ? 'Online' : 'Offline'}
                 </span>
               </div>
 
               {/* Last sync */}
-              {lastSyncTime && (
+              {effectiveLastSyncTime && (
                 <div
                   className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-full"
                   style={{ background: 'rgba(155,122,58,0.08)', border: '1px solid rgba(155,122,58,0.15)' }}
                 >
                   <Clock size={11} style={{ color: 'var(--gold)' }} />
                   <span className="text-[11px] font-mono" style={{ color: 'var(--muted)' }}>
-                    {lastSyncTime.toLocaleTimeString()}
+                    {effectiveLastSyncTime.toLocaleTimeString()}
                   </span>
                 </div>
               )}

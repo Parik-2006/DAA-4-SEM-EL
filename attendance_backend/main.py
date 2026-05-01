@@ -90,20 +90,16 @@ async def lifespan(app: FastAPI):
     try:
         firebase_svc = initialize_firebase(credentials_path="config/firebase-credentials.json")
         # Obtain the Firestore client from the service (adjust to your impl)
-        firestore_db = getattr(firebase_svc, "firestore_db", None) or \
-                       getattr(firebase_svc, "_firestore", None)
+        firestore_db = (
+            getattr(firebase_svc, "firestore_db", None)
+            or getattr(firebase_svc, "_firestore", None)
+            or getattr(firebase_svc, "db", None)
+        )
         logger.info("✓ FirebaseService initialised")
     except Exception as exc:
         logger.error("✗ FirebaseService init failed: %s", exc)
 
-    # 2. RTSP stream manager
-    try:
-        get_stream_manager()
-        logger.info("✓ RTSPStreamManager initialised")
-    except Exception as exc:
-        logger.error("✗ RTSPStreamManager init failed: %s", exc)
-
-    # 3. TimetableService  [NEW]
+    # 2. TimetableService  [NEW]
     timetable_svc = None
     if firestore_db is not None:
         try:
@@ -116,7 +112,7 @@ async def lifespan(app: FastAPI):
             "⚠ TimetableService skipped — Firestore client unavailable."
         )
 
-    # 4. PeriodDetectionService  [NEW]
+    # 3. PeriodDetectionService  [NEW]
     period_svc = None
     if ENABLE_PERIOD_DETECTION and timetable_svc is not None and firestore_db is not None:
         try:

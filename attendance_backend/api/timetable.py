@@ -330,11 +330,16 @@ async def update_period(
     period_id: str,
     updates: Dict[str, Any] = Body(
         ...,
-        example={
-            "start_time":  "09:30",
-            "end_time":    "10:30",
-            "room":        "B-204",
-            "period_type": "lab",
+        examples={
+            "default": {
+                "summary": "Update fields",
+                "value": {
+                    "start_time":  "09:30",
+                    "end_time":    "10:30",
+                    "room":        "B-204",
+                    "period_type": "lab",
+                },
+            }
         },
     ),
     actor_id: str = Query("api", description="User performing the update"),

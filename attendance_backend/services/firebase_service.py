@@ -12,6 +12,7 @@ try:
     from firebase_admin import credentials, db, storage
     from firebase_admin import firestore as admin_firestore
     from google.cloud import firestore
+    from google.cloud.firestore_v1 import FieldFilter
     FIREBASE_AVAILABLE = True
 except ImportError:
     FIREBASE_AVAILABLE = False
@@ -33,9 +34,15 @@ class FirebaseService:
     def __init__(self):
         if not self._initialized:
             self.db = None
+            self.firestore_db = None
+            self._firestore = None
             self.firebase_db = None
             self.storage_bucket = None
             self._initialized = True
+
+    def _ensure_ready(self) -> None:
+        if not self.db and not self.firebase_db:
+            raise RuntimeError("Firebase service not initialized")
 
     @classmethod
     def initialize(
@@ -65,6 +72,8 @@ class FirebaseService:
                     credentials=cred_obj.get_credential(),
                     database="default"
                 )
+                service.firestore_db = service.db
+                service._firestore = service.db
                 logger.info("Firestore initialized (database: default)")
             else:
                 service.firebase_db = db.reference()
@@ -122,6 +131,7 @@ class FirebaseService:
         metadata: Optional[Dict] = None
     ) -> Dict[str, Any]:
         try:
+            self._ensure_ready()
             embedding_list = embeddings.tolist() if isinstance(embeddings, np.ndarray) else embeddings
 
             student_data = {
@@ -152,6 +162,7 @@ class FirebaseService:
 
     def get_student(self, student_id: str) -> Optional[Dict[str, Any]]:
         try:
+            self._ensure_ready()
             if self.db:
                 doc = self.db.collection("students").document(student_id).get()
                 return doc.to_dict() if doc.exists else None
@@ -164,6 +175,7 @@ class FirebaseService:
 
     def get_all_students(self) -> List[Dict[str, Any]]:
         try:
+            self._ensure_ready()
             students = []
             if self.db:
                 docs = self.db.collection("students").stream()
@@ -179,6 +191,7 @@ class FirebaseService:
 
     def update_student(self, student_id: str, updates: Dict[str, Any]) -> bool:
         try:
+            self._ensure_ready()
             if self.db:
                 self.db.collection("students").document(student_id).update(updates)
             elif self.firebase_db:
@@ -200,6 +213,7 @@ class FirebaseService:
         metadata: Optional[Dict] = None
     ) -> Dict[str, Any]:
         try:
+            self._ensure_ready()
             timestamp = timestamp or datetime.now()
             attendance_record = {
                 "student_id": student_id,
@@ -241,15 +255,16 @@ class FirebaseService:
         limit: int = 100
     ) -> List[Dict[str, Any]]:
         try:
+            self._ensure_ready()
             records = []
             if self.db:
                 query = self.db.collection("attendance")
                 if student_id:
-                    query = query.where("student_id", "==", student_id)
+                    query = query.where(filter=FieldFilter("student_id", "==", student_id))
                 if date_from:
-                    query = query.where("timestamp", ">=", date_from.isoformat())
+                    query = query.where(filter=FieldFilter("timestamp", ">=", date_from.isoformat()))
                 if date_to:
-                    query = query.where("timestamp", "<=", date_to.isoformat())
+                    query = query.where(filter=FieldFilter("timestamp", "<=", date_to.isoformat()))
                 docs = query.order_by("timestamp", direction=firestore.Query.DESCENDING).limit(limit).stream()
                 records = [doc.to_dict() for doc in docs]
             elif self.firebase_db:

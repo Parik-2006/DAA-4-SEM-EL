@@ -44,6 +44,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, HTTPException, Query, Path, status
 from fastapi.responses import JSONResponse
+from google.cloud.firestore_v1 import FieldFilter
 
 from config.constants import (
     ATTENDANCE_WINDOW_MINUTES,
@@ -198,9 +199,9 @@ async def get_teacher_dashboard(
         db = _get_firestore()
         period_docs = (
             db.collection("periods")
-            .where("faculty_id", "==", faculty_id)
-            .where("day_of_week", "==", today_dow)
-            .where("active_status", "==", True)
+            .where(filter=FieldFilter("faculty_id", "==", faculty_id))
+            .where(filter=FieldFilter("day_of_week", "==", today_dow))
+            .where(filter=FieldFilter("active_status", "==", True))
             .order_by("start_time")
             .stream()
         )
@@ -303,10 +304,10 @@ async def get_active_class(
             db = _get_firestore()
             docs = (
                 db.collection("periods")
-                .where("faculty_id",  "==", faculty_id)
-                .where("day_of_week", "==", now.weekday())
-                .where("active_status", "==", True)
-                .where("start_time", "<=", now_str)
+                .where(filter=FieldFilter("faculty_id", "==", faculty_id))
+                .where(filter=FieldFilter("day_of_week", "==", now.weekday()))
+                .where(filter=FieldFilter("active_status", "==", True))
+                .where(filter=FieldFilter("start_time", "<=", now_str))
                 .stream()
             )
             candidates = [d.to_dict() for d in docs]
@@ -338,8 +339,8 @@ async def get_active_class(
         db       = _get_firestore()
         stu_docs = (
             db.collection("students")
-            .where("class_id", "==", class_id)
-            .where("active_status", "==", True)
+            .where(filter=FieldFilter("class_id", "==", class_id))
+            .where(filter=FieldFilter("active_status", "==", True))
             .order_by("name")
             .stream()
         )
@@ -408,15 +409,20 @@ async def mark_bulk_attendance(
     faculty_id: str = Query(..., description="Teacher performing the action"),
     body: Dict[str, Any] = Body(
         ...,
-        example={
-            "period_id": "CS-A-SEM6_MON_0900",
-            "class_id":  "CS-A-SEM6",
-            "date":      "2026-04-30",
-            "attendance_list": [
-                {"student_id": "STU001", "status": "present", "confidence": 1.0},
-                {"student_id": "STU002", "status": "absent",  "confidence": 0.0},
-                {"student_id": "STU003", "status": "late",    "confidence": 0.85},
-            ],
+        examples={
+            "default": {
+                "summary": "Bulk mark attendance",
+                "value": {
+                    "period_id": "CS-A-SEM6_MON_0900",
+                    "class_id":  "CS-A-SEM6",
+                    "date":      "2026-04-30",
+                    "attendance_list": [
+                        {"student_id": "STU001", "status": "present", "confidence": 1.0},
+                        {"student_id": "STU002", "status": "absent",  "confidence": 0.0},
+                        {"student_id": "STU003", "status": "late",    "confidence": 0.85},
+                    ],
+                },
+            }
         },
     ),
 ):
@@ -569,10 +575,15 @@ async def edit_attendance_record(
     faculty_id: str = Query(..., description="Teacher performing the edit"),
     body: Dict[str, Any] = Body(
         ...,
-        example={
-            "status":     "excused",
-            "confidence": 0.0,
-            "reason":     "Medical certificate submitted",
+        examples={
+            "default": {
+                "summary": "Edit attendance",
+                "value": {
+                    "status":     "excused",
+                    "confidence": 0.0,
+                    "reason":     "Medical certificate submitted",
+                },
+            }
         },
     ),
 ):

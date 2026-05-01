@@ -135,16 +135,17 @@ class RTSPStreamHandler:
         self.reconnect_delay = reconnect_delay
         self.classroom_id = classroom_id
 
-        # ── Super Pipeline ──────────────────────────────────────────────────
-        self.pipeline = OptimizedAttendancePipeline(
-            detection_threshold=confidence_threshold,
-            recognition_threshold=confidence_threshold,
-            device=device,
-            frame_skip=frame_skip,
-            min_consecutive_frames=min_consecutive_frames,
-            motion_config=motion_config,
-            enable_motion_gate=enable_motion_gate,
-        )
+        # ── Pipeline config (lazy init) ─────────────────────────────────────
+        self._pipeline_config = {
+            "detection_threshold": confidence_threshold,
+            "recognition_threshold": confidence_threshold,
+            "device": device,
+            "frame_skip": frame_skip,
+            "min_consecutive_frames": min_consecutive_frames,
+            "motion_config": motion_config,
+            "enable_motion_gate": enable_motion_gate,
+        }
+        self.pipeline: Optional[OptimizedAttendancePipeline] = None
 
         # ── Stream state ────────────────────────────────────────────────────
         self.cap: Optional[cv2.VideoCapture] = None
@@ -208,6 +209,10 @@ class RTSPStreamHandler:
         try:
             logger.info("Starting stream: %s", self.stream_id)
             self.metrics.status = "initializing"
+
+            if not self._ensure_pipeline():
+                self.metrics.status = "error"
+                return False
 
             self.cap = cv2.VideoCapture(self.rtsp_url)
             if not self.cap.isOpened():
@@ -282,7 +287,8 @@ class RTSPStreamHandler:
         self.is_paused = False
         self.metrics.status = "running"
         # Reset motion detector so cooldown doesn't trigger false positives
-        self.pipeline.motion_detector.reset()
+        if self.pipeline is not None:
+            self.pipeline.motion_detector.reset()
         logger.info("Stream resumed: %s", self.stream_id)
         return True
 
@@ -315,6 +321,9 @@ class RTSPStreamHandler:
         )
 
         try:
+            if not self._ensure_pipeline():
+                raise RuntimeError("Pipeline not available")
+
             if not self.firebase:
                 raise RuntimeError("Firebase service not available")
 
@@ -504,6 +513,9 @@ class RTSPStreamHandler:
         This means the teacher's "Live Monitoring" indicator stays green for
         3 s after motion stops — preventing distracting rapid toggling.
         """
+        if self.pipeline is None:
+            raise RuntimeError("Pipeline not initialized")
+
         result: PipelineFrameResult = self.pipeline.process_frame(
             frame, self._fps_samples
         )
@@ -580,6 +592,9 @@ class RTSPStreamHandler:
             ``{student_id: [face_np_array, …]}``
         """
         try:
+            if not self._ensure_pipeline():
+                raise RuntimeError("Pipeline not available")
+
             result = self.pipeline.register_students(students_data)
             logger.info(
                 "Registered %d students for stream %s",
@@ -628,9 +643,11 @@ class RTSPStreamHandler:
         >>> handler.configure_motion_gate(enabled=True, diff_threshold=20)
         """
         if enabled is not None:
-            self.pipeline.set_motion_gate(enabled)
+            if self._ensure_pipeline():
+                self.pipeline.set_motion_gate(enabled)
         if motion_kwargs:
-            self.pipeline.update_motion_config(**motion_kwargs)
+            if self._ensure_pipeline():
+                self.pipeline.update_motion_config(**motion_kwargs)
 
     # ── Metrics ────────────────────────────────────────────────────────────────
 
@@ -653,8 +670,16 @@ class RTSPStreamHandler:
             Non-null if the background loader encountered an error.
         """
         uptime = (datetime.now() - self.metrics.start_time).total_seconds()
-        pipeline_stats = self.pipeline.get_statistics()
-        md_stats = self.pipeline.motion_detector.get_stats()
+
+        if self.pipeline is None:
+            pipeline_stats = {
+                "motion_gate_enabled": False,
+                "marked_students": 0,
+            }
+            md_stats = {"ml_skip_rate": 0.0}
+        else:
+            pipeline_stats = self.pipeline.get_statistics()
+            md_stats = self.pipeline.motion_detector.get_stats()
 
         return {
             # ── Identity ──────────────────────────────────────────────────
@@ -706,6 +731,20 @@ class RTSPStreamHandler:
                 if self.metrics.last_frame_time else None
             ),
         }
+
+    def _ensure_pipeline(self) -> bool:
+        if self.pipeline is not None:
+            return True
+
+        try:
+            self.pipeline = OptimizedAttendancePipeline(**self._pipeline_config)
+            return True
+        except Exception as exc:
+            logger.error("Failed to initialize pipeline for %s: %s", self.stream_id, exc)
+            self.metrics.status = "error"
+            self.metrics.last_error = str(exc)
+            self.metrics.errors += 1
+            return False
 
 
 # ── StreamManager ──────────────────────────────────────────────────────────────

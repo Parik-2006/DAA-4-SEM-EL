@@ -130,7 +130,7 @@ class StudentRegistrationRequest(BaseModel):
         return v
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "student_id": "STU001",
                 "name": "John Doe",
@@ -647,7 +647,7 @@ class PeriodCardSchema(BaseModel):
 
     class Config:
         use_enum_values = True
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "period_id":         "CS-A-SEM6_MON_0900",
                 "start_time":        "09:00",
@@ -710,7 +710,7 @@ class StudentDashboardResponse(BaseModel):
     generated_at:        datetime = Field(default_factory=datetime.now)
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "today_date":    "2026-04-30",
                 "day_name":      "Thursday",
