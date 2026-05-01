@@ -36,6 +36,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.admin      import router as admin_router
 from api.attendance import router as attendance_router
 from api.timetable  import router as timetable_router   # NEW
+from api.teacher    import router as teacher_router    # NEW (Module 3)
+from api.student    import router as student_router    # NEW (Module 4)
 
 # ── Services ───────────────────────────────────────────────────────────────────
 from services.firebase_service        import init_firebase_service
@@ -197,7 +199,9 @@ app.add_middleware(
 # ── Routers ────────────────────────────────────────────────────────────────────
 app.include_router(attendance_router)
 app.include_router(admin_router)
-app.include_router(timetable_router)    # NEW
+app.include_router(timetable_router)    # NEW (Module 2)
+app.include_router(teacher_router)      # NEW (Module 3)
+app.include_router(student_router)      # NEW (Module 4)
 
 # ── Root health check ──────────────────────────────────────────────────────────
 @app.get("/", tags=["root"])
