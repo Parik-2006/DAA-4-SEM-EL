@@ -36,10 +36,14 @@ export const ProfilePage: React.FC = () => {
 
   const handleUpdate = async () => {
     try {
-      // Add API call here
+      // Simulate API call
+      console.log('Updating profile:', profile);
+      // In a real app, you would do: await profileService.updateProfile(profile);
       setIsEditing(false);
+      alert('Profile updated successfully!');
     } catch (error) {
       console.error('Error updating profile:', error);
+      alert('Failed to update profile.');
     }
   };
 

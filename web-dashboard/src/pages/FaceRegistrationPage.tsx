@@ -1,72 +1,81 @@
 import React, { useState } from 'react';
-import { Layout } from '../components';
+import { Layout, LiveCamera } from '../components';
 
 const FaceRegistrationPage: React.FC = () => {
-  const [cameraActive, setCameraActive] = useState(false);
-  const [photos, setPhotos] = useState<string[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [attendanceData, setAttendanceData] = useState<any>(null);
 
-  const startCamera = () => {
-    setCameraActive(true);
-  };
-
-  const capturePhoto = () => {
-    // Capture from camera
-    console.log('Photo captured');
-  };
-
-  const submitFaces = async () => {
-    try {
-      // Send faces to backend
-      console.log('Submitting faces...');
-    } catch (error) {
-      console.error('Error submitting faces:', error);
-    }
+  const handleAttendanceMarked = (data: any) => {
+    setAttendanceData(data);
+    console.log('Attendance processed:', data);
   };
 
   return (
     <Layout>
-      <div className="max-w-2xl mx-auto">
-        <h1 className="text-3xl font-bold text-gray-800 mb-6">Face Registration</h1>
+      <div className="max-w-4xl mx-auto space-y-6">
+        <div className="flex justify-between items-center">
+          <h1 className="text-3xl font-bold text-gray-800">Face Registration & Detection</h1>
+          <div className="px-4 py-1 bg-indigo-100 text-indigo-700 rounded-full text-sm font-bold shadow-sm border border-indigo-200">
+            Live Mode
+          </div>
+        </div>
 
-        <div className="bg-white rounded-lg shadow-md p-6">
-          {!cameraActive ? (
-            <button
-              onClick={startCamera}
-              className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 w-full"
-            >
-              Start Camera
-            </button>
-          ) : (
-            <div className="space-y-4">
-              <div className="bg-black rounded-lg h-80 flex items-center justify-center">
-                <p className="text-white">Camera Feed</p>
-              </div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2">
+            <LiveCamera
+              onAttendanceMarked={handleAttendanceMarked}
+              onProcessing={setIsProcessing}
+              isLoading={isProcessing}
+            />
+          </div>
 
-              <div className="flex gap-4">
-                <button
-                  onClick={capturePhoto}
-                  className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                >
-                  Capture
-                </button>
-                <button
-                  onClick={() => setCameraActive(false)}
-                  className="flex-1 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700"
-                >
-                  Stop
-                </button>
-              </div>
-
-              {photos.length > 0 && (
-                <button
-                  onClick={submitFaces}
-                  className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
-                >
-                  Submit {photos.length} Faces
-                </button>
+          <div className="space-y-6">
+            <div className="bg-white rounded-2xl shadow-md p-6 border border-gray-100">
+              <h2 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+                <div className="w-2 h-6 bg-indigo-500 rounded-full"></div>
+                Status
+              </h2>
+              {attendanceData ? (
+                <div className={`p-4 rounded-xl border ${attendanceData.status === 'success' ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'}`}>
+                  <p className="font-bold mb-1">{attendanceData.status === 'success' ? 'Detected Successfully' : 'Detection Failed'}</p>
+                  <p className="text-sm">{attendanceData.message}</p>
+                  {attendanceData.student_name && (
+                    <div className="mt-3 pt-3 border-t border-green-200">
+                      <p className="text-xs text-green-600 font-semibold uppercase tracking-wider">Student Name</p>
+                      <p className="text-lg font-bold">{attendanceData.student_name}</p>
+                      <p className="text-xs font-medium opacity-75">ID: {attendanceData.student_id}</p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="text-center py-8 text-gray-400">
+                  <p className="text-sm">Waiting for live capture...</p>
+                </div>
               )}
             </div>
-          )}
+
+            <div className="bg-gradient-to-br from-indigo-600 to-blue-700 rounded-2xl shadow-lg p-6 text-white">
+              <h3 className="font-bold mb-2">Instructions</h3>
+              <ul className="text-xs space-y-2 opacity-90">
+                <li className="flex gap-2">
+                  <span className="font-bold">1.</span>
+                  <span>Click "Start Camera" to begin live feed.</span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="font-bold">2.</span>
+                  <span>Position your face clearly within the frame.</span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="font-bold">3.</span>
+                  <span>Wait for the system to detect your face automatically.</span>
+                </li>
+                <li className="flex gap-2">
+                  <span className="font-bold">4.</span>
+                  <span>Confirm your identity in the pop-up modal.</span>
+                </li>
+              </ul>
+            </div>
+          </div>
         </div>
       </div>
     </Layout>

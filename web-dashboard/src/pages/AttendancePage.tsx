@@ -3,12 +3,34 @@ import { Layout } from '../components';
 
 export const AttendancePage: React.FC = () => {
   const [selectedClass, setSelectedClass] = useState('');
-  const [attendance, setAttendance] = useState<any[]>([]);
+  const [attendance, setAttendance] = useState<any[]>([
+    { id: '1', studentId: 'STUD_001', name: 'Parikshith B Bilchode', status: 'Pending' },
+    { id: '2', studentId: 'STUD_002', name: 'Gagan D K', status: 'Pending' },
+    { id: '3', studentId: 'STUD_003', name: 'Prajwal K', status: 'Pending' },
+    { id: '4', studentId: 'STUD_004', name: 'Ved U', status: 'Pending' },
+  ]);
 
   const handleMarkAttendance = async (studentId: string, status: string) => {
     try {
-      // Add API call here
-      console.log(`Marked ${studentId} as ${status}`);
+      const response = await fetch('http://localhost:8000/api/v1/attendance/mark-attendance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          student_id: studentId,
+          status: status,
+          camera_id: 'manual_web',
+          metadata: {
+            class_id: selectedClass,
+            method: 'manual_admin'
+          }
+        }),
+      });
+
+      if (response.ok) {
+        setAttendance(prev => prev.map(record => 
+          record.studentId === studentId ? { ...record, status } : record
+        ));
+      }
     } catch (error) {
       console.error('Error marking attendance:', error);
     }
@@ -26,8 +48,9 @@ export const AttendancePage: React.FC = () => {
             className="w-full px-4 py-2 border border-gray-300 rounded-lg mb-6"
           >
             <option value="">Select a class...</option>
-            <option value="CS-A-SEM6">CS-A-SEM6</option>
-            <option value="CS-B-SEM6">CS-B-SEM6</option>
+            <option value="CSE-A-4SEM">CSE A 4TH SEM</option>
+            <option value="CSE-B-4SEM">CSE B 4TH SEM</option>
+            <option value="CSE-C-4SEM">CSE C 4TH SEM</option>
           </select>
 
           {selectedClass && (

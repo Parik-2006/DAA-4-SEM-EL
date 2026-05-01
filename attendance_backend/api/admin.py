@@ -148,28 +148,41 @@ async def get_today_attendance_stats():
     """Admin-only: Get today's attendance statistics."""
     try:
         fb = _fb()
+        # Ensure we have Firestore
+        if not fb.fs:
+            return {
+                "totalStudents": 0,
+                "presentToday": 0,
+                "absentToday": 0,
+                "lateToday": 0,
+                "attendanceRate": 0.0,
+                "error": "Firestore not initialized"
+            }
+
         today = datetime.now().strftime("%Y-%m-%d")
-        ref = fb.get_reference(f"attendance/{today}")
-        today_data = ref.get() or {}
+        
+        # Query Firestore attendance collection for today
+        docs = fb.fs.collection("attendance").where("date", "==", today).stream()
+        today_records = [doc.to_dict() for doc in docs]
 
-        present_count = sum(
-            1 for v in today_data.values()
-            if isinstance(v, dict) and v.get("status") == "present"
-        )
-        absent_count = sum(
-            1 for v in today_data.values()
-            if isinstance(v, dict) and v.get("status") == "absent"
-        )
-        late_count = sum(
-            1 for v in today_data.values()
-            if isinstance(v, dict) and v.get("status") == "late"
-        )
+        present_count = sum(1 for r in today_records if r.get("status") == "present")
+        late_count = sum(1 for r in today_records if r.get("status") == "late")
+        absent_count = sum(1 for r in today_records if r.get("status") == "absent")
 
+        # Get total students
         all_students = user_repo.list_users_by_role("student")
         total_students = len(all_students) if all_students else 0
+        
+        # In case students are not in 'users' but in 'students' collection
+        if total_students == 0:
+            student_docs = fb.fs.collection("students").stream()
+            total_students = sum(1 for _ in student_docs)
+
         attendance_rate = (
-            (present_count / total_students * 100) if total_students > 0 else 0
+            ((present_count + late_count) / total_students * 100) if total_students > 0 else 0
         )
+
+        present_student_ids = [r.get("student_id") for r in today_records if r.get("status") in ["present", "late"]]
 
         return {
             "totalStudents": total_students,
@@ -177,8 +190,11 @@ async def get_today_attendance_stats():
             "absentToday": absent_count,
             "lateToday": late_count,
             "attendanceRate": round(attendance_rate, 1),
+            "pendingRecords": max(0, total_students - (present_count + late_count)),
+            "presentStudentIds": present_student_ids
         }
     except Exception as exc:
+        logger.error("Error in get_today_attendance_stats: %s", exc)
         return {
             "totalStudents": 0,
             "presentToday": 0,
@@ -196,24 +212,40 @@ async def get_attendance_records(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
 ):
-    """Get attendance records for a date with optional filters and pagination."""
+    """Get attendance records for a date from Firestore with optional filters."""
     try:
         fb = _fb()
-        ref = fb.get_reference(f"attendance/{date}")
-        records = ref.get() or {}
+        if not fb.fs:
+            return {"data": [], "total": 0, "page": page, "limit": limit, "error": "Firestore not available"}
 
-        record_list = [
-            {
-                "id": k,
-                "studentId": v.get("studentId"),
-                "studentName": v.get("studentName"),
-                "status": v.get("status"),
-                "markedAt": v.get("markedAt"),
+        # Query Firestore
+        query = fb.fs.collection("attendance").where("date", "==", date)
+        
+        # Stream and convert to list (pagination handled manually for simplicity in this small set)
+        docs = query.stream()
+        
+        record_list = []
+        for doc in docs:
+            v = doc.to_dict()
+            record_list.append({
+                "id": doc.id,
+                "studentId": v.get("student_id"),
+                "studentName": v.get("studentName") or v.get("metadata", {}).get("student_name") or "Unknown",
+                "status": v.get("status") or v.get("metadata", {}).get("attendance_status", "present"),
+                "markedAt": v.get("timestamp"),
                 "confidence": v.get("confidence", 0.0),
-            }
-            for k, v in records.items()
-            if isinstance(v, dict)
-        ]
+                "metadata": v.get("metadata", {})
+            })
+
+        # Enrich with real names if missing
+        for r in record_list:
+            if not r["studentName"] or r["studentName"] == "Unknown":
+                student_doc = fb.fs.collection("students").document(r["studentId"]).get()
+                if student_doc.exists:
+                    r["studentName"] = student_doc.to_dict().get("name", "Unknown")
+
+        # Sort by markedAt descending
+        record_list.sort(key=lambda x: x.get("markedAt", ""), reverse=True)
 
         start = (page - 1) * limit
         return {
@@ -223,6 +255,7 @@ async def get_attendance_records(
             "limit": limit,
         }
     except Exception as exc:
+        logger.error("Error in get_attendance_records: %s", exc)
         return {"data": [], "total": 0, "page": page, "limit": limit, "error": str(exc)}
 
 

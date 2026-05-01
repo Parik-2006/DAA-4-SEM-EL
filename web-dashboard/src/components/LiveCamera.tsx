@@ -69,7 +69,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
             className="text-center font-bold mb-1"
             style={{ fontSize: 20, color: '#3d2b1a', letterSpacing: '-0.3px' }}
           >
-            Is this you?
+            Are you {detection.student_name}?
           </h2>
           <p className="text-center mb-5" style={{ color: '#7a5c3e', fontSize: 14 }}>
             Please confirm your identity to mark attendance.
@@ -129,7 +129,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
               }}
             >
               <X size={17} />
-              Not me
+              No, not me
             </button>
 
             {/* Yes */}
@@ -156,7 +156,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
               ) : (
                 <>
                   <ShieldCheck size={17} />
-                  Yes, that's me
+                  Yes, it's me
                 </>
               )}
             </button>
@@ -633,8 +633,8 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
               <li>✓ Click <strong>Start Camera</strong> and allow browser permission</li>
               <li>✓ Position your face clearly — scanned every ~2.5 s</li>
               <li>✓ When your face is recognised, a confirmation dialog appears</li>
-              <li>✓ Tap <strong>"Yes, that's me"</strong> to officially record attendance</li>
-              <li>✓ Tap <strong>"Not me"</strong> to cancel and scan again</li>
+              <li>✓ Tap <strong>"Yes, it's me"</strong> to officially record attendance</li>
+              <li>✓ Tap <strong>"No, not me"</strong> to cancel and scan again</li>
             </ul>
           </div>
         </div>
