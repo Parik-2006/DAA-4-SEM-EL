@@ -35,6 +35,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # ── Routers ────────────────────────────────────────────────────────────────────
 from api.admin      import router as admin_router
 from api.attendance import router as attendance_router
+from api.auth       import router as auth_router        # NEW (Module 1 - Auth & RBAC)
 from api.timetable  import router as timetable_router   # NEW
 from api.teacher    import router as teacher_router    # NEW (Module 3)
 from api.student    import router as student_router    # NEW (Module 4)
@@ -45,7 +46,8 @@ from services.firebase_service        import initialize_firebase
 from services.rtsp_stream_handler     import get_stream_manager
 from services.timetable_service       import init_timetable_service        # NEW
 from services.period_detection_service import init_period_detection_service  # NEW
-
+# ── Middleware ──────────────────────────────────────────────────────────────────
+from middleware.auth_middleware import AuthMiddleware
 # ── Config ─────────────────────────────────────────────────────────────────────
 from config.constants import (
     CORS_ALLOWED_HEADERS,
@@ -183,6 +185,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ── Middleware ─────────────────────────────────────────────────────────────────────
+# Auth middleware runs first (before CORS) to validate tokens on every request
+app.add_middleware(AuthMiddleware)
+
 # ── CORS ───────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
@@ -192,7 +198,11 @@ app.add_middleware(
     allow_headers=CORS_ALLOWED_HEADERS,
 )
 
-# ── Routers ────────────────────────────────────────────────────────────────────
+# ── Routers ────────────────────────────────────────────────────────────────────────
+# Module 1: Auth & RBAC (login, register, token refresh, permissions)
+app.include_router(auth_router)
+
+# Existing routers
 app.include_router(attendance_router)
 app.include_router(admin_router)
 app.include_router(timetable_router)    # NEW (Module 2)

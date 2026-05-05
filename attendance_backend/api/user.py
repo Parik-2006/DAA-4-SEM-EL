@@ -69,7 +69,7 @@ def register_user(request: UserRegistrationRequest):
 
 @router.post("/login", response_model=UserLoginResponse)
 def login_user(request: UserLoginRequest):
-    """Login a user (admin or student)."""
+    """Login a user (admin or student) — DEPRECATED: Use /api/v1/auth/login instead."""
     try:
         user = user_repo.get_user_by_email(request.email)
         if not user:
@@ -90,14 +90,19 @@ def login_user(request: UserLoginRequest):
                 detail="User account is inactive"
             )
         
-        token = auth_service.generate_token()
+        # Use new JWT token pair from PROMPT 1
+        tokens = auth_service.generate_token_pair(user)
         logger.info(f"User logged in: {user['user_id']} with role {user['role']}")
         
         return UserLoginResponse(
             success=True,
             user_id=user["user_id"],
             role=user["role"],
-            token=token,
+            token=tokens["access_token"],
+            refresh_token=tokens["refresh_token"],
+            expires_in=int(__import__('os').getenv("JWT_EXPIRE_MINUTES", "60")) * 60,
+            permissions=auth_service.get_permissions_for_role(user.get("role", "student")),
+            assigned_sections=user.get("assigned_sections", []),
             message="Login successful"
         )
     except HTTPException:
