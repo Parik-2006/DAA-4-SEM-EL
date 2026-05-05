@@ -19,7 +19,9 @@ STUDENT_MAPPING = {
     "STUD_001": "Parikshith B Bilchode",
     "STUD_002": "Gagan D K",
     "STUD_003": "Prajwal K",
-    "STUD_004": "Ved U"
+    "STUD_004": "Ved U",
+    "STUD_005": "Pranav Kumar M",
+    "STUD_006": "Nischith G A"
 }
 
 def seed():

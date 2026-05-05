@@ -8,6 +8,8 @@ export const AttendancePage: React.FC = () => {
     { id: '2', studentId: 'STUD_002', name: 'Gagan D K', status: 'Pending' },
     { id: '3', studentId: 'STUD_003', name: 'Prajwal K', status: 'Pending' },
     { id: '4', studentId: 'STUD_004', name: 'Ved U', status: 'Pending' },
+    { id: '5', studentId: 'STUD_005', name: 'Pranav Kumar M', status: 'Pending' },
+    { id: '6', studentId: 'STUD_006', name: 'Nischith G A', status: 'Pending' },
   ]);
 
   const handleMarkAttendance = async (studentId: string, status: string) => {

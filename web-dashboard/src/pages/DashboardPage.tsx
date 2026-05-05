@@ -43,6 +43,8 @@ export const DashboardPage: React.FC = () => {
     { id: 'STUD_002', name: 'Gagan D K' },
     { id: 'STUD_003', name: 'Prajwal K' },
     { id: 'STUD_004', name: 'Ved U' },
+    { id: 'STUD_005', name: 'Pranav Kumar M' },
+    { id: 'STUD_006', name: 'Nischith G A' },
   ];
 
   const missingStudents = [
