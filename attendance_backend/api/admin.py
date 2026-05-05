@@ -35,6 +35,7 @@ System Config:
 from __future__ import annotations
 
 import base64
+import logging
 import uuid
 from datetime import datetime
 from typing import Any, List, Optional
@@ -49,6 +50,7 @@ from services.admin_service import AdminService
 from utils.csv_parser import parse_roster_csv, parse_timetable_csv
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
+logger = logging.getLogger(__name__)
 
 # Shared singletons (stateless wrappers – safe to reuse)
 user_repo = UserRepository()
@@ -161,9 +163,13 @@ async def get_today_attendance_stats():
 
         today = datetime.now().strftime("%Y-%m-%d")
         
-        # Query Firestore attendance collection for today
-        docs = fb.fs.collection("attendance").where("date", "==", today).stream()
-        today_records = [doc.to_dict() for doc in docs]
+        try:
+            # Query Firestore attendance collection for today
+            docs = fb.fs.collection("attendance").where("date", "==", today).stream()
+            today_records = [doc.to_dict() for doc in docs]
+        except Exception as query_err:
+            logger.warning("Failed to query attendance: %s. Returning empty data.", query_err)
+            today_records = []
 
         present_count = sum(1 for r in today_records if r.get("status") == "present")
         late_count = sum(1 for r in today_records if r.get("status") == "late")
@@ -175,8 +181,12 @@ async def get_today_attendance_stats():
         
         # In case students are not in 'users' but in 'students' collection
         if total_students == 0:
-            student_docs = fb.fs.collection("students").stream()
-            total_students = sum(1 for _ in student_docs)
+            try:
+                student_docs = fb.fs.collection("students").stream()
+                total_students = sum(1 for _ in student_docs)
+            except Exception as student_err:
+                logger.warning("Failed to query students: %s. Using 0.", student_err)
+                total_students = 0
 
         attendance_rate = (
             ((present_count + late_count) / total_students * 100) if total_students > 0 else 0

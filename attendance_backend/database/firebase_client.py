@@ -124,11 +124,18 @@ class FirebaseClient:
             # ── Firestore (new) ────────────────────────────────────────────
             if _FIRESTORE_AVAILABLE:
                 raw_cred = credentials.Certificate(str(cred_path))
-                self.fs = _firestore.Client(
-                    project=raw_cred.project_id,
-                    credentials=raw_cred.get_credential(),
-                )
-                logger.info("✓ Firestore initialised (project: %s)", raw_cred.project_id)
+                # Explicitly specify database to use the default database
+                try:
+                    self.fs = _firestore.Client(
+                        project=raw_cred.project_id,
+                        credentials=raw_cred.get_credential(),
+                        database="(default)"  # Explicitly use default database
+                    )
+                    logger.info("✓ Firestore initialised (project: %s, database: default)", raw_cred.project_id)
+                except Exception as fs_err:
+                    logger.warning("⚠ Firestore init failed (will retry on first query): %s", fs_err)
+                    # Set to None - will be retried on first query attempt
+                    self.fs = None
             else:
                 logger.warning(
                     "google-cloud-firestore not installed — "
@@ -136,7 +143,7 @@ class FirebaseClient:
                 )
 
             FirebaseClient._initialized = True
-            logger.info("Firebase connections ready")
+            logger.info("Firebase connections ready (Firestore may initialize on first use)")
 
         except FileNotFoundError as exc:
             logger.error("Credentials file error: %s", exc)
