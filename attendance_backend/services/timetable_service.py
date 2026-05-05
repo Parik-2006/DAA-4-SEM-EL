@@ -363,6 +363,22 @@ class TimetableService:
             "error_details": error_details,
         }
 
+    def seed_from_screenshot(self, periods: List[Dict[str, Any]], actor_id: str = "seed") -> Dict[str, Any]:
+        """Convenience wrapper used by local seeding scripts that parse a
+        timetable screenshot externally; simply delegates to bulk_insert.
+        """
+        # Normalize input shape to internal period doc format
+        valid = []
+        now_iso = datetime.utcnow().isoformat()
+        for p in periods:
+            try:
+                doc = _build_period_doc(p, now_iso=now_iso)
+                valid.append(doc)
+            except Exception as exc:
+                # Skip invalid rows during seeding
+                continue
+        return self.bulk_insert(valid, actor_id=actor_id)
+
     # ── Fetch helpers ──────────────────────────────────────────────────────────
 
     def get_periods_by_class(

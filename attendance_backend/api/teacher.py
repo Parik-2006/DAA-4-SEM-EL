@@ -42,7 +42,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Body, HTTPException, Query, Path, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Path, status
 from fastapi.responses import JSONResponse
 from google.cloud.firestore_v1 import FieldFilter
 
@@ -56,6 +56,9 @@ from config.constants import (
 from services.attendance_lock_service import get_lock_service
 from services.period_detection_service import get_period_detection_service
 from services.timetable_service import get_timetable_service
+from middleware.auth_middleware import require_role
+from services.auth_service import TokenPayload
+from utils.time_validator import get_period_runtime_status
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +125,49 @@ def _attendance_status_for_student(
     return None
 
 
+def _resolve_faculty_id(
+    current_user: TokenPayload,
+    requested_faculty_id: Optional[str],
+) -> str:
+    """
+    Resolve teacher identity from JWT while preserving admin override support.
+
+    Teachers always operate as themselves. Admins may pass ``faculty_id``
+    to inspect/operate on behalf of a teacher.
+    """
+    if current_user.role == "admin":
+        if not requested_faculty_id:
+            raise HTTPException(400, "faculty_id is required for admin requests")
+        return requested_faculty_id
+
+    if current_user.role != "teacher":
+        raise HTTPException(403, "Only teachers/admins can access this endpoint")
+
+    if requested_faculty_id and requested_faculty_id != current_user.user_id:
+        raise HTTPException(403, "Teachers can only access their own faculty_id")
+
+    return current_user.user_id
+
+
+def _enforce_period_access(
+    current_user: TokenPayload,
+    period: Dict[str, Any],
+) -> None:
+    """Restrict teachers to assigned sections and their own periods."""
+    if current_user.role == "admin":
+        return
+
+    period_faculty = str(period.get("faculty_id") or "").strip()
+    class_id = str(period.get("class_id") or "").strip()
+
+    if period_faculty and period_faculty != current_user.user_id:
+        raise HTTPException(403, "You are not assigned to this period")
+
+    # If section assignments are present in JWT, enforce them strictly.
+    if current_user.assigned_sections and class_id not in current_user.assigned_sections:
+        raise HTTPException(403, "You are not assigned to this section")
+
+
 def _build_period_summary(
     period: Dict[str, Any],
     lock_svc,
@@ -173,8 +219,9 @@ def _build_period_summary(
     summary="Teacher dashboard — today's full schedule with attendance status",
 )
 async def get_teacher_dashboard(
-    faculty_id: str = Query(..., description="Faculty/teacher identifier"),
+    faculty_id: Optional[str] = Query(None, description="Admin-only teacher override"),
     date: Optional[str] = Query(None, description="Date YYYY-MM-DD (defaults to today)"),
+    current_user: TokenPayload = Depends(require_role("teacher", "admin")),
 ):
     """
     Returns the teacher's full schedule for the requested date.
@@ -190,6 +237,7 @@ async def get_teacher_dashboard(
     """
     lock_svc      = _require_lock_svc()
     timetable_svc = _require_timetable_svc()
+    faculty_id = _resolve_faculty_id(current_user, faculty_id)
 
     date = date or _today()
     today_dow = datetime.strptime(date, "%Y-%m-%d").weekday()
@@ -270,7 +318,8 @@ async def get_teacher_dashboard(
     summary="Currently active class with full student roster and attendance state",
 )
 async def get_active_class(
-    faculty_id: str = Query(..., description="Faculty/teacher identifier"),
+    faculty_id: Optional[str] = Query(None, description="Admin-only teacher override"),
+    current_user: TokenPayload = Depends(require_role("teacher", "admin")),
 ):
     """
     Returns the period currently running for this teacher together with:
@@ -282,6 +331,7 @@ async def get_active_class(
     Returns 404 if the teacher has no active period right now.
     """
     lock_svc = _require_lock_svc()
+    faculty_id = _resolve_faculty_id(current_user, faculty_id)
     date     = _today()
 
     # Find active period for this faculty
@@ -327,6 +377,8 @@ async def get_active_class(
             "faculty_id": faculty_id,
             "checked_at": datetime.now().isoformat(),
         })
+
+    _enforce_period_access(current_user, active_period)
 
     class_id   = active_period.get("class_id", "")
     period_id  = active_period.get("period_id", "")
@@ -406,7 +458,7 @@ async def get_active_class(
     status_code=status.HTTP_200_OK,
 )
 async def mark_bulk_attendance(
-    faculty_id: str = Query(..., description="Teacher performing the action"),
+    faculty_id: Optional[str] = Query(None, description="Admin-only teacher override"),
     body: Dict[str, Any] = Body(
         ...,
         examples={
@@ -425,6 +477,7 @@ async def mark_bulk_attendance(
             }
         },
     ),
+    current_user: TokenPayload = Depends(require_role("teacher", "admin")),
 ):
     """
     Mark attendance for multiple students in a single request.
@@ -439,6 +492,7 @@ async def mark_bulk_attendance(
       records succeeded and which failed.
     """
     lock_svc = _require_lock_svc()
+    faculty_id = _resolve_faculty_id(current_user, faculty_id)
 
     period_id       = body.get("period_id", "")
     class_id        = body.get("class_id", "")
@@ -457,10 +511,17 @@ async def mark_bulk_attendance(
         if not pd_doc.exists:
             raise HTTPException(404, f"Period '{period_id}' not found")
         period = pd_doc.to_dict()
+        _enforce_period_access(current_user, period)
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(500, f"Could not fetch period: {exc}")
+
+    period_class_id = period.get("class_id", "")
+    if class_id and period_class_id and class_id != period_class_id:
+        raise HTTPException(422, "class_id does not match period class_id")
+    if not class_id:
+        class_id = period_class_id
 
     # Enforce window
     window = lock_svc.get_window_status(period, date)
@@ -572,7 +633,7 @@ async def mark_bulk_attendance(
 )
 async def edit_attendance_record(
     record_id: str = Path(..., description="Attendance record ID"),
-    faculty_id: str = Query(..., description="Teacher performing the edit"),
+    faculty_id: Optional[str] = Query(None, description="Admin-only teacher override"),
     body: Dict[str, Any] = Body(
         ...,
         examples={
@@ -586,6 +647,7 @@ async def edit_attendance_record(
             }
         },
     ),
+    current_user: TokenPayload = Depends(require_role("teacher", "admin")),
 ):
     """
     Edit a single attendance record.
@@ -600,6 +662,7 @@ async def edit_attendance_record(
     Returns the updated record with its full audit trail appended.
     """
     lock_svc = _require_lock_svc()
+    faculty_id = _resolve_faculty_id(current_user, faculty_id)
 
     new_status  = body.get("status", "").strip().lower()
     confidence  = body.get("confidence")
@@ -636,6 +699,8 @@ async def edit_attendance_record(
         db     = _get_firestore()
         pd_doc = db.collection("periods").document(period_id).get()
         period = pd_doc.to_dict() if pd_doc.exists else {}
+        if period:
+            _enforce_period_access(current_user, period)
     except Exception as exc:
         period = {}
 
@@ -740,9 +805,10 @@ async def get_attendance_audit(
 )
 async def lock_period(
     period_id: str = Path(...),
-    faculty_id: str = Query(...),
+    faculty_id: Optional[str] = Query(None, description="Admin-only teacher override"),
     date: Optional[str] = Query(None),
     reason: Optional[str] = Query("manual", description="Reason for early lock"),
+    current_user: TokenPayload = Depends(require_role("teacher", "admin")),
 ):
     """
     Immediately lock a period.
@@ -753,13 +819,17 @@ async def lock_period(
     * The lock is visible to students on the attendance confirmation screen.
     """
     lock_svc = _require_lock_svc()
+    faculty_id = _resolve_faculty_id(current_user, faculty_id)
     date = date or _today()
 
     # Fetch class_id for the period
     try:
         db     = _get_firestore()
         pd_doc = db.collection("periods").document(period_id).get()
-        class_id = pd_doc.to_dict().get("class_id", "") if pd_doc.exists else ""
+        period = pd_doc.to_dict() if pd_doc.exists else {}
+        if period:
+            _enforce_period_access(current_user, period)
+        class_id = period.get("class_id", "")
     except Exception:
         class_id = ""
 
@@ -786,7 +856,7 @@ async def lock_period(
 )
 async def unlock_period(
     period_id: str = Path(...),
-    actor_id: str = Query("admin", description="Admin performing the unlock"),
+    actor_id: Optional[str] = Query(None, description="Optional audit actor override"),
     date: Optional[str] = Query(None),
     force: bool = Query(
         False,
@@ -795,6 +865,7 @@ async def unlock_period(
             "Use with caution — creates an audit record."
         ),
     ),
+    current_user: TokenPayload = Depends(require_role("admin")),
 ):
     """
     Unlock or force-open a period.
@@ -805,11 +876,12 @@ async def unlock_period(
     """
     lock_svc = _require_lock_svc()
     date = date or _today()
+    actor = actor_id or current_user.user_id
 
     result = lock_svc.unlock_period(
         period_id=period_id,
         date=date,
-        actor_id=actor_id,
+        actor_id=actor,
         force=force,
     )
 
@@ -824,3 +896,65 @@ async def unlock_period(
             f"Period '{period_id}' unlocked."
         ),
     })
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET /available-periods
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get(
+    "/available-periods",
+    summary="Periods available right now for the logged-in teacher",
+)
+async def get_available_periods(
+    faculty_id: Optional[str] = Query(None, description="Admin-only teacher override"),
+    date: Optional[str] = Query(None, description="Date YYYY-MM-DD (defaults to today)"),
+    current_user: TokenPayload = Depends(require_role("teacher", "admin")),
+):
+    """Return current teacher periods with real-time status and markability."""
+    lock_svc = _require_lock_svc()
+    faculty = _resolve_faculty_id(current_user, faculty_id)
+    date = date or _today()
+    dow = datetime.strptime(date, "%Y-%m-%d").weekday()
+
+    try:
+        db = _get_firestore()
+        docs = (
+            db.collection("periods")
+            .where(filter=FieldFilter("faculty_id", "==", faculty))
+            .where(filter=FieldFilter("day_of_week", "==", dow))
+            .where(filter=FieldFilter("active_status", "==", True))
+            .order_by("start_time")
+            .stream()
+        )
+        periods = [d.to_dict() for d in docs]
+    except Exception as exc:
+        raise HTTPException(500, f"Could not fetch periods: {exc}")
+
+    available: List[Dict[str, Any]] = []
+    for p in periods:
+        _enforce_period_access(current_user, p)
+        window = lock_svc.get_window_status(p, date)
+        runtime_status = get_period_runtime_status(
+            p.get("start_time", "00:00"),
+            p.get("end_time", "00:00"),
+        )
+        item = {
+            **p,
+            "runtime_status": runtime_status,
+            "window": window,
+            "is_available_for_marking": bool(window.get("is_open")),
+        }
+        if item["is_available_for_marking"]:
+            available.append(item)
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "faculty_id": faculty,
+            "date": date,
+            "available_count": len(available),
+            "available_periods": available,
+            "generated_at": datetime.now().isoformat(),
+        },
+    )
