@@ -66,7 +66,7 @@ from middleware.audit_middleware      import AuditMiddleware
 from utils.rate_limiter               import RateLimitMiddleware
 
 # ── Services ──────────────────────────────────────────────────────────────────
-from services.audit_service            import init_audit_service
+from services.audit_services            import init_audit_service
 from services.firebase_service         import initialize_firebase
 from services.period_detection_service import init_period_detection_service
 from services.rtsp_stream_handler      import get_stream_manager

@@ -12,7 +12,6 @@ from pydantic import BaseModel
 
 from config.settings import get_settings
 from config.constants import SYSTEM_NAME, SYSTEM_VERSION
-from models.model_manager import ModelManager
 from database.firebase_client import FirebaseClient
 
 
@@ -92,6 +91,7 @@ async def get_models_status() -> Dict[str, Any]:
         Dictionary with model information
     """
     try:
+        from models.model_manager import ModelManager
         status_info = ModelManager.get_status()
         return {
             "status": "ready" if status_info["initialized"] else "not_initialized",
@@ -182,6 +182,7 @@ def check_database_health() -> Dict[str, Any]:
 def check_models_health() -> Dict[str, Any]:
     """Check model health."""
     try:
+        from models.model_manager import ModelManager
         status_info = ModelManager.get_status()
         if status_info["initialized"]:
             return {

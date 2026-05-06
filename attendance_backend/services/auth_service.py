@@ -79,6 +79,7 @@ class UserContext:
     issued_at: int = 0
     expires_at: int = 0
 
+
     # ── Convenience helpers ────────────────────────────────────────────────────
 
     def has_role(self, *roles: str) -> bool:
@@ -102,6 +103,10 @@ class UserContext:
 
     def is_student(self) -> bool:
         return self.role == "student"
+
+
+# Backward-compatible alias used throughout the codebase.
+TokenPayload = UserContext
 
 
 # ── Minimal pure-Python HS256 JWT (no PyJWT dependency required) ───────────────

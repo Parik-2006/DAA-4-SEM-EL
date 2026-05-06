@@ -52,7 +52,7 @@ from database.user_repository import UserRepository
 
 # ── Security ───────────────────────────────────────────────────────────────────
 from decorators.auth_decorators import require_admin
-from services.audit_service import get_audit_service
+from services.audit_services import get_audit_service
 from services.auth_service import UserContext
 # ──────────────────────────────────────────────────────────────────────────────
 

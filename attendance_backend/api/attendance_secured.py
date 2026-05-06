@@ -37,7 +37,7 @@ from decorators.auth_decorators import (
     require_student,
     get_optional_user,
 )
-from services.audit_service import get_audit_service
+from services.audit_services import get_audit_service
 from services.auth_service import UserContext
 # ──────────────────────────────────────────────────────────────────────────────
 

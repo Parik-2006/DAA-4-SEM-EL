@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field
 
 from decorators.auth_decorators import get_current_user
-from services.audit_service import get_audit_service
+from services.audit_services import get_audit_service
 from services.auth_service import ROLE_PERMISSIONS, UserContext, get_auth_service
 
 logger = logging.getLogger(__name__)

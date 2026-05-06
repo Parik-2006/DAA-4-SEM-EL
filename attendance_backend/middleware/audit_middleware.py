@@ -35,7 +35,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
-from services.audit_service import get_audit_service
+from services.audit_services import get_audit_service
 from services.auth_service import UserContext
 
 logger = logging.getLogger(__name__)

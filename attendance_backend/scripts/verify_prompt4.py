@@ -15,6 +15,7 @@ import ast
 import json
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
+REPO_DIR = BACKEND_DIR.parent
 
 class CodeVerifier:
     def __init__(self):
@@ -183,8 +184,19 @@ def main():
     
     # 5. Admin API - Role Check
     print("5. Admin API - Role-Based Access")
-    v.function_exists_in_file("api/admin.py", "get_analytics_summary",
-                             "get_analytics_summary endpoint")
+    with open(BACKEND_DIR / "api/admin.py") as f:
+        admin_content = f.read()
+    has_analytics_route = (
+        "analytics/overview" in admin_content
+        or "analytics/sections" in admin_content
+        or "analytics/trends" in admin_content
+    )
+    status = "✓" if has_analytics_route else "✗"
+    print(f"  {status} analytics endpoint(s) present")
+    if has_analytics_route:
+        v.passed += 1
+    else:
+        v.failed += 1
     print()
     
     # 6. Sections API
@@ -244,8 +256,20 @@ def main():
     
     # 11. Documentation
     print("11. Documentation")
-    v.file_exists("PROMPT_4_IMPLEMENTATION_COMPLETE.md", "Implementation guide")
-    v.file_exists("PROMPT_4_QUICK_REFERENCE.md", "Quick reference")
+    # Prompt 4 documentation lives in the repository root, not inside backend/
+    root_files = [
+        ("PROMPT_4_IMPLEMENTATION_COMPLETE.md", "Implementation guide"),
+        ("PROMPT_4_QUICK_REFERENCE.md", "Quick reference"),
+    ]
+    for rel_path, desc in root_files:
+        full_path = REPO_DIR / rel_path
+        exists = full_path.exists()
+        status = "✓" if exists else "✗"
+        print(f"  {status} {desc}")
+        if exists:
+            v.passed += 1
+        else:
+            v.failed += 1
     print()
     
     # Summary

@@ -37,7 +37,7 @@ from decorators.auth_decorators import (
     require_teacher,
     require_faculty_access,
 )
-from services.audit_service import get_audit_service
+from services.audit_services import get_audit_service
 from services.auth_service import UserContext
 # ──────────────────────────────────────────────────────────────────────────────
 

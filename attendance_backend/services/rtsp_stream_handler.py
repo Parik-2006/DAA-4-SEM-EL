@@ -21,18 +21,21 @@ Changes (2026-04)
 import logging
 import threading
 import time
-import cv2
 import numpy as np
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, Callable, List
+from typing import Optional, Dict, Any, Callable, List, TYPE_CHECKING
 from dataclasses import dataclass, field
 from queue import Queue, Empty
 
-from services.optimized_attendance_pipeline import (
-    OptimizedAttendancePipeline,
-    PipelineFrameResult,
-)
-from utils.motion_detector import MotionConfig
+if TYPE_CHECKING:
+    import cv2
+    from services.optimized_attendance_pipeline import OptimizedAttendancePipeline, PipelineFrameResult
+    from utils.motion_detector import MotionConfig
+else:
+    OptimizedAttendancePipeline = None
+    PipelineFrameResult = None
+    MotionConfig = None
+
 from services.firebase_service import get_firebase_service, FirebaseService
 
 logger = logging.getLogger(__name__)
@@ -145,10 +148,10 @@ class RTSPStreamHandler:
             "motion_config": motion_config,
             "enable_motion_gate": enable_motion_gate,
         }
-        self.pipeline: Optional[OptimizedAttendancePipeline] = None
+        self.pipeline: Optional["OptimizedAttendancePipeline"] = None
 
         # ── Stream state ────────────────────────────────────────────────────
-        self.cap: Optional[cv2.VideoCapture] = None
+        self.cap: Optional["cv2.VideoCapture"] = None
         self.is_running: bool = False
         self.is_paused: bool = False
         self._thread: Optional[threading.Thread] = None
@@ -202,6 +205,7 @@ class RTSPStreamHandler:
         bool
             True if the processing thread was launched successfully.
         """
+        import cv2
         if self.is_running:
             logger.warning("Stream %s already running", self.stream_id)
             return False
@@ -477,6 +481,7 @@ class RTSPStreamHandler:
 
     def _reconnect(self) -> bool:
         """Try to reopen the RTSP stream after a drop."""
+        import cv2
         logger.info(
             "Reconnecting stream %s in %.1f s…", self.stream_id, self.reconnect_delay
         )
@@ -737,6 +742,7 @@ class RTSPStreamHandler:
             return True
 
         try:
+            from services.optimized_attendance_pipeline import OptimizedAttendancePipeline
             self.pipeline = OptimizedAttendancePipeline(**self._pipeline_config)
             return True
         except Exception as exc:
