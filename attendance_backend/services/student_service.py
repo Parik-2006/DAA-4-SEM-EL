@@ -166,6 +166,10 @@ class StudentService:
             if class_id and doc.get("class_id") != class_id:
                 continue
             doc.setdefault("period_id", pid)
+            if not doc.get("course_code") and doc.get("course_id"):
+                doc["course_code"] = doc["course_id"]
+            if not doc.get("course_name"):
+                doc["course_name"] = doc.get("course_code") or doc.get("course_id", "")
             periods.append(doc)
         return periods
 

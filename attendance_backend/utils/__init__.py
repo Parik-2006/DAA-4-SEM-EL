@@ -5,11 +5,11 @@ Provides helper functions for preprocessing, embedding search,
 image handling, and input validation.
 """
 
-from utils.preprocessing import ImagePreprocessor
-from utils.embedding_search import EmbeddingSearch
-from utils.image_utils import ImageUtils
-from utils.validators import Validators
-from utils.time_validator import (
+from .preprocessing import ImagePreprocessor
+from .embedding_search import EmbeddingSearch
+from .image_utils import ImageUtils
+from .validators import Validators
+from .time_validator import (
     get_period_runtime_status,
     get_marking_window_info,
     is_marking_allowed,

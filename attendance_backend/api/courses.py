@@ -1,201 +1,306 @@
+"""
+api/courses.py — Course management endpoints (Firestore-backed)
+────────────────────────────────────────────────────────────────
+Manages Course documents in Firestore.
+
+Endpoints:
+  GET    /api/v1/courses             — List all courses (paginated)
+  POST   /api/v1/courses             — Create a new course
+  GET    /api/v1/courses/{course_id} — Get course details
+  PUT    /api/v1/courses/{course_id} — Update course
+  DELETE /api/v1/courses/{course_id} — Delete course
+
+All endpoints require admin role for write operations.
+Read operations are available to all authenticated users.
+"""
+
 import logging
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from firebase_admin.exceptions import NotFoundError
-from database.firebase_client import FirebaseClient
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-router = APIRouter(tags=["admin-courses"])
+from database.firebase_client import FirebaseClient
+from middleware.auth_middleware import require_role, get_current_user
+
 logger = logging.getLogger(__name__)
 
-class CourseSchema(BaseModel):
+router = APIRouter(prefix="/api/v1", tags=["admin-courses"])
+
+
+# ── Schemas ────────────────────────────────────────────────────────────────────
+
+class CourseCreateRequest(BaseModel):
+    """Request body for creating a course."""
+    name: str = Field(..., min_length=1, max_length=255, description="Course name")
+    code: str = Field(..., min_length=1, max_length=50, description="Course code")
+    description: Optional[str] = Field(None, max_length=1000, description="Course description")
+    credits: int = Field(default=4, ge=1, le=8, description="Course credits")
+    department: Optional[str] = Field(None, description="Department name")
+
+
+class CourseUpdateRequest(BaseModel):
+    """Request body for updating a course."""
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    code: Optional[str] = Field(None, min_length=1, max_length=50)
+    description: Optional[str] = Field(None, max_length=1000)
+    credits: Optional[int] = Field(None, ge=1, le=8)
+    department: Optional[str] = Field(None)
+
+
+class CourseResponse(BaseModel):
+    """Response body for a single course."""
+    course_id: str
     name: str
     code: str
-    schedule: str
-    room: str
-    active: Optional[bool] = True
+    description: Optional[str] = None
+    credits: int
+    department: Optional[str] = None
+    created_at: str
+    updated_at: str
 
-def get_db():
+
+class CourseListResponse(BaseModel):
+    """Response body for paginated course list."""
+    data: list[CourseResponse]
+    total: int
+    page: int
+    limit: int
+
+
+def get_db() -> FirebaseClient:
+    """Dependency: get FirebaseClient instance."""
     return FirebaseClient()
 
 
-def _safe_get(reference) -> Any:
-    """Read Firebase path and degrade gracefully if the RTDB is not configured."""
-    try:
-        return reference.get()
-    except NotFoundError as exc:
-        logger.debug("Firebase RTDB path not found (expected if RTDB not configured): %s", exc)
-        return None
-    except Exception as exc:
-        logger.debug("Error reading Firebase RTDB: %s", exc)
-        return None
+# ── Endpoints ──────────────────────────────────────────────────────────────────
 
-
-def _ensure_dict(data: Any) -> Dict[str, Any]:
-    if isinstance(data, dict):
-        return data
-    return {}
-
-@router.get("/courses")
-async def get_all_courses(
+@router.get("/courses", response_model=CourseListResponse)
+async def list_courses(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
-    db: FirebaseClient = Depends(get_db)
-) -> dict:
-    """Get all courses"""
-    courses_data = _ensure_dict(_safe_get(db.get_reference("courses")))
-    courses = []
-    for course_id, course_info in courses_data.items():
-        info = course_info if isinstance(course_info, dict) else {}
-        info["id"] = course_id
-        courses.append(info)
+    department: Optional[str] = Query(None),
+    user=Depends(get_current_user),
+    db: FirebaseClient = Depends(get_db),
+) -> CourseListResponse:
+    """
+    List all courses (paginated).
 
-    start = (page - 1) * limit
-    end = start + limit
-    paginated = courses[start:end]
+    Query Parameters:
+      page: Page number (default: 1)
+      limit: Results per page (default: 50, max: 100)
+      department: Filter by department (optional)
 
-    return {
-        "data": paginated,
-        "total": len(courses),
-        "page": page,
-        "limit": limit,
-        "total_pages": (len(courses) + limit - 1) // limit if courses else 0,
-    }
-
-
-@router.post("/courses")
-async def create_course(
-    course: CourseSchema,
-    db: FirebaseClient = Depends(get_db)
-) -> dict:
-    """Create a new course"""
+    Returns paginated course list.
+    """
     try:
-        course_id = str(uuid4())
+        # Get all courses
+        courses = db.get_all_courses(department=department)
+
+        # Apply pagination
+        total = len(courses)
+        start = (page - 1) * limit
+        end = start + limit
+        paginated = courses[start:end]
+
+        # Convert to response schema
+        data = [
+            CourseResponse(
+                course_id=c.get("course_id"),
+                name=c.get("name"),
+                code=c.get("code"),
+                description=c.get("description"),
+                credits=c.get("credits"),
+                department=c.get("department"),
+                created_at=c.get("created_at"),
+                updated_at=c.get("updated_at"),
+            )
+            for c in paginated
+        ]
+
+        return CourseListResponse(
+            data=data,
+            total=total,
+            page=page,
+            limit=limit,
+        )
+
+    except Exception as exc:
+        logger.error("Error listing courses: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to list courses")
+
+
+@router.post("/courses", response_model=CourseResponse, status_code=201)
+async def create_course(
+    request: CourseCreateRequest,
+    user=Depends(require_role("admin")),
+    db: FirebaseClient = Depends(get_db),
+) -> CourseResponse:
+    """
+    Create a new course.
+
+    Request body:
+      name: str (required, 1-255 chars)
+      code: str (required, 1-50 chars)
+      description: str (optional)
+      credits: int (default 4, 1-8)
+      department: str (optional)
+
+    Returns the created course with generated course_id.
+    """
+    try:
+        # Generate course_id from code + uuid suffix for uniqueness
+        course_id = f"{request.code.upper()}_{str(uuid4())[:8]}"
+
         course_data = {
-            "name": course.name,
-            "code": course.code,
-            "schedule": course.schedule,
-            "room": course.room,
-            "active": course.active,
-            "enrolled_students": 0,
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat()
+            "course_id": course_id,
+            "name": request.name,
+            "code": request.code.upper(),
+            "description": request.description or "",
+            "credits": request.credits,
+            "department": request.department or "",
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
         }
-        
-        courses_ref = db.get_reference("courses").child(course_id)
-        courses_ref.set(course_data)
-        
-        return {
-            "success": True,
-            "id": course_id,
-            "message": "Course created successfully"
-        }
-    except NotFoundError:
-        raise HTTPException(status_code=503, detail="Realtime database is not configured")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
+        # Create in Firestore
+        success = db.create_course(course_data)
+        if not success:
+            raise Exception("Firestore write failed")
+
+        return CourseResponse(**course_data)
+
+    except ValueError as exc:
+        logger.error("Validation error creating course: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("Error creating course: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to create course")
 
 
-@router.get("/courses/{course_id}")
+@router.get("/courses/{course_id}", response_model=CourseResponse)
 async def get_course(
     course_id: str,
-    db: FirebaseClient = Depends(get_db)
-) -> dict:
-    """Get specific course details"""
-    course_ref = db.get_reference("courses").child(course_id)
-    course = _safe_get(course_ref)
-    if not isinstance(course, dict):
-        raise HTTPException(status_code=404, detail="Course not found")
+    user=Depends(get_current_user),
+    db: FirebaseClient = Depends(get_db),
+) -> CourseResponse:
+    """
+    Get course details by ID.
 
-    course["id"] = course_id
-    return course
+    Path Parameters:
+      course_id: Course identifier
+
+    Returns the course document.
+    """
+    try:
+        course = db.get_course(course_id)
+        if not course:
+            raise HTTPException(status_code=404, detail="Course not found")
+
+        return CourseResponse(**course)
+
+    except Exception as exc:
+        logger.error("Error getting course %s: %s", course_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to retrieve course")
 
 
-@router.put("/courses/{course_id}")
+@router.put("/courses/{course_id}", response_model=CourseResponse)
 async def update_course(
     course_id: str,
-    course: CourseSchema,
-    db: FirebaseClient = Depends(get_db)
-) -> dict:
-    """Update course details"""
+    request: CourseUpdateRequest,
+    user=Depends(require_role("admin")),
+    db: FirebaseClient = Depends(get_db),
+) -> CourseResponse:
+    """
+    Update course details.
+
+    Path Parameters:
+      course_id: Course identifier
+
+    Request body (all fields optional):
+      name, code, description, credits, department
+
+    Returns the updated course.
+    """
     try:
-        course_ref = db.get_reference("courses").child(course_id)
-        existing = _safe_get(course_ref)
-        if not isinstance(existing, dict):
+        # Verify course exists
+        existing = db.get_course(course_id)
+        if not existing:
             raise HTTPException(status_code=404, detail="Course not found")
-        
-        update_data = {
-            "name": course.name,
-            "code": course.code,
-            "schedule": course.schedule,
-            "room": course.room,
-            "active": course.active,
-            "updated_at": datetime.now().isoformat()
-        }
-        
-        course_ref.update(update_data)
-        
-        return {
-            "success": True,
-            "message": "Course updated successfully"
-        }
-    except NotFoundError:
-        raise HTTPException(status_code=503, detail="Realtime database is not configured")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
+        # Build updates dict (only non-None fields)
+        updates = {}
+        if request.name is not None:
+            updates["name"] = request.name
+        if request.code is not None:
+            updates["code"] = request.code.upper()
+        if request.description is not None:
+            updates["description"] = request.description
+        if request.credits is not None:
+            updates["credits"] = request.credits
+        if request.department is not None:
+            updates["department"] = request.department
+
+        if not updates:
+            # No updates provided
+            return CourseResponse(**existing)
+
+        # Update in Firestore
+        success = db.update_course(course_id, updates)
+        if not success:
+            raise Exception("Firestore update failed")
+
+        # Fetch updated document
+        updated = db.get_course(course_id)
+        return CourseResponse(**updated)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error updating course %s: %s", course_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to update course")
 
 
-@router.patch("/courses/{course_id}")
-async def toggle_course(
-    course_id: str,
-    data: dict,
-    db: FirebaseClient = Depends(get_db)
-) -> dict:
-    """Toggle course active status"""
-    try:
-        course_ref = db.get_reference("courses").child(course_id)
-        existing = _safe_get(course_ref)
-        if not isinstance(existing, dict):
-            raise HTTPException(status_code=404, detail="Course not found")
-        
-        active = data.get("active", True)
-        course_ref.update({"active": active})
-        
-        return {
-            "success": True,
-            "message": f"Course {'activated' if active else 'deactivated'}"
-        }
-    except NotFoundError:
-        raise HTTPException(status_code=503, detail="Realtime database is not configured")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.delete("/courses/{course_id}")
+@router.delete("/courses/{course_id}", status_code=204)
 async def delete_course(
     course_id: str,
-    db: FirebaseClient = Depends(get_db)
-) -> dict:
-    """Delete a course"""
+    user=Depends(require_role("admin")),
+    db: FirebaseClient = Depends(get_db),
+) -> None:
+    """
+    Delete a course.
+
+    Path Parameters:
+      course_id: Course identifier
+
+    Note: Ensure no sections are linked to this course before deletion.
+    """
     try:
-        course_ref = db.get_reference("courses").child(course_id)
-        existing = _safe_get(course_ref)
-        if not isinstance(existing, dict):
+        # Verify course exists
+        course = db.get_course(course_id)
+        if not course:
             raise HTTPException(status_code=404, detail="Course not found")
-        
-        course_ref.delete()
-        
-        return {
-            "success": True,
-            "message": "Course deleted successfully"
-        }
-    except NotFoundError:
-        raise HTTPException(status_code=503, detail="Realtime database is not configured")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
+        # Check if sections exist for this course
+        sections = db.get_sections_by_course(course_id)
+        if sections:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete course with active sections. Delete sections first.",
+            )
+
+        # Delete from Firestore
+        success = db._fs_delete("courses", course_id)
+        if not success:
+            raise Exception("Firestore delete failed")
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error deleting course %s: %s", course_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to delete course")
 
 
 @router.get("/courses/{course_id}/enrolled-students")

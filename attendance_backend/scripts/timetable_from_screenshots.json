@@ -1,0 +1,357 @@
+[
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "Prof. Neethu Srikumaran",
+    "course_id": "CS344AI",
+    "course_code": "CS344AI",
+    "course_name": "IOT",
+    "day_of_week": "Monday",
+    "start_time": "09:00",
+    "end_time": "10:00",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot",
+      "full_course_title": "IoT and Embedded Computing"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "Prof. Saraswathi G Datar",
+    "course_id": "CD343AI",
+    "course_code": "CD343AI",
+    "course_name": "DAA",
+    "day_of_week": "Monday",
+    "start_time": "10:00",
+    "end_time": "11:00",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot",
+      "full_course_title": "Design and Analysis of Algorithms"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "Dr. Anitha Sandeep",
+    "course_id": "CS241AT",
+    "course_code": "CS241AT",
+    "course_name": "DMS",
+    "day_of_week": "Monday",
+    "start_time": "11:30",
+    "end_time": "12:30",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot",
+      "full_course_title": "Discrete Mathematical Structures and Combinatorics"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "Dr. G S Nagaraja",
+    "course_id": "CY245AT",
+    "course_code": "CY245AT",
+    "course_name": "CN",
+    "day_of_week": "Monday",
+    "start_time": "12:30",
+    "end_time": "13:30",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot",
+      "full_course_title": "Computer Networks"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "TBA",
+    "course_id": "CS246TX",
+    "course_code": "CS246TX",
+    "course_name": "BASKET COURSE",
+    "day_of_week": "Monday",
+    "start_time": "14:30",
+    "end_time": "15:30",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot",
+      "full_course_title": "Professional Elective Course - Group B"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "Prof. Saraswathi G Datar",
+    "course_id": "CD343AI",
+    "course_code": "CD343AI",
+    "course_name": "DAA",
+    "day_of_week": "Tuesday",
+    "start_time": "09:00",
+    "end_time": "10:00",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "TBA",
+    "course_id": "CS246TX",
+    "course_code": "CS246TX",
+    "course_name": "BASKET COURSE",
+    "day_of_week": "Tuesday",
+    "start_time": "10:00",
+    "end_time": "11:00",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "Dr. G S Nagaraja",
+    "course_id": "CY245AT",
+    "course_code": "CY245AT",
+    "course_name": "CN",
+    "day_of_week": "Tuesday",
+    "start_time": "11:30",
+    "end_time": "12:30",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "Prof. Neethu Srikumaran",
+    "course_id": "CS344AI",
+    "course_code": "CS344AI",
+    "course_name": "IOT",
+    "day_of_week": "Tuesday",
+    "start_time": "12:30",
+    "end_time": "13:30",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "TBA",
+    "course_id": "HS247LX",
+    "course_code": "HS247LX",
+    "course_name": "AEC COURSE",
+    "day_of_week": "Tuesday",
+    "start_time": "14:30",
+    "end_time": "15:30",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot",
+      "full_course_title": "Ability Enhancement Course - Group C"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "Dr. Anitha Sandeep",
+    "course_id": "CS241AT",
+    "course_code": "CS241AT",
+    "course_name": "DMS",
+    "day_of_week": "Wednesday",
+    "start_time": "09:00",
+    "end_time": "10:00",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "Dr. G S Nagaraja",
+    "course_id": "CY245AT",
+    "course_code": "CY245AT",
+    "course_name": "CN",
+    "day_of_week": "Wednesday",
+    "start_time": "10:00",
+    "end_time": "11:00",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "Prof. Neethu Srikumaran",
+    "course_id": "CS344AI",
+    "course_code": "CS344AI",
+    "course_name": "IOT",
+    "day_of_week": "Wednesday",
+    "start_time": "11:30",
+    "end_time": "12:30",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "TBA",
+    "course_id": "CS246TX",
+    "course_code": "CS246TX",
+    "course_name": "EL",
+    "day_of_week": "Wednesday",
+    "start_time": "12:30",
+    "end_time": "13:30",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot",
+      "full_course_title": "Professional Elective Course - Group B"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "TBA",
+    "course_id": "MAT149AT",
+    "course_code": "MAT149AT",
+    "course_name": "BRIDGE COURSE MATHS",
+    "day_of_week": "Wednesday",
+    "start_time": "14:30",
+    "end_time": "15:30",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot",
+      "full_course_title": "Bridge Course: Mathematics"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "Prof. Neethu Srikumaran",
+    "course_id": "CS344AI",
+    "course_code": "CS344AI",
+    "course_name": "IOT LAB",
+    "day_of_week": "Thursday",
+    "start_time": "09:00",
+    "end_time": "11:00",
+    "period_type": "lab",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "Prof. Ravikiran S Wali",
+    "course_id": "HS248AT",
+    "course_code": "HS248AT",
+    "course_name": "UHV",
+    "day_of_week": "Thursday",
+    "start_time": "11:30",
+    "end_time": "12:30",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot",
+      "full_course_title": "Universal Human Values"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "Prof. Saraswathi G Datar",
+    "course_id": "CD343AI",
+    "course_code": "CD343AI",
+    "course_name": "DMS*",
+    "day_of_week": "Thursday",
+    "start_time": "12:30",
+    "end_time": "13:30",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot",
+      "note": "Asterisk present in source screenshot"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "TBA",
+    "course_id": "CD343AI",
+    "course_code": "CD343AI",
+    "course_name": "DAA LAB",
+    "day_of_week": "Friday",
+    "start_time": "09:00",
+    "end_time": "11:00",
+    "period_type": "lab",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "Prof. Ravikiran S Wali",
+    "course_id": "HS248AT",
+    "course_code": "HS248AT",
+    "course_name": "UHV",
+    "day_of_week": "Friday",
+    "start_time": "11:30",
+    "end_time": "12:30",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "Dr. Anitha Sandeep",
+    "course_id": "CS241AT",
+    "course_code": "CS241AT",
+    "course_name": "DMS",
+    "day_of_week": "Friday",
+    "start_time": "12:30",
+    "end_time": "13:30",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "Prof. Saraswathi G Datar",
+    "course_id": "CD343AI",
+    "course_code": "CD343AI",
+    "course_name": "DAA",
+    "day_of_week": "Friday",
+    "start_time": "14:30",
+    "end_time": "15:30",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot"
+    }
+  },
+  {
+    "class_id": "CSE-C-4SEM",
+    "faculty_id": "TBA",
+    "course_id": "HS247LX",
+    "course_code": "HS247LX",
+    "course_name": "COUNSELLING",
+    "day_of_week": "Friday",
+    "start_time": "15:30",
+    "end_time": "16:30",
+    "period_type": "lecture",
+    "room": "CC 203",
+    "metadata": {
+      "source": "RV College timetable screenshot"
+    }
+  }
+]

@@ -17,9 +17,12 @@ Period document shape (Firestore ``periods`` collection)
 ---------------------------------------------------------
 {
     "period_id":        str,            # auto or supplied
+    "section_id":       str,            # REQUIRED: section isolation key
     "class_id":         str,
     "faculty_id":       str,
     "course_id":        str,
+    "course_code":      str,            # frontend-friendly alias (defaults to course_id)
+    "course_name":      str,            # display label used by timetable views
     "day_of_week":      int,            # 0 = Mon … 6 = Sun
     "start_time":       str,            # "HH:MM"
     "end_time":         str,            # "HH:MM"
@@ -78,7 +81,7 @@ VALID_PERIOD_TYPES = {"lecture", "lab", "tutorial", "holiday", "break", "exam"}
 
 # ── Required CSV columns ───────────────────────────────────────────────────────
 REQUIRED_CSV_COLUMNS = {
-    "class_id", "faculty_id", "course_id",
+    "class_id", "faculty_id", "course_id", "section_id",
     "day_of_week", "start_time", "end_time",
 }
 
@@ -173,9 +176,17 @@ def _build_period_doc(
 
     doc: Dict[str, Any] = {
         "period_id":     period_id or str(uuid.uuid4()),
+        "section_id":    str(raw["section_id"]).strip(),  # REQUIRED: section isolation
         "class_id":      str(raw["class_id"]).strip(),
         "faculty_id":    str(raw["faculty_id"]).strip(),
         "course_id":     str(raw["course_id"]).strip(),
+        "course_code":   str(raw.get("course_code") or raw["course_id"]).strip(),
+        "course_name":   str(
+            raw.get("course_name")
+            or raw.get("course_title")
+            or raw.get("course_code")
+            or raw["course_id"]
+        ).strip(),
         "day_of_week":   day,
         "start_time":    start,
         "end_time":      end,

@@ -20,7 +20,10 @@ from services.timetable_service import init_timetable_service
 
 # Replace this with JSON parsed from your screenshots.
 # Example structure is a list of period dicts with keys matching timetable schema.
-TIMETABLE_JSON_PATH = os.getenv("TIMETABLE_JSON_PATH", "./timetable_from_screenshots.json")
+DEFAULT_TIMETABLE_JSON_PATH = Path(__file__).with_name("timetable_from_screenshots.json")
+TIMETABLE_JSON_PATH = Path(
+    os.getenv("TIMETABLE_JSON_PATH", str(DEFAULT_TIMETABLE_JSON_PATH))
+)
 
 
 def seed():
@@ -32,7 +35,7 @@ def seed():
 
     tt_svc = init_timetable_service(db)
 
-    if not os.path.exists(TIMETABLE_JSON_PATH):
+    if not TIMETABLE_JSON_PATH.exists():
         raise SystemExit(f"Timetable JSON not found: {TIMETABLE_JSON_PATH}")
 
     with open(TIMETABLE_JSON_PATH, "r", encoding="utf-8") as fh:
