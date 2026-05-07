@@ -68,7 +68,6 @@ from scipy.spatial.distance import cosine
 from services.firebase_service import get_firebase_service, FirebaseService
 from services.rtsp_stream_handler import get_stream_manager
 from services.attendance_lock_service import get_lock_service
-from models.model_manager import ModelManager
 from config.constants import (
     ATTENDANCE_WINDOW_MINUTES,
     LATE_THRESHOLD_MINUTES,
@@ -207,6 +206,7 @@ async def _maybe_autolock(period_id: str) -> None:
 
 def _run_detection_and_embedding(image_array: np.ndarray):
     import cv2
+    from models.model_manager import ModelManager
     image_array = _resize_if_needed(image_array)
     try:
         detector  = ModelManager.get_yolov8_detector()
@@ -779,6 +779,7 @@ async def mark_attendance_mobile(
     period_id:    Optional[str] = Query(None),
 ) -> MarkAttendanceResponse:
     try:
+        from models.model_manager import ModelManager
         firebase = get_firebase_service()
         if not firebase:
             raise HTTPException(503, "Firebase service not initialized")
@@ -1199,6 +1200,7 @@ async def reload_students(stream_id: str):
 @router.get("/health", response_model=HealthCheckResponse)
 async def health_check() -> HealthCheckResponse:
     try:
+        from models.model_manager import ModelManager
         firebase = get_firebase_service()
         manager  = get_stream_manager()
         lock_svc = get_lock_service()

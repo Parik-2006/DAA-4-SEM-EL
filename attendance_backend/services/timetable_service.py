@@ -17,9 +17,12 @@ Period document shape (Firestore ``periods`` collection)
 ---------------------------------------------------------
 {
     "period_id":        str,            # auto or supplied
+    "section_id":       str,            # REQUIRED: section isolation key
     "class_id":         str,
     "faculty_id":       str,
     "course_id":        str,
+    "course_code":      str,            # frontend-friendly alias (defaults to course_id)
+    "course_name":      str,            # display label used by timetable views
     "day_of_week":      int,            # 0 = Mon … 6 = Sun
     "start_time":       str,            # "HH:MM"
     "end_time":         str,            # "HH:MM"
@@ -78,7 +81,7 @@ VALID_PERIOD_TYPES = {"lecture", "lab", "tutorial", "holiday", "break", "exam"}
 
 # ── Required CSV columns ───────────────────────────────────────────────────────
 REQUIRED_CSV_COLUMNS = {
-    "class_id", "faculty_id", "course_id",
+    "class_id", "faculty_id", "course_id", "section_id",
     "day_of_week", "start_time", "end_time",
 }
 
@@ -173,9 +176,17 @@ def _build_period_doc(
 
     doc: Dict[str, Any] = {
         "period_id":     period_id or str(uuid.uuid4()),
+        "section_id":    str(raw["section_id"]).strip(),  # REQUIRED: section isolation
         "class_id":      str(raw["class_id"]).strip(),
         "faculty_id":    str(raw["faculty_id"]).strip(),
         "course_id":     str(raw["course_id"]).strip(),
+        "course_code":   str(raw.get("course_code") or raw["course_id"]).strip(),
+        "course_name":   str(
+            raw.get("course_name")
+            or raw.get("course_title")
+            or raw.get("course_code")
+            or raw["course_id"]
+        ).strip(),
         "day_of_week":   day,
         "start_time":    start,
         "end_time":      end,
@@ -362,6 +373,22 @@ class TimetableService:
             "failed":   failed,
             "error_details": error_details,
         }
+
+    def seed_from_screenshot(self, periods: List[Dict[str, Any]], actor_id: str = "seed") -> Dict[str, Any]:
+        """Convenience wrapper used by local seeding scripts that parse a
+        timetable screenshot externally; simply delegates to bulk_insert.
+        """
+        # Normalize input shape to internal period doc format
+        valid = []
+        now_iso = datetime.utcnow().isoformat()
+        for p in periods:
+            try:
+                doc = _build_period_doc(p, now_iso=now_iso)
+                valid.append(doc)
+            except Exception as exc:
+                # Skip invalid rows during seeding
+                continue
+        return self.bulk_insert(valid, actor_id=actor_id)
 
     # ── Fetch helpers ──────────────────────────────────────────────────────────
 

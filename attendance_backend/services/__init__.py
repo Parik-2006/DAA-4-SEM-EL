@@ -1,75 +1,41 @@
-"""
-Services package for the attendance system.
+"""Services package for the attendance system.
 
-Provides business logic services for face detection, recognition,
-tracking, and attendance marking.
-
-Core Pipelines:
-- detection.py: YOLOv8-based face detection from webcam
-- recognition.py: FaceNet embedding generation (128-dim)
-- attendance_pipeline.py: Integrated real-time attendance processing
-
-Legacy Services (High-level abstractions):
-- face_detection_service.py
-- face_recognition_service.py
-- tracking_service.py
-- attendance_service.py
+The package uses lazy imports so lightweight utility tests do not require the
+full optional ML stack at import time.
 """
 
-# Legacy service imports
-from services.face_detection_service import FaceDetectionService
-from services.face_recognition_service import FaceRecognitionService
-from services.tracking_service import TrackingService
-from services.attendance_service import AttendanceLockService as AttendanceService
+from __future__ import annotations
 
-# New core pipeline imports
-try:
-    from services.detection import (
-        FaceDetectionPipeline,
-        demo_detection
-    )
-except ImportError:
-    FaceDetectionPipeline = None
-    demo_detection = None
+from importlib import import_module
 
-try:
-    from services.recognition import (
-        FaceRecognitionPipeline,
-        FaceDatabase,
-        demo_recognition
-    )
-except ImportError:
-    FaceRecognitionPipeline = None
-    FaceDatabase = None
-    demo_recognition = None
-
-try:
-    from services.attendance_pipeline import (
-        AttendancePipeline,
-        DetectedFace,
-        demo_attendance_pipeline
-    )
-except ImportError:
-    AttendancePipeline = None
-    DetectedFace = None
-    demo_attendance_pipeline = None
-
-__all__ = [
+_EXPORTS = {
     # Legacy services
-    "FaceDetectionService",
-    "FaceRecognitionService",
-    "TrackingService",
-    "AttendanceService",
-    
+    "FaceDetectionService": ("services.face_detection_service", "FaceDetectionService"),
+    "FaceRecognitionService": ("services.face_recognition_service", "FaceRecognitionService"),
+    "TrackingService": ("services.tracking_service", "TrackingService"),
+    "AttendanceService": ("services.attendance_service", "AttendanceLockService"),
     # New core pipelines
-    "FaceDetectionPipeline",
-    "FaceRecognitionPipeline",
-    "FaceDatabase",
-    "AttendancePipeline",
-    "DetectedFace",
-    
+    "FaceDetectionPipeline": ("services.detection", "FaceDetectionPipeline"),
+    "FaceRecognitionPipeline": ("services.recognition", "FaceRecognitionPipeline"),
+    "FaceDatabase": ("services.recognition", "FaceDatabase"),
+    "AttendancePipeline": ("services.attendance_pipeline", "AttendancePipeline"),
+    "DetectedFace": ("services.attendance_pipeline", "DetectedFace"),
     # Demo functions
-    "demo_detection",
-    "demo_recognition",
-    "demo_attendance_pipeline",
-]
+    "demo_detection": ("services.detection", "demo_detection"),
+    "demo_recognition": ("services.recognition", "demo_recognition"),
+    "demo_attendance_pipeline": ("services.attendance_pipeline", "demo_attendance_pipeline"),
+}
+
+
+def __getattr__(name: str):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    module_name, attr_name = _EXPORTS[name]
+    module = import_module(module_name)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value
+
+
+__all__ = list(_EXPORTS)

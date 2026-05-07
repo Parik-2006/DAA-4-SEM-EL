@@ -273,6 +273,11 @@ FIREBASE_COLLECTIONS = {
     "course_assignments": "course_assignments",
     "faculty":            "faculty",
 
+    # ── Multi-tenant section isolation (PROMPT 4) ──────────────
+    "sections":           "sections",
+    "enrollments":        "enrollments",
+    "audit_logs":         "audit_logs",
+
     # ── NEW (2026-04-30) ───────────────────────────────────────
     # Holds a single document "current_period" updated by PeriodDetectionService
     # on every period transition; frontend subscribes via Firestore snapshots.
@@ -288,6 +293,10 @@ COLLECTION_ATTENDANCE      = "attendance"
 COLLECTION_FACULTY         = "faculty"
 COLLECTION_COURSES         = "courses"
 COLLECTION_FACE_EMBEDDINGS = "face_embeddings"
+COLLECTION_SECTIONS        = "sections"
+COLLECTION_ENROLLMENTS     = "enrollments"
+COLLECTION_COURSE_ASSIGNMENTS = "course_assignments"
+COLLECTION_AUDIT_LOGS      = "audit_logs"
 COLLECTION_SYSTEM_STATE    = "system_state"
 
 # ── Field name constants (unchanged) ──────────────────────────────────────────

@@ -1,7 +1,6 @@
 // src/services/firebase/auth.service.ts
 import {
   getAuth,
-  signInWithEmailAndPassword,
   signOut as firebaseSignOut,
   createUserWithEmailAndPassword,
   setPersistence,
@@ -41,10 +40,32 @@ export const signUp = async (email: string, password: string) => {
  */
 export const signIn = async (email: string, password: string) => {
   try {
-    const userCredential = await signInWithEmailAndPassword(auth, email, password);
-    const token = await userCredential.user.getIdToken();
-    localStorage.setItem('auth_token', token);
-    return userCredential.user;
+    const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000';
+    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ email, password }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.detail || data?.message || 'Login failed');
+    }
+
+    if (data?.access_token) {
+      localStorage.setItem('auth_token', data.access_token);
+    }
+    if (data?.user_id) {
+      localStorage.setItem('user_id', data.user_id);
+    }
+    if (data?.role) {
+      localStorage.setItem('user_role', data.role);
+    }
+    localStorage.setItem('user_email', email);
+
+    return (auth.currentUser ?? ({ email } as User));
   } catch (error: any) {
     console.error('Sign-in error:', error.message);
     throw error;
@@ -58,6 +79,9 @@ export const signOut = async () => {
   try {
     await firebaseSignOut(auth);
     localStorage.removeItem('auth_token');
+    localStorage.removeItem('user_id');
+    localStorage.removeItem('user_email');
+    localStorage.removeItem('user_role');
   } catch (error: any) {
     console.error('Sign-out error:', error.message);
     throw error;
@@ -75,13 +99,41 @@ export const getCurrentUser = (): User | null => {
  * Listen to auth state changes
  */
 export const onAuthChange = (callback: (user: User | null) => void) => {
-  return onAuthStateChanged(auth, callback);
+  const emitFromLocalToken = () => {
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      callback({ email: localStorage.getItem('user_email') } as User);
+      return;
+    }
+    callback(null);
+  };
+
+  emitFromLocalToken();
+
+  const unsubscribeFirebase = onAuthStateChanged(auth, (user) => {
+    if (user) {
+      callback(user);
+      return;
+    }
+    emitFromLocalToken();
+  });
+
+  const onStorageChange = () => emitFromLocalToken();
+  window.addEventListener('storage', onStorageChange);
+
+  return () => {
+    unsubscribeFirebase();
+    window.removeEventListener('storage', onStorageChange);
+  };
 };
 
 /**
  * Get auth token
  */
 export const getAuthToken = async (): Promise<string> => {
+  const backendToken = localStorage.getItem('auth_token');
+  if (backendToken) return backendToken;
+
   const user = auth.currentUser;
   if (!user) throw new Error('User not authenticated');
   return user.getIdToken();

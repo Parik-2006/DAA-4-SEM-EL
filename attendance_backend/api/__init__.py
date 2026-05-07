@@ -15,4 +15,6 @@ from . import admin_students
 from . import courses
 from . import qr_attendance
 
-__all__ = ["health", "attendance", "user", "auth", "admin", "student", "admin_students", "courses", "qr_attendance"]
+from . import sections
+
+__all__ = ["health", "attendance", "user", "auth", "admin", "student", "admin_students", "courses", "qr_attendance", "sections"]

@@ -501,6 +501,21 @@ class AttendanceAPI {
     }
   }
 
+  async getAdminAttendanceToday(): Promise<Record<string, unknown>> {
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.get('/api/v1/admin/attendance/today');
+          return response.data as Record<string, unknown>;
+        },
+        this.retryConfig
+      );
+    } catch (err) {
+      console.error('[getAdminAttendanceToday] Error:', err);
+      return {};
+    }
+  }
+
   async registerStudentFace(studentId: string, faceImageBase64: string) {
     try {
       return await withRetry(

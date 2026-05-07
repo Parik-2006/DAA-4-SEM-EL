@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Layout, SystemAlert } from '../components';
 import { useBackendHealth } from '../hooks/useBackendHealth';
+import { attendanceAPI } from '../services/api';
 
 export const DashboardPage: React.FC = () => {
   const { isHealthy, lastChecked } = useBackendHealth();
@@ -16,16 +17,15 @@ export const DashboardPage: React.FC = () => {
     // Fetch dashboard stats
     const fetchStats = async () => {
       try {
-        const response = await fetch('http://localhost:8000/api/v1/admin/attendance/today');
-        const data = await response.json();
+        const data = await attendanceAPI.getAdminAttendanceToday();
         
         if (data && !data.error) {
           setStats({
             totalClasses: 1, 
-            totalStudents: data.totalStudents || 70,
-            attendanceToday: data.attendanceRate || 0,
-            pendingRecords: data.pendingRecords || 0,
-            presentStudentIds: data.presentStudentIds || [],
+            totalStudents: Number(data.totalStudents || 70),
+            attendanceToday: Number(data.attendanceRate || 0),
+            pendingRecords: Number(data.pendingRecords || 0),
+            presentStudentIds: Array.isArray(data.presentStudentIds) ? data.presentStudentIds as string[] : [],
           });
         }
       } catch (error) {

@@ -1,126 +1,435 @@
 {
   "indexes": [
-
-    // ── periods collection ────────────────────────────────────────────────────
-    // Used by: get_periods_by_day(), get_active_period(), get_periods_by_day_and_time()
     {
       "collectionGroup": "periods",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "day_of_week", "order": "ASCENDING" },
-        { "fieldPath": "start_time",  "order": "ASCENDING" }
+        {
+          "fieldPath": "day_of_week",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "start_time",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    // Used by: get_timetable_by_class()
     {
       "collectionGroup": "periods",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "class_id",    "order": "ASCENDING" },
-        { "fieldPath": "day_of_week", "order": "ASCENDING" },
-        { "fieldPath": "start_time",  "order": "ASCENDING" }
+        {
+          "fieldPath": "class_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "day_of_week",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "start_time",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    // Used by: get_faculty_schedule()
     {
       "collectionGroup": "periods",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "faculty_id",  "order": "ASCENDING" },
-        { "fieldPath": "day_of_week", "order": "ASCENDING" },
-        { "fieldPath": "start_time",  "order": "ASCENDING" }
+        {
+          "fieldPath": "faculty_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "day_of_week",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "start_time",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    // ── cie collection ────────────────────────────────────────────────────────
-    // Used by: get_active_cie()
+    {
+      "collectionGroup": "periods",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "section_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "day_of_week",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "start_time",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "periods",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "section_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "day_of_week",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "start_time",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "end_time",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "periods",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "active_status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "day_of_week",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "start_time",
+          "order": "ASCENDING"
+        }
+      ]
+    },
     {
       "collectionGroup": "cie",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "active_status", "order": "ASCENDING" },
-        { "fieldPath": "start_date",    "order": "ASCENDING" }
+        {
+          "fieldPath": "active_status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "start_date",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    // Used by: query_cie_by_date_range()
     {
       "collectionGroup": "cie",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "start_date", "order": "ASCENDING" },
-        { "fieldPath": "end_date",   "order": "ASCENDING" }
+        {
+          "fieldPath": "start_date",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "end_date",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    // ── classes collection ────────────────────────────────────────────────────
-    // Used by: get_classes_by_cie()
     {
       "collectionGroup": "classes",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "cie_id",   "order": "ASCENDING" },
-        { "fieldPath": "semester", "order": "ASCENDING" }
+        {
+          "fieldPath": "cie_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "semester",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    // ── course_assignments collection ─────────────────────────────────────────
-    // Used by: get_faculty_courses()
+    {
+      "collectionGroup": "sections",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "course_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section_name",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "sections",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "semester",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "year",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section_name",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "enrollments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "student_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "enrollment_date",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "enrollments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "section_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "student_id",
+          "order": "ASCENDING"
+        }
+      ]
+    },
     {
       "collectionGroup": "course_assignments",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "faculty_id", "order": "ASCENDING" },
-        { "fieldPath": "semester",   "order": "ASCENDING" }
+        {
+          "fieldPath": "faculty_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "semester",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    // Used by: get_class_faculty()
     {
       "collectionGroup": "course_assignments",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "class_id",   "order": "ASCENDING" },
-        { "fieldPath": "faculty_id", "order": "ASCENDING" }
+        {
+          "fieldPath": "class_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "faculty_id",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    // ── students collection ───────────────────────────────────────────────────
-    // Used by: get_students_by_class()
+    {
+      "collectionGroup": "course_assignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "teacher_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section_id",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "course_assignments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "section_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "teacher_id",
+          "order": "ASCENDING"
+        }
+      ]
+    },
     {
       "collectionGroup": "students",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "class_id", "order": "ASCENDING" },
-        { "fieldPath": "name",     "order": "ASCENDING" }
+        {
+          "fieldPath": "class_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "name",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    // ── attendance collection ─────────────────────────────────────────────────
-    // Used by: get_attendance_for_period()
-    // Note: Firestore requires an explicit index for map-field queries.
     {
       "collectionGroup": "attendance",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "date",               "order": "ASCENDING" },
-        { "fieldPath": "metadata.period_id", "order": "ASCENDING" }
+        {
+          "fieldPath": "date",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "metadata.period_id",
+          "order": "ASCENDING"
+        }
       ]
     },
-
-    // Used by: existing get_attendance_records() with student_id + timestamp
     {
       "collectionGroup": "attendance",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "student_id", "order": "ASCENDING" },
-        { "fieldPath": "timestamp",  "order": "DESCENDING" }
+        {
+          "fieldPath": "student_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "attendance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "section_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "period_id",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "attendance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "section_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "attendance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "student_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "attendance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "student_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "section_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "period_id",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "attendance",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "section_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "marked_by_teacher_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "date",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "audit_logs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "resource",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "resource_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "audit_logs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "user_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
       ]
     }
-
   ],
-
   "fieldOverrides": []
 }

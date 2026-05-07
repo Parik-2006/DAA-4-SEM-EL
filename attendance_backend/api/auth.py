@@ -1,240 +1,243 @@
 """
 api/auth.py
 ─────────────────────────────────────────────────────────────────────────────
-Public authentication endpoints:
+Authentication endpoints.
 
-    POST /api/v1/auth/login       — exchange credentials for JWT pair
-    POST /api/v1/auth/refresh     — exchange refresh token for new access token
-    POST /api/v1/auth/logout      — client-side invalidation hint
-    GET  /api/v1/auth/me          — introspect the current token
+POST /api/v1/auth/login
+    Accepts email + password, returns a signed JWT.
 
-All endpoints are intentionally decoupled from the /user router so the
-/user/register endpoint remains unchanged for backward compatibility.
+POST /api/v1/auth/refresh
+    Accepts a valid (non-expired) token and returns a new one with
+    a refreshed expiry.  The old token is not blacklisted (stateless
+    design — use short expiry + refresh in production).
+
+GET  /api/v1/auth/me
+    Returns the authenticated user's profile from the JWT claims.
+    Does NOT hit the database — purely derived from the token.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from jose import JWTError
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field
 
-from database.user_repository import UserRepository
-from middleware.auth_middleware import get_current_user
-from services.auth_service import AuthService, ROLE_PERMISSIONS, TokenPayload
+from decorators.auth_decorators import get_current_user
+from services.audit_services import get_audit_service
+from services.auth_service import ROLE_PERMISSIONS, UserContext, get_auth_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
-_user_repo = UserRepository()
-_auth_svc = AuthService()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Request / Response schemas (local to this module — lightweight)
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Request / response schemas ─────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
-    email: EmailStr = Field(..., example="admin@school.edu")
-    password: str = Field(..., min_length=1, example="secret")
+    email: str = Field(..., description="Registered email address")
+    password: str = Field(..., min_length=1, description="Account password")
 
 
-class TokenPairResponse(BaseModel):
-    success: bool = True
+class TokenResponse(BaseModel):
     access_token: str
-    refresh_token: str
     token_type: str = "bearer"
-    expires_in: int = Field(..., description="Access token lifetime in seconds")
-    user: "UserSummary"
-
-
-class UserSummary(BaseModel):
+    expires_in: int  # seconds
     user_id: str
-    name: str
     email: str
     role: str
     permissions: List[str]
     assigned_sections: List[str]
-
-
-class RefreshRequest(BaseModel):
-    refresh_token: str
-
-
-class RefreshResponse(BaseModel):
-    success: bool = True
-    access_token: str
-    token_type: str = "bearer"
 
 
 class MeResponse(BaseModel):
     user_id: str
     email: str
-    name: str
     role: str
     permissions: List[str]
     assigned_sections: List[str]
+    issued_at: int
+    expires_at: int
 
 
-TokenPairResponse.model_rebuild()
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _get_firestore():
+    try:
+        from services.firebase_service import get_firebase_service
+        fb = get_firebase_service()
+        if fb is None:
+            return None
+        return (
+            getattr(fb, "firestore_db", None)
+            or getattr(fb, "_firestore", None)
+        )
+    except Exception as exc:
+        logger.error("Could not obtain Firestore client: %s", exc)
+        return None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Endpoints
-# ─────────────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/v1/auth/login
+# ══════════════════════════════════════════════════════════════════════════════
 
 @router.post(
     "/login",
-    response_model=TokenPairResponse,
-    summary="Exchange credentials for a JWT pair",
-    description=(
-        "Validates email + password and returns an access token (short-lived) "
-        "and a refresh token (long-lived).  Include the access token in the "
-        "``Authorization: Bearer <token>`` header on subsequent requests."
-    ),
+    response_model=TokenResponse,
+    summary="Authenticate with email + password and receive a JWT",
 )
-def login(body: LoginRequest) -> TokenPairResponse:
-    # ── 1. Look up user ───────────────────────────────────────────────────────
-    user = _user_repo.get_user_by_email(body.email)
+async def login(body: LoginRequest, request: Request):
+    """
+    Authenticates a user against the Firestore ``users`` collection and
+    returns a signed JWT containing the user's role and permissions.
 
-    # Use the same error message for missing user and wrong password
-    # to prevent email-enumeration attacks.
-    _auth_error = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid email or password.",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+    **Roles**: ``admin`` | ``teacher`` | ``student``
 
-    if not user:
-        raise _auth_error
+    The returned ``access_token`` should be sent in the ``Authorization``
+    header of subsequent requests:
+    ```
+    Authorization: Bearer <access_token>
+    ```
+    """
+    auth_svc = get_auth_service()
+    audit_svc = get_audit_service()
 
-    # ── 2. Verify password ────────────────────────────────────────────────────
-    if not AuthService.verify_password(body.password, user.get("password_hash", "")):
-        raise _auth_error
-
-    # ── 3. Check account is active ────────────────────────────────────────────
-    if not user.get("is_active", True):
+    db = _get_firestore()
+    if db is None:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account is inactive. Contact your administrator.",
+            status_code=503,
+            detail="Authentication service temporarily unavailable.",
         )
 
-    # ── 4. Validate role ──────────────────────────────────────────────────────
-    role = user.get("role", "student")
-    if role not in ROLE_PERMISSIONS:
-        logger.error("User %s has unknown role '%s'", user["user_id"], role)
+    user_doc = auth_svc.authenticate(body.email, body.password, db)
+
+    if user_doc is None:
+        # Log failed attempt
+        audit_svc.log(
+            action="LOGIN_FAILED",
+            resource="auth",
+            user=None,
+            request=request,
+            details={"email": body.email},
+            success=False,
+            error="Invalid credentials",
+        )
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="User role misconfiguration. Contact support.",
+            status_code=401,
+            detail="Invalid email or password.",
         )
 
-    # ── 5. Issue token pair ───────────────────────────────────────────────────
-    tokens = AuthService.generate_token_pair(user)
-    permissions = AuthService.get_permissions_for_role(role)
+    user_id: str = user_doc.get("id") or user_doc.get("doc_id", "")
+    role: str = user_doc.get("role", "student")
+    assigned_sections: List[str] = user_doc.get("assigned_sections", [])
+    email: str = user_doc.get("email", body.email)
 
-    logger.info(
-        "Login successful: user=%s role=%s", user["user_id"], role
-    )
-
-    import os
-    expire_seconds = int(os.getenv("JWT_EXPIRE_MINUTES", "60")) * 60
-
-    return TokenPairResponse(
-        access_token=tokens["access_token"],
-        refresh_token=tokens["refresh_token"],
-        token_type="bearer",
-        expires_in=expire_seconds,
-        user=UserSummary(
-            user_id=user["user_id"],
-            name=user.get("name", ""),
-            email=user["email"],
+    try:
+        token = auth_svc.create_token(
+            user_id=user_id,
+            email=email,
             role=role,
-            permissions=permissions,
-            assigned_sections=user.get("assigned_sections", []),
-        ),
+            assigned_sections=assigned_sections,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # Decode to get expiry info
+    ctx = auth_svc.decode_token(token)
+    expires_in = ctx.expires_at - ctx.issued_at
+
+    # Audit successful login
+    audit_svc.log(
+        action="LOGIN",
+        resource="auth",
+        resource_id=user_id,
+        request=request,
+        details={"email": email, "role": role},
+        success=True,
     )
 
+    logger.info("Login: user=%s role=%s", user_id, role)
+
+    return TokenResponse(
+        access_token=token,
+        token_type="bearer",
+        expires_in=expires_in,
+        user_id=user_id,
+        email=email,
+        role=role,
+        permissions=ROLE_PERMISSIONS.get(role, []),
+        assigned_sections=assigned_sections,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/v1/auth/refresh
+# ══════════════════════════════════════════════════════════════════════════════
 
 @router.post(
     "/refresh",
-    response_model=RefreshResponse,
-    summary="Obtain a new access token using a refresh token",
+    response_model=TokenResponse,
+    summary="Refresh a valid JWT (extend expiry)",
 )
-def refresh_token(body: RefreshRequest) -> RefreshResponse:
-    # Decode the refresh token to extract user_id
-    try:
-        from jose import jwt as _jwt
-        import os
-        raw = _jwt.decode(
-            body.refresh_token,
-            os.getenv("JWT_SECRET", "CHANGE_ME_IN_PRODUCTION_USE_LONG_RANDOM_STRING"),
-            algorithms=["HS256"],
-        )
-        user_id = raw.get("sub")
-        token_type = raw.get("token_type")
-    except JWTError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired refresh token.",
-        ) from exc
+async def refresh_token(
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+):
+    """
+    Issue a new token with a refreshed expiry for an already-authenticated user.
 
-    if token_type != "refresh":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Provided token is not a refresh token.",
-        )
+    The caller must provide their current (valid, not-expired) token in the
+    ``Authorization`` header.  A completely new token is returned.
+    """
+    auth_svc = get_auth_service()
 
-    # Fetch fresh user data so the new access token reflects current roles/sections
-    user = _user_repo.get_user(user_id)
-    if not user or not user.get("is_active", True):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User account not found or inactive.",
-        )
+    token = auth_svc.create_token(
+        user_id=user.user_id,
+        email=user.email,
+        role=user.role,
+        assigned_sections=user.assigned_sections,
+    )
+    ctx = auth_svc.decode_token(token)
+    expires_in = ctx.expires_at - ctx.issued_at
 
-    try:
-        new_access = AuthService.refresh_access_token(body.refresh_token, user)
-    except JWTError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token refresh failed.",
-        ) from exc
+    logger.info("Token refreshed: user=%s", user.user_id)
 
-    logger.info("Token refreshed for user=%s", user_id)
-    return RefreshResponse(access_token=new_access)
+    return TokenResponse(
+        access_token=token,
+        token_type="bearer",
+        expires_in=expires_in,
+        user_id=user.user_id,
+        email=user.email,
+        role=user.role,
+        permissions=user.permissions,
+        assigned_sections=user.assigned_sections,
+    )
 
 
-@router.post(
-    "/logout",
-    summary="Logout (client-side token invalidation hint)",
-    description=(
-        "Stateless JWT architecture means the token remains valid until "
-        "expiry. Clients MUST discard both tokens on logout. "
-        "For hard invalidation, implement a token-blocklist (Redis) and "
-        "wire it into AuthService.verify_access_token."
-    ),
-)
-def logout(user: TokenPayload = Depends(get_current_user)) -> dict:
-    logger.info("Logout for user=%s", user.user_id)
-    return {
-        "success": True,
-        "message": "Logged out. Please discard your tokens.",
-    }
-
+# ══════════════════════════════════════════════════════════════════════════════
+# GET /api/v1/auth/me
+# ══════════════════════════════════════════════════════════════════════════════
 
 @router.get(
     "/me",
     response_model=MeResponse,
-    summary="Introspect the current access token",
+    summary="Return the current user's profile from their JWT",
 )
-def me(user: TokenPayload = Depends(get_current_user)) -> MeResponse:
-    """Returns the decoded claims from the caller's access token."""
+async def get_me(user: UserContext = Depends(get_current_user)):
+    """
+    Returns the authenticated user's decoded claims.
+
+    No database call — information is derived entirely from the JWT.
+    Useful for the frontend to bootstrap the UI after login.
+    """
     return MeResponse(
         user_id=user.user_id,
         email=user.email,
-        name=user.name,
         role=user.role,
         permissions=user.permissions,
         assigned_sections=user.assigned_sections,
+        issued_at=user.issued_at,
+        expires_at=user.expires_at,
     )

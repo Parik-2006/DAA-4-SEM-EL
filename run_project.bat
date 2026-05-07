@@ -36,6 +36,19 @@ set OPENBLAS_NUM_THREADS=2
 set OMP_NUM_THREADS=2
 set PYTHONHASHSEED=0
 
+:: Load JWT_SECRET from root .env for backend startup
+if exist ".env" (
+    for /f "tokens=1,* delims==" %%A in ('findstr /b /i "JWT_SECRET=" ".env"') do (
+        set "JWT_SECRET=%%B"
+    )
+)
+
+if not defined JWT_SECRET (
+    echo [WARNING] JWT_SECRET not found in .env or environment. Backend will use insecure default.
+) else (
+    echo [INFO] JWT_SECRET loaded from environment.
+)
+
 echo [1/2] Starting Backend API (Port 8000)...
 echo [INFO] Using optimized memory settings (OPENBLAS_NUM_THREADS=2)
 start "Backend API" cmd /k "title Backend API && cd attendance_backend && ..\.venv\Scripts\python.exe -u main.py 2>&1"
