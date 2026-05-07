@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from config.settings import get_settings
 from config.constants import SYSTEM_NAME, SYSTEM_VERSION
-from database.firebase_client import FirebaseClient
+from services.firebase_service import get_firebase_service
 
 
 logger = logging.getLogger(__name__)
@@ -119,10 +119,15 @@ async def get_database_status() -> Dict[str, Any]:
         Dictionary with database info
     """
     try:
-        db = FirebaseClient()
+        db = get_firebase_service()
+        if db is None:
+            return {
+                "status": "disconnected",
+                "connection_info": {"initialized": False}
+            }
         return {
-            "status": "connected" if db._initialized else "disconnected",
-            "connection_info": db.get_connection_status()
+            "status": "connected" if getattr(db, "_initialized", False) else "disconnected",
+            "connection_info": db.get_connection_status() if hasattr(db, "get_connection_status") else {},
         }
     
     except Exception as e:
@@ -167,10 +172,16 @@ async def get_config_status() -> Dict[str, Any]:
 def check_database_health() -> Dict[str, Any]:
     """Check database health."""
     try:
-        db = FirebaseClient()
+        db = get_firebase_service()
+        if db is None:
+            return {
+                "status": "warning",
+                "message": "Firebase service not initialised"
+            }
         return {
-            "status": "ok" if db._initialized else "error",
-            "message": "Firebase connected" if db._initialized else "Firebase not initialized"
+            "status": "ok" if getattr(db, "_initialized", False) else "error",
+            "message": "Firebase connected" if getattr(db, "_initialized", False) else "Firebase not initialized",
+            "connection_info": db.get_connection_status() if hasattr(db, "get_connection_status") else {},
         }
     except Exception as e:
         return {
@@ -183,15 +194,10 @@ def check_models_health() -> Dict[str, Any]:
     """Check model health."""
     try:
         from models.model_manager import ModelManager
-        status_info = ModelManager.get_status()
-        if status_info["initialized"]:
+        if ModelManager.is_initialized():
             return {
                 "status": "ok",
-                "message": "All models loaded",
-                "models": {
-                    "yolov8": status_info.get("yolov8_info", {}),
-                    "facenet": status_info.get("facenet_info", {}),
-                }
+                "message": "Models initialized",
             }
         else:
             return {

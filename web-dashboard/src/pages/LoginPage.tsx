@@ -1,6 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { signIn } from '../services/firebase/auth.service';
 
 export const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -15,7 +14,36 @@ export const LoginPage: React.FC = () => {
     setLoading(true);
 
     try {
-      await signIn(email, password);
+      const response = await fetch(
+        `${import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'}/api/v1/auth/login`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ email, password }),
+        }
+      );
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.detail || data?.message || 'Login failed');
+      }
+
+      if (data?.access_token) {
+        localStorage.setItem('auth_token', data.access_token);
+      }
+
+      if (data?.user_id) {
+        localStorage.setItem('user_id', data.user_id);
+      }
+
+      localStorage.setItem('user_email', email);
+
+      if (data?.role) {
+        localStorage.setItem('user_role', data.role);
+      }
+
       navigate('/dashboard');
     } catch (err: any) {
       setError(err.message || 'Login failed');

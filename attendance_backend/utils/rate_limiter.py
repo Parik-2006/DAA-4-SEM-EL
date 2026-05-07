@@ -128,7 +128,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         path = request.url.path
 
-        if path in _EXEMPT_PATHS:
+        if path in _EXEMPT_PATHS or path.endswith("/health"):
             return await call_next(request)
 
         user: Optional[UserContext] = getattr(request.state, "user", None)

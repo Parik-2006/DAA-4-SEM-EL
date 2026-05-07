@@ -31,6 +31,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 logger = logging.getLogger(__name__)
 
 # ── JWT secret (set JWT_SECRET in env for production) ─────────────────────────

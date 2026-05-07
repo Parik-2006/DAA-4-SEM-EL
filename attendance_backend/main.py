@@ -34,9 +34,11 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 
@@ -88,6 +90,8 @@ from config.constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -228,11 +232,11 @@ app = FastAPI(
 #   Register Auth first (innermost), CORS last (outermost).
 # ══════════════════════════════════════════════════════════════════════════════
 
-# 1. Auth — innermost: populates request.state.user before all other layers see it
-app.add_middleware(AuthMiddleware)
-
-# 2. Permission — needs state.user; enforces role per URL prefix + injects QueryFilterContext
+# 1. Permission — runs after Auth on request path; relies on state.user
 app.add_middleware(PermissionMiddleware)
+
+# 2. Auth — must run before Permission to populate request.state.user
+app.add_middleware(AuthMiddleware)
 
 # 3. Audit — needs state.user; logs all mutating requests to audit_logs
 app.add_middleware(AuditMiddleware)

@@ -76,6 +76,17 @@ export const Layout: React.FC<LayoutProps> = ({
   }, []);
 
   useEffect(() => {
+    const storedEmail = localStorage.getItem('user_email');
+    if (!currentUser && storedEmail) {
+      setCurrentUser({
+        displayName: storedEmail.split('@')[0],
+        email: storedEmail,
+        photoURL: null,
+      });
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setDropdownOpen(false);
@@ -90,6 +101,8 @@ export const Layout: React.FC<LayoutProps> = ({
       await signOut();
       localStorage.removeItem('auth_token');
       localStorage.removeItem('user_id');
+      localStorage.removeItem('user_email');
+      localStorage.removeItem('user_role');
       navigate('/login');
     } catch (err) {
       console.error('Logout failed', err);
