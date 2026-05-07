@@ -13,7 +13,7 @@ import {
   Clock, BookOpen, Users, ChevronRight, Activity,
   Calendar, CheckCircle, MapPin, Beaker, Bell, Wifi, WifiOff
 } from 'lucide-react';
-import { usePeriodDetection } from '../../hooks/useAttendanceHooks';
+import { usePeriodDetection } from '../hooks/useAttendanceHooks';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 

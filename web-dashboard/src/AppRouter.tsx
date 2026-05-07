@@ -1,45 +1,269 @@
-import React, { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { onAuthChange } from './services/firebase/auth.service';
+// src/AppRouter.tsx
+
+import React, { useEffect, useState } from 'react';
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  Navigate,
+  useLocation,
+} from 'react-router-dom';
+
+// ─────────────────────────────────────────────────────────────
+// Auth Services
+// ─────────────────────────────────────────────────────────────
+
+import {
+  onAuthChange,
+  clearSession,
+  getSessionToken,
+} from './services/firebase/auth.service';
+
+import {
+  getStoredRole,
+  isAdmin,
+  isTeacher,
+  isStudent,
+} from './utils/roles';
+
+// ─────────────────────────────────────────────────────────────
+// Pages
+// ─────────────────────────────────────────────────────────────
+
 import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
+import RoleLandingPage from './pages/RoleLandingPage';
+import AdminAnalyticsPage from './pages/AdminAnalyticsPage';
+import AdminTimetablePage from './pages/AdminTimetablePage';
 import { ProfilePage } from './pages/ProfilePage';
 import { AttendancePage } from './pages/AttendancePage';
-import FaceRegistrationPage from './pages/FaceRegistrationPage';
-import QRCodePage from './pages/QRCodePage';
+import { HistoryPage } from './pages/HistoryPage';
+
 import BatchImportPage from './pages/BatchImportPage';
 import StudentManagementPage from './pages/StudentManagementPage';
 import CourseManagementPage from './pages/CourseManagementPage';
-import { HistoryPage } from './pages/HistoryPage';
 
-interface ProtectedRouteProps {
+// ─────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────
+
+type UserRole = 'admin' | 'teacher' | 'student' | null;
+
+function defaultRouteFor(role: UserRole): string {
+  switch (role) {
+    case 'admin':
+      return '/dashboard';
+
+    case 'teacher':
+      return '/dashboard';
+
+    case 'student':
+      return '/attendance';
+
+    default:
+      return '/login';
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Role Permissions
+// ─────────────────────────────────────────────────────────────
+
+const ROLE_ALLOWED: Record<
+  NonNullable<UserRole>,
+  string[]
+> = {
+  admin: [
+    '/dashboard',
+    '/history',
+    '/batch-import',
+    '/student-management',
+    '/course-management',
+    '/timetable',
+    '/class-views',
+    '/analytics',
+  ],
+
+  teacher: [
+    '/dashboard',
+    '/attendance',
+    '/history',
+  ],
+
+  student: [
+    '/attendance',
+    '/history',
+    '/status',
+  ],
+};
+
+function isAllowed(
+  role: UserRole,
+  routePath: string
+): boolean {
+  if (!role) return false;
+
+  return ROLE_ALLOWED[role].includes(routePath);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Loading Screen
+// ─────────────────────────────────────────────────────────────
+
+const LoadingScreen = () => (
+  <div className="flex items-center justify-center h-screen">
+    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600" />
+  </div>
+);
+
+// ─────────────────────────────────────────────────────────────
+// Auth Gate
+// ─────────────────────────────────────────────────────────────
+
+interface AuthGateProps {
   children: React.ReactNode;
 }
 
-const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
-  const [isAuthenticated, setIsAuthenticated] = React.useState<boolean | null>(null);
+const AuthGate: React.FC<AuthGateProps> = ({
+  children,
+}) => {
+  const [isAuthenticated, setIsAuthenticated] =
+    useState<boolean | null>(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthChange((user: unknown) => {
-      setIsAuthenticated(!!user);
+    const unsub = onAuthChange((user: unknown) => {
+      const hasFirebaseUser = !!user;
+
+      const hasToken = !!getSessionToken();
+
+      const authenticated =
+        hasFirebaseUser || hasToken;
+
+      if (!authenticated) {
+        clearSession();
+      }
+
+      setIsAuthenticated(authenticated);
     });
-    return () => unsubscribe();
+
+    return () => unsub();
   }, []);
 
   if (isAuthenticated === null) {
+    return <LoadingScreen />;
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return <>{children}</>;
+};
+
+// ─────────────────────────────────────────────────────────────
+// Role Gate
+// ─────────────────────────────────────────────────────────────
+
+interface RoleGateProps {
+  children: React.ReactNode;
+  routePath: string;
+}
+
+const RoleGate: React.FC<RoleGateProps> = ({
+  children,
+  routePath,
+}) => {
+  const role = getStoredRole();
+
+  if (!isAllowed(role, routePath)) {
     return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600" />
-      </div>
+      <Navigate
+        to={defaultRouteFor(role)}
+        replace
+      />
     );
   }
 
-  return isAuthenticated ? <>{children}</> : <Navigate to="/login" />;
+  return <>{children}</>;
 };
 
-export const AppRouter: React.FC = () => {
+// ─────────────────────────────────────────────────────────────
+// Protected Route
+// ─────────────────────────────────────────────────────────────
+
+interface ProtectedRouteProps {
+  children: React.ReactNode;
+  routePath: string;
+}
+
+const ProtectedRoute: React.FC<
+  ProtectedRouteProps
+> = ({ children, routePath }) => {
   return (
-    // future flags silence the v6 → v7 upgrade warnings
+    <AuthGate>
+      <RoleGate routePath={routePath}>
+        {children}
+      </RoleGate>
+    </AuthGate>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+// Public Only Route
+// ─────────────────────────────────────────────────────────────
+
+interface PublicOnlyRouteProps {
+  children: React.ReactNode;
+}
+
+const PublicOnlyRoute: React.FC<
+  PublicOnlyRouteProps
+> = ({ children }) => {
+  const hasToken =
+    !!getSessionToken();
+
+  const role = getStoredRole();
+
+  if (hasToken) {
+    return (
+      <Navigate
+        to={defaultRouteFor(role)}
+        replace
+      />
+    );
+  }
+
+  return <>{children}</>;
+};
+
+// ─────────────────────────────────────────────────────────────
+// Default Redirect
+// ─────────────────────────────────────────────────────────────
+
+const DefaultRedirect: React.FC = () => {
+  const role = getStoredRole();
+
+  const hasToken =
+    !!getSessionToken();
+
+  if (!hasToken) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return (
+    <Navigate
+      to={defaultRouteFor(role)}
+      replace
+    />
+  );
+};
+
+// ─────────────────────────────────────────────────────────────
+// App Router
+// ─────────────────────────────────────────────────────────────
+
+const AppRouter: React.FC = () => {
+  return (
     <BrowserRouter
       future={{
         v7_startTransition: true,
@@ -47,86 +271,158 @@ export const AppRouter: React.FC = () => {
       }}
     >
       <Routes>
-        <Route path="/index.html" element={<Navigate to="/" replace />} />
-        <Route path="/login" element={<LoginPage />} />
+
+        {/* ───────────────── PUBLIC ───────────────── */}
+
+        <Route
+          path="/login"
+          element={
+            <PublicOnlyRoute>
+              <LoginPage />
+            </PublicOnlyRoute>
+          }
+        />
+
+        <Route
+          path="/index.html"
+          element={<Navigate to="/" replace />}
+        />
+
+        {/* ───────────────── ADMIN ───────────────── */}
 
         <Route
           path="/dashboard"
           element={
-            <ProtectedRoute>
-              <DashboardPage />
+            <ProtectedRoute routePath="/dashboard">
+              <RoleLandingPage />
             </ProtectedRoute>
           }
         />
+
         <Route
-          path="/attendance"
+          path="/analytics"
           element={
-            <ProtectedRoute>
-              <AttendancePage />
+            <ProtectedRoute routePath="/analytics">
+              <AdminAnalyticsPage />
             </ProtectedRoute>
           }
         />
+
         <Route
-          path="/history"
+          path="/timetable"
           element={
-            <ProtectedRoute>
-              <HistoryPage />
+            <ProtectedRoute routePath="/timetable">
+              <AdminTimetablePage />
             </ProtectedRoute>
           }
         />
+
         <Route
-          path="/profile"
+          path="/class-views"
           element={
-            <ProtectedRoute>
-              <ProfilePage />
+            <ProtectedRoute routePath="/class-views">
+              <AdminTimetablePage />
             </ProtectedRoute>
           }
         />
-        <Route
-          path="/face-registration"
-          element={
-            <ProtectedRoute>
-              <FaceRegistrationPage />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/qr-attendance"
-          element={
-            <ProtectedRoute>
-              <QRCodePage />
-            </ProtectedRoute>
-          }
-        />
+
         <Route
           path="/batch-import"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute routePath="/batch-import">
               <BatchImportPage />
             </ProtectedRoute>
           }
         />
+
         <Route
           path="/student-management"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute routePath="/student-management">
               <StudentManagementPage />
             </ProtectedRoute>
           }
         />
+
         <Route
           path="/course-management"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute routePath="/course-management">
               <CourseManagementPage />
             </ProtectedRoute>
           }
         />
 
-        {/* Default redirect */}
-        <Route path="/" element={<Navigate to="/dashboard" />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        {/* ───────────────── SHARED ───────────────── */}
+
+        <Route
+          path="/attendance"
+          element={
+            <ProtectedRoute routePath="/attendance">
+              <AttendancePage />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/live-attendance"
+          element={
+            <ProtectedRoute routePath="/live-attendance">
+              <AttendancePage />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/mark-attendance"
+          element={
+            <ProtectedRoute routePath="/mark-attendance">
+              <AttendancePage />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/history"
+          element={
+            <ProtectedRoute routePath="/history">
+              <HistoryPage />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/status"
+          element={
+            <ProtectedRoute routePath="/status">
+              <HistoryPage />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/profile"
+          element={
+            <ProtectedRoute routePath="/profile">
+              <ProfilePage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* ───────────────── EXTRA ───────────────── */}
+
+        {/* ───────────────── FALLBACK ───────────────── */}
+
+        <Route path="/" element={<DefaultRedirect />} />
+
+        <Route
+          path="*"
+          element={<DefaultRedirect />}
+        />
+
       </Routes>
     </BrowserRouter>
   );
 };
+
+export default AppRouter;

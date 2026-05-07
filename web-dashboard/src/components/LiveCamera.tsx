@@ -1,12 +1,22 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { Play, StopCircle, Loader, AlertCircle, Camera, Check, X, ShieldCheck, User } from 'lucide-react';
+import {
+  Play, StopCircle, Loader, AlertCircle, Camera,
+  Check, X, ShieldCheck, User, RefreshCw, AlertTriangle,
+} from 'lucide-react';
 import { attendanceAPI, DetectFaceResponse, ConfirmAttendanceResponse } from '@/services/api';
 import { Card } from './UI';
 
+// ── Constants ──────────────────────────────────────────────────────────────────
+const MAX_CONSECUTIVE_FAILURES = 5;
+
+// ── Types ──────────────────────────────────────────────────────────────────────
 interface LiveCameraProps {
   onAttendanceMarked: (data: any) => void;
   onProcessing: (isProcessing: boolean) => void;
   isLoading: boolean;
+  /** Called whenever the consecutive failure count changes — lets the parent
+   *  page react (e.g. update a sidebar status card) without prop-drilling. */
+  onConsecutiveFailures?: (count: number) => void;
 }
 
 // ── Confirmation Modal ─────────────────────────────────────────────────────────
@@ -30,9 +40,10 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
 
   return (
     /* Backdrop */
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ backgroundColor: 'rgba(30,20,10,0.55)', backdropFilter: 'blur(4px)' }}>
-
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ backgroundColor: 'rgba(30,20,10,0.55)', backdropFilter: 'blur(4px)' }}
+    >
       {/* Card */}
       <div
         className="relative w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden"
@@ -139,9 +150,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
               className="flex-1 flex items-center justify-center gap-2 rounded-xl font-semibold transition-all active:scale-95 shadow-md"
               style={{
                 padding: '12px 0',
-                background: isSaving
-                  ? '#a0856a'
-                  : 'linear-gradient(135deg, #b8864e, #c8a97e)',
+                background: isSaving ? '#a0856a' : 'linear-gradient(135deg, #b8864e, #c8a97e)',
                 border: 'none',
                 color: '#fff',
                 fontSize: 15,
@@ -169,16 +178,138 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
         </p>
       </div>
 
-      {/* keyframe injection */}
       <style>{`
         @keyframes modalIn {
           from { opacity: 0; transform: scale(0.88) translateY(16px); }
-          to   { opacity: 1; transform: scale(1)    translateY(0);     }
+          to   { opacity: 1; transform: scale(1) translateY(0); }
         }
       `}</style>
     </div>
   );
 };
+
+// ── Hard Stop Modal ────────────────────────────────────────────────────────────
+
+interface HardStopModalProps {
+  failureCount: number;
+  lastMessage: string;
+  onReset: () => void;
+}
+
+const HardStopModal: React.FC<HardStopModalProps> = ({ failureCount, lastMessage, onReset }) => (
+  <div
+    className="fixed inset-0 z-50 flex items-center justify-center p-4"
+    style={{ backgroundColor: 'rgba(30,10,10,0.65)', backdropFilter: 'blur(6px)' }}
+  >
+    <div
+      className="relative w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden"
+      style={{
+        background: 'linear-gradient(160deg, #fff8f6 0%, #fef2ee 60%, #fff5f2 100%)',
+        border: '1.5px solid #fecaca',
+        animation: 'modalIn 0.32s cubic-bezier(0.34,1.56,0.64,1)',
+      }}
+    >
+      {/* Top danger stripe */}
+      <div style={{ height: 4, background: 'linear-gradient(90deg, #ef4444, #f87171, #ef4444)' }} />
+
+      <div className="p-7">
+        {/* Icon */}
+        <div className="flex justify-center mb-5">
+          <div
+            className="w-20 h-20 rounded-full flex items-center justify-center shadow-md"
+            style={{ background: 'linear-gradient(135deg, #fee2e2, #fecaca)' }}
+          >
+            <AlertTriangle size={36} style={{ color: '#dc2626' }} />
+          </div>
+        </div>
+
+        <h2
+          className="text-center font-bold mb-2"
+          style={{ fontSize: 20, color: '#7f1d1d', letterSpacing: '-0.3px' }}
+        >
+          Face Not Detected
+        </h2>
+
+        <p className="text-center mb-3" style={{ color: '#b91c1c', fontSize: 14, lineHeight: 1.5 }}>
+          Sorry, we couldn't detect your face after{' '}
+          <strong>{failureCount} consecutive attempts</strong>. Please check the
+          tips below and try again.
+        </p>
+
+        {/* Last error detail */}
+        {lastMessage && (
+          <div
+            className="rounded-xl p-3 mb-4"
+            style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid #fca5a5' }}
+          >
+            <p style={{ fontSize: 12, color: '#b91c1c', textAlign: 'center' }}>{lastMessage}</p>
+          </div>
+        )}
+
+        {/* Tips */}
+        <div
+          className="rounded-xl p-4 mb-5"
+          style={{ background: 'rgba(239,68,68,0.05)', border: '1px solid #fecaca' }}
+        >
+          <p
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              color: '#991b1b',
+              marginBottom: 8,
+              textTransform: 'uppercase',
+              letterSpacing: '0.08em',
+            }}
+          >
+            Tips to improve detection
+          </p>
+          <ul
+            style={{
+              fontSize: 12,
+              color: '#b91c1c',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              listStyle: 'none',
+              padding: 0,
+              margin: 0,
+            }}
+          >
+            <li>✓ Move to a well-lit area facing a light source</li>
+            <li>✓ Remove glasses, hats, or face coverings if possible</li>
+            <li>✓ Centre your face fully in the camera frame</li>
+            <li>✓ Avoid strong backlighting (e.g. window behind you)</li>
+            <li>✓ Hold still during each scan (~2.5 s)</li>
+          </ul>
+        </div>
+
+        {/* Retry action */}
+        <button
+          onClick={onReset}
+          className="w-full flex items-center justify-center gap-2 rounded-xl font-semibold transition-all active:scale-95 shadow-md"
+          style={{
+            padding: '13px 0',
+            background: 'linear-gradient(135deg, #ef4444, #dc2626)',
+            border: 'none',
+            color: '#fff',
+            fontSize: 15,
+            cursor: 'pointer',
+          }}
+        >
+          <RefreshCw size={17} />
+          Try Again
+        </button>
+      </div>
+
+      <style>{`
+        @keyframes modalIn {
+          from { opacity: 0; transform: scale(0.88) translateY(16px); }
+          to   { opacity: 1; transform: scale(1) translateY(0); }
+        }
+      `}</style>
+    </div>
+  </div>
+);
 
 // ── Success Flash ──────────────────────────────────────────────────────────────
 
@@ -217,43 +348,103 @@ const SuccessFlash: React.FC<{ name: string }> = ({ name }) => (
   </div>
 );
 
+// ── Failure dot indicator ──────────────────────────────────────────────────────
+// `dark` = true when rendered on the dark camera overlay (white inactive dots);
+// false = rendered on white/light backgrounds (grey inactive dots).
+
+const FailureDots: React.FC<{ count: number; max: number; dark?: boolean }> = ({
+  count,
+  max,
+  dark = false,
+}) => (
+  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+    {Array.from({ length: max }).map((_, i) => (
+      <div
+        key={i}
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: '50%',
+          background: i < count
+            ? '#ef4444'
+            : dark ? 'rgba(255,255,255,0.35)' : '#e2e8f0',
+          transition: 'background 0.3s ease',
+          boxShadow: i < count ? '0 0 0 2px rgba(239,68,68,0.40)' : 'none',
+        }}
+      />
+    ))}
+    <span
+      style={{
+        fontSize: 11,
+        color: dark ? '#fff' : '#b91c1c',
+        marginLeft: 4,
+        fontWeight: 600,
+        opacity: dark ? 0.85 : 1,
+      }}
+    >
+      {count}/{max}
+    </span>
+  </div>
+);
+
 // ── Main LiveCamera component ──────────────────────────────────────────────────
 
 export const LiveCamera: React.FC<LiveCameraProps> = ({
   onAttendanceMarked,
   onProcessing,
   isLoading,
+  onConsecutiveFailures,
 }) => {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const videoRef    = useRef<HTMLVideoElement>(null);
+  const canvasRef   = useRef<HTMLCanvasElement>(null);
+  const streamRef   = useRef<MediaStream | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const processingRef = useRef(false);
+  const processingRef       = useRef(false);
   const pausedForConfirmRef = useRef(false);
-  const consecutiveNoFaceRef = useRef(0);
 
-  const [cameraState, setCameraState] = useState<'idle' | 'requesting' | 'active' | 'error'>('idle');
-  const [cameraError, setCameraError] = useState<string | null>(null);
+  // Ref keeps the setInterval closure in sync with the current count;
+  // the mirrored state drives the UI.
+  const consecutiveFailuresRef = useRef(0);
+
+  const [cameraState, setCameraState]         = useState<'idle' | 'requesting' | 'active' | 'error'>('idle');
+  const [cameraError, setCameraError]         = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
-  const [frameCount, setFrameCount] = useState(0);
+  const [frameCount, setFrameCount]           = useState(0);
 
   // Inline status banner
   const [lastFeedback, setLastFeedback] = useState<string | null>(null);
   const [feedbackType, setFeedbackType] = useState<'info' | 'warn' | 'error'>('info');
 
-  // Confirmation modal state
+  // Failure / hard-stop state
+  const [consecutiveFailures, setConsecutiveFailures] = useState(0);
+  const [showHardStop, setShowHardStop]   = useState(false);
+  const [hardStopMessage, setHardStopMessage] = useState('');
+
+  // Confirmation modal
   const [pendingDetection, setPendingDetection] = useState<DetectFaceResponse | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
   // Success flash
   const [successName, setSuccessName] = useState<string | null>(null);
 
-  // ── Cleanup ────────────────────────────────────────────────────────────────
+  // ── Keep ref in sync; notify parent ───────────────────────────────────────
+
+  useEffect(() => {
+    consecutiveFailuresRef.current = consecutiveFailures;
+    onConsecutiveFailures?.(consecutiveFailures);
+  }, [consecutiveFailures, onConsecutiveFailures]);
+
+  // ── Cleanup on unmount ────────────────────────────────────────────────────
 
   useEffect(() => () => stopCamera(), []);
 
+  // ── Stop camera ───────────────────────────────────────────────────────────
+
   const stopCamera = useCallback(() => {
-    if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
@@ -262,8 +453,40 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
     setCameraState('idle');
     setFrameCount(0);
     setLastFeedback(null);
-    consecutiveNoFaceRef.current = 0;
+    // Preserved from existing: always zero the streak on camera stop so a
+    // manual stop doesn't carry stale failures into the next session.
+    consecutiveFailuresRef.current = 0;
   }, []);
+
+  // ── Reset after hard stop — user explicitly retries ───────────────────────
+
+  const resetForRetry = useCallback(() => {
+    consecutiveFailuresRef.current = 0;
+    setConsecutiveFailures(0);
+    setShowHardStop(false);
+    setHardStopMessage('');
+    setLastFeedback(null);
+    // Stop the camera so the user deliberately presses Start Camera again,
+    // giving a moment to adjust lighting / position before retrying.
+    stopCamera();
+  }, [stopCamera]);
+
+  // ── Record one failure; trigger hard stop when threshold is reached ───────
+
+  const recordFailure = useCallback(
+    (message: string) => {
+      const next = consecutiveFailuresRef.current + 1;
+      consecutiveFailuresRef.current = next;
+      setConsecutiveFailures(next);
+
+      if (next >= MAX_CONSECUTIVE_FAILURES) {
+        setHardStopMessage(message);
+        setShowHardStop(true);
+        stopCamera();
+      }
+    },
+    [stopCamera],
+  );
 
   // ── Start camera ───────────────────────────────────────────────────────────
 
@@ -287,12 +510,12 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
 
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
-        await new Promise<void>((res) => {
+        await new Promise<void>(res => {
           const v = videoRef.current!;
           v.onloadedmetadata = () => res();
           setTimeout(res, 3000);
         });
-        await videoRef.current.play().catch(() => { });
+        await videoRef.current.play().catch(() => {});
       }
 
       setCameraState('active');
@@ -320,10 +543,10 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
 
   const captureFrame = (): Promise<Blob | null> =>
     new Promise(resolve => {
-      const video = videoRef.current;
+      const video  = videoRef.current;
       const canvas = canvasRef.current;
       if (!video || !canvas || video.videoWidth === 0) { resolve(null); return; }
-      canvas.width = video.videoWidth;
+      canvas.width  = video.videoWidth;
       canvas.height = video.videoHeight;
       const ctx = canvas.getContext('2d');
       if (!ctx) { resolve(null); return; }
@@ -335,7 +558,7 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
 
   const startDetectionLoop = () => {
     intervalRef.current = setInterval(async () => {
-      // Pause scanning while the confirmation dialog is open
+      // Pause while confirmation dialog is open or another frame is in-flight
       if (processingRef.current || pausedForConfirmRef.current) return;
 
       const video = videoRef.current;
@@ -353,45 +576,49 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
         const formData = new FormData();
         formData.append('file', blob, 'frame.jpg');
 
-        // Step 1: identify only — no DB write
+        // Step 1: identify only — does NOT write to the DB
         const result: DetectFaceResponse = await attendanceAPI.detectFaceOnly(formData);
 
         if (result.matched) {
-          // Pause loop and show confirmation modal
+          // ── SUCCESS: reset counter, pause loop, show confirmation ──────
+          consecutiveFailuresRef.current = 0;
+          setConsecutiveFailures(0);
           pausedForConfirmRef.current = true;
-          consecutiveNoFaceRef.current = 0;
           setLastFeedback(null);
           setPendingDetection(result);
         } else {
-          // Update inline feedback banner
-          consecutiveNoFaceRef.current += 1;
+          // ── FAILURE: classify message, update feedback ─────────────────
           const msg = result.message || 'No matching face found.';
-          const isNoFace = msg.toLowerCase().includes('no face') || msg.toLowerCase().includes('not detected');
-          const isNoEmb = msg.toLowerCase().includes('not registered') || msg.toLowerCase().includes('no face profile');
+          const isNoFace    = msg.toLowerCase().includes('no face') || msg.toLowerCase().includes('not detected');
+          const isNoEmb     = msg.toLowerCase().includes('not registered') || msg.toLowerCase().includes('no face profile');
           const isServerErr = msg.toLowerCase().includes('server error') || msg.toLowerCase().includes('model not loaded');
 
           if (isServerErr) {
             setFeedbackType('error');
             setLastFeedback(`⚠️ ${msg}`);
-            if (consecutiveNoFaceRef.current >= 3) {
-              onAttendanceMarked({ status: 'error', message: msg });
-              stopCamera();
-            }
           } else if (isNoEmb) {
             setFeedbackType('error');
             setLastFeedback('❌ No face profile registered. Ask admin to register your face.');
-          } else if (isNoFace && consecutiveNoFaceRef.current <= 2) {
+          } else if (isNoFace) {
             setFeedbackType('info');
-            setLastFeedback('👁 Centre your face in the frame…');
-          } else if (!isNoFace) {
+            // Only show the "centre your face" hint while retries remain
+            const preview = consecutiveFailuresRef.current + 1;
+            if (preview < MAX_CONSECUTIVE_FAILURES) {
+              setLastFeedback('👁 Centre your face in the frame…');
+            }
+          } else {
             setFeedbackType('warn');
             setLastFeedback(`🔍 ${msg}`);
           }
+
+          // All failure subtypes count toward the hard-stop threshold
+          recordFailure(msg);
         }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : 'Unexpected camera error.';
         setFeedbackType('error');
         setLastFeedback(`❌ ${message}`);
+        recordFailure(message);
       } finally {
         processingRef.current = false;
         onProcessing(false);
@@ -399,37 +626,40 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
     }, 2500);
   };
 
-  // ── Confirmation handlers ──────────────────────────────────────────────────
+  // ── Confirmation: user says "Yes, it's me" ────────────────────────────────
 
   const handleConfirm = async () => {
     if (!pendingDetection) return;
     setIsSaving(true);
     try {
       // Step 2: persist to database
-      const confirmation: ConfirmAttendanceResponse = await attendanceAPI.confirmAttendance(
-        pendingDetection.student_id!,
-        pendingDetection.confidence ?? 0
-      );
+      const confirmation: ConfirmAttendanceResponse =
+        await attendanceAPI.confirmAttendance(
+          pendingDetection.student_id!,
+          pendingDetection.confidence ?? 0,
+        );
 
       setPendingDetection(null);
       setSuccessName(confirmation.student_name);
 
-      // Notify parent and stop camera
+      // Full reset on confirmed success
+      consecutiveFailuresRef.current = 0;
+      setConsecutiveFailures(0);
+
       onAttendanceMarked({
-        status: 'success',
-        message: confirmation.message,
+        status:       'success',
+        message:      confirmation.message,
         student_name: confirmation.student_name,
-        student_id: confirmation.student_id,
-        confidence: confirmation.confidence,
-        record_id: confirmation.record_id,
+        student_id:   confirmation.student_id,
+        confidence:   confirmation.confidence,
+        record_id:    confirmation.record_id,
       });
 
       stopCamera();
-
-      // Clear flash after animation
       setTimeout(() => setSuccessName(null), 2400);
     } catch (err: any) {
-      const msg = err?.response?.data?.detail ?? err?.message ?? 'Failed to save attendance.';
+      const msg =
+        err?.response?.data?.detail ?? err?.message ?? 'Failed to save attendance.';
       setPendingDetection(null);
       pausedForConfirmRef.current = false;
       setFeedbackType('error');
@@ -439,22 +669,31 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
     }
   };
 
+  // ── Confirmation: user says "No, not me" ──────────────────────────────────
+
   const handleDeny = () => {
     setPendingDetection(null);
     pausedForConfirmRef.current = false;
     setFeedbackType('info');
     setLastFeedback('🔄 Scanning resumed — please look at the camera.');
-    consecutiveNoFaceRef.current = 0;
+    // Preserved from existing: denying a confirmed match is NOT a detection
+    // failure — the system found the right person. Reset rather than increment.
+    consecutiveFailuresRef.current = 0;
+    setConsecutiveFailures(0);
   };
+
+  // ── Derived render flags ───────────────────────────────────────────────────
+
+  const isActive     = cameraState === 'active';
+  const isRequesting = cameraState === 'requesting';
+  // nearLimit: failures are accumulating but hard stop has not yet fired
+  const nearLimit    = consecutiveFailures > 0 && consecutiveFailures < MAX_CONSECUTIVE_FAILURES;
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  const isActive = cameraState === 'active';
-  const isRequesting = cameraState === 'requesting';
-
   return (
     <>
-      {/* Confirmation modal (portal-style, renders over everything) */}
+      {/* ── Modals — rendered above the card ─────────────────────────────── */}
       {pendingDetection && (
         <ConfirmationModal
           detection={pendingDetection}
@@ -464,13 +703,20 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
         />
       )}
 
-      {/* Success flash */}
+      {showHardStop && (
+        <HardStopModal
+          failureCount={MAX_CONSECUTIVE_FAILURES}
+          lastMessage={hardStopMessage}
+          onReset={resetForRetry}
+        />
+      )}
+
       {successName && <SuccessFlash name={successName} />}
 
       <Card>
         <div className="space-y-4">
 
-          {/* Camera feed */}
+          {/* ── Camera viewport ───────────────────────────────────────────── */}
           <div
             className="relative rounded-xl overflow-hidden"
             style={{ minHeight: 320, background: '#1a1208' }}
@@ -483,12 +729,16 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
             />
             <canvas ref={canvasRef} className="hidden" />
 
-            {/* Placeholder */}
+            {/* Idle / requesting placeholder */}
             {!isActive && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-4"
-                style={{ color: '#7a5c3e' }}>
-                <div className="w-20 h-20 rounded-full flex items-center justify-center"
-                  style={{ background: 'rgba(200,169,126,0.15)' }}>
+              <div
+                className="absolute inset-0 flex flex-col items-center justify-center gap-4"
+                style={{ color: '#7a5c3e' }}
+              >
+                <div
+                  className="w-20 h-20 rounded-full flex items-center justify-center"
+                  style={{ background: 'rgba(200,169,126,0.15)' }}
+                >
                   <Camera size={36} style={{ color: '#c8a97e' }} />
                 </div>
                 <p className="text-sm font-medium" style={{ color: '#9a7a5a' }}>
@@ -499,8 +749,10 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
 
             {/* Processing overlay */}
             {isLoading && isActive && (
-              <div className="absolute inset-0 flex items-center justify-center"
-                style={{ background: 'rgba(0,0,0,0.38)' }}>
+              <div
+                className="absolute inset-0 flex items-center justify-center"
+                style={{ background: 'rgba(0,0,0,0.38)' }}
+              >
                 <div className="flex flex-col items-center gap-2">
                   <Loader className="animate-spin text-amber-300" size={32} />
                   <p className="text-white text-sm font-medium">Detecting face…</p>
@@ -510,8 +762,10 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
 
             {/* Paused-for-confirm overlay */}
             {pendingDetection && isActive && (
-              <div className="absolute inset-0 flex items-center justify-center"
-                style={{ background: 'rgba(0,0,0,0.55)' }}>
+              <div
+                className="absolute inset-0 flex items-center justify-center"
+                style={{ background: 'rgba(0,0,0,0.55)' }}
+              >
                 <p className="text-white text-sm font-semibold tracking-wide">
                   ⏸ Paused — awaiting confirmation
                 </p>
@@ -520,8 +774,10 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
 
             {/* LIVE badge */}
             {isActive && !pendingDetection && (
-              <div className="absolute top-3 right-3 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold shadow"
-                style={{ background: '#dc2626', color: '#fff' }}>
+              <div
+                className="absolute top-3 right-3 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold shadow"
+                style={{ background: '#dc2626', color: '#fff' }}
+              >
                 <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
                 LIVE
               </div>
@@ -529,15 +785,58 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
 
             {/* Frame counter */}
             {isActive && frameCount > 0 && (
-              <div className="absolute bottom-3 left-3 rounded px-2 py-1 text-xs"
-                style={{ background: 'rgba(0,0,0,0.5)', color: '#e8d5b8' }}>
+              <div
+                className="absolute bottom-3 left-3 rounded px-2 py-1 text-xs"
+                style={{ background: 'rgba(0,0,0,0.5)', color: '#e8d5b8' }}
+              >
                 {frameCount} frames scanned
+              </div>
+            )}
+
+            {/* Failure dot progress — camera overlay, shown only when near limit */}
+            {isActive && nearLimit && (
+              <div
+                className="absolute bottom-3 right-3 rounded-lg px-3 py-1.5"
+                style={{ background: 'rgba(220,38,38,0.80)', backdropFilter: 'blur(4px)' }}
+              >
+                <FailureDots count={consecutiveFailures} max={MAX_CONSECUTIVE_FAILURES} dark />
               </div>
             )}
           </div>
 
-          {/* Inline feedback banner */}
-          {isActive && lastFeedback && !pendingDetection && (
+          {/* ── Warning strip — shown while failures accumulate ────────────── */}
+          {nearLimit && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '10px 14px',
+                borderRadius: 12,
+                background: 'rgba(239,68,68,0.08)',
+                border: '1px solid rgba(239,68,68,0.30)',
+                animation: 'fadeSlideIn 0.25s ease',
+              }}
+            >
+              <AlertTriangle size={15} style={{ color: '#dc2626', flexShrink: 0 }} />
+              <div style={{ flex: 1 }}>
+                <p style={{ fontSize: 13, fontWeight: 700, color: '#b91c1c' }}>
+                  {MAX_CONSECUTIVE_FAILURES - consecutiveFailures} attempt
+                  {MAX_CONSECUTIVE_FAILURES - consecutiveFailures !== 1 ? 's' : ''} remaining
+                </p>
+                <p style={{ fontSize: 11, color: '#dc2626', marginTop: 1 }}>
+                  Ensure your face is well-lit and centred in the frame.
+                </p>
+              </div>
+              <FailureDots count={consecutiveFailures} max={MAX_CONSECUTIVE_FAILURES} />
+            </div>
+          )}
+
+          {/* ── Inline feedback banner ────────────────────────────────────── */}
+          {/* Preserved from existing: shown whenever active + feedback exists,
+              but hidden during confirmation dialog or the warning strip so the
+              UI doesn't double-up on red messages. */}
+          {isActive && lastFeedback && !pendingDetection && !nearLimit && (
             <div
               className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium"
               style={{
@@ -545,10 +844,11 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
                   feedbackType === 'error' ? 'rgba(239,68,68,0.09)'
                     : feedbackType === 'warn' ? 'rgba(251,191,36,0.09)'
                       : 'rgba(200,169,126,0.12)',
-                border: `1px solid ${feedbackType === 'error' ? '#fca5a5'
+                border: `1px solid ${
+                  feedbackType === 'error' ? '#fca5a5'
                     : feedbackType === 'warn' ? '#fde68a'
                       : '#d4b896'
-                  }`,
+                }`,
                 color:
                   feedbackType === 'error' ? '#b91c1c'
                     : feedbackType === 'warn' ? '#92400e'
@@ -557,15 +857,19 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
             >
               <span className="flex-1">{lastFeedback}</span>
               {frameCount > 0 && (
-                <span className="text-xs opacity-50 ml-2 flex-shrink-0">frame {frameCount}</span>
+                <span className="text-xs opacity-50 ml-2 flex-shrink-0">
+                  frame {frameCount}
+                </span>
               )}
             </div>
           )}
 
-          {/* Camera error */}
+          {/* ── Camera permission / hardware error ───────────────────────── */}
           {cameraError && (
-            <div className="flex items-start gap-3 rounded-lg p-4"
-              style={{ background: 'rgba(239,68,68,0.07)', border: '1px solid #fca5a5' }}>
+            <div
+              className="flex items-start gap-3 rounded-lg p-4"
+              style={{ background: 'rgba(239,68,68,0.07)', border: '1px solid #fca5a5' }}
+            >
               <AlertCircle size={18} className="text-red-500 flex-shrink-0 mt-0.5" />
               <div>
                 <p className="text-sm font-medium text-red-800">Camera Error</p>
@@ -579,7 +883,7 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
             </div>
           )}
 
-          {/* Controls */}
+          {/* ── Controls ─────────────────────────────────────────────────── */}
           <div className="flex gap-3">
             {!isActive ? (
               <button
@@ -588,9 +892,10 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
                 className="flex-1 flex items-center justify-center gap-2 rounded-xl font-semibold transition-all active:scale-95"
                 style={{
                   padding: '12px 0',
-                  background: isRequesting || isLoading
-                    ? '#a0856a'
-                    : 'linear-gradient(135deg, #b8864e, #c8a97e)',
+                  background:
+                    isRequesting || isLoading
+                      ? '#a0856a'
+                      : 'linear-gradient(135deg, #b8864e, #c8a97e)',
                   color: '#fff',
                   border: 'none',
                   fontSize: 15,
@@ -623,21 +928,34 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
             )}
           </div>
 
-          {/* Info box */}
+          {/* ── Info box ─────────────────────────────────────────────────── */}
           <div
             className="rounded-lg p-4 text-sm"
             style={{ background: 'rgba(200,169,126,0.1)', border: '1px solid #d4b896', color: '#7a5c3e' }}
           >
-            <p className="font-semibold mb-1" style={{ color: '#5a3e28' }}>How two-step check-in works</p>
+            <p className="font-semibold mb-1" style={{ color: '#5a3e28' }}>
+              How two-step check-in works
+            </p>
             <ul className="space-y-1 text-xs">
               <li>✓ Click <strong>Start Camera</strong> and allow browser permission</li>
               <li>✓ Position your face clearly — scanned every ~2.5 s</li>
               <li>✓ When your face is recognised, a confirmation dialog appears</li>
               <li>✓ Tap <strong>"Yes, it's me"</strong> to officially record attendance</li>
               <li>✓ Tap <strong>"No, not me"</strong> to cancel and scan again</li>
+              <li style={{ color: '#b91c1c' }}>
+                ⚠ Scanning stops automatically after {MAX_CONSECUTIVE_FAILURES} failed
+                consecutive attempts
+              </li>
             </ul>
           </div>
         </div>
+
+        <style>{`
+          @keyframes fadeSlideIn {
+            from { opacity: 0; transform: translateY(-6px); }
+            to   { opacity: 1; transform: none; }
+          }
+        `}</style>
       </Card>
     </>
   );
