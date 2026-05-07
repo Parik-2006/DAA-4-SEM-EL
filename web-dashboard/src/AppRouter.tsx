@@ -1,12 +1,15 @@
 // src/AppRouter.tsx
 
-import React, { useEffect, useState } from 'react';
+import React, {
+  useEffect,
+  useState,
+} from 'react';
+
 import {
   BrowserRouter,
   Routes,
   Route,
   Navigate,
-  useLocation,
 } from 'react-router-dom';
 
 // ─────────────────────────────────────────────────────────────
@@ -20,10 +23,10 @@ import {
 } from './services/firebase/auth.service';
 
 import {
-  getStoredRole,
-  isAdmin,
-  isTeacher,
-  isStudent,
+  getStoredRole as getSessionRole,
+  isAdmin as isSessionAdmin,
+  isTeacher as isSessionTeacher,
+  isStudent as isSessionStudent,
 } from './utils/roles';
 
 // ─────────────────────────────────────────────────────────────
@@ -31,30 +34,144 @@ import {
 // ─────────────────────────────────────────────────────────────
 
 import { LoginPage } from './pages/LoginPage';
+
 import { DashboardPage } from './pages/DashboardPage';
-import RoleLandingPage from './pages/RoleLandingPage';
-import AdminAnalyticsPage from './pages/AdminAnalyticsPage';
-import AdminTimetablePage from './pages/AdminTimetablePage';
+
 import { ProfilePage } from './pages/ProfilePage';
+
 import { AttendancePage } from './pages/AttendancePage';
+
 import { HistoryPage } from './pages/HistoryPage';
 
+import { StudentDashboard } from './pages/StudentDashboard';
+
 import BatchImportPage from './pages/BatchImportPage';
+
 import StudentManagementPage from './pages/StudentManagementPage';
+
 import CourseManagementPage from './pages/CourseManagementPage';
+
+import AdminAnalyticsPage from './pages/AdminAnalyticsPage';
+
+import AdminTimetablePage from './pages/AdminTimetablePage';
+import FaceRegistrationPage from './pages/FaceRegistrationPage';
 
 // ─────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────
 
-type UserRole = 'admin' | 'teacher' | 'student' | null;
+export type UserRole =
+  | 'admin'
+  | 'teacher'
+  | 'faculty'
+  | 'student'
+  | null;
 
-function defaultRouteFor(role: UserRole): string {
-  switch (role) {
+// ─────────────────────────────────────────────────────────────
+// Role Helpers
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Safe role normalization.
+ *
+ * Unknown role ALWAYS becomes student
+ * (most restrictive access).
+ */
+
+export function getStoredRole(): UserRole {
+  return getSessionRole();
+}
+
+export function isAdmin() {
+  return isSessionAdmin(getStoredRole());
+}
+
+export function isTeacher() {
+  return isSessionTeacher(getStoredRole());
+}
+
+export function isStudent() {
+  return isSessionStudent(getStoredRole());
+}
+
+// ─────────────────────────────────────────────────────────────
+// Route Permissions
+// ─────────────────────────────────────────────────────────────
+
+const ROLE_ALLOWED: Record<
+  NonNullable<UserRole>,
+  string[]
+> = {
+
+  admin: [
+
+    '/dashboard',
+
+    '/attendance',
+    '/face',
+
+    '/history',
+
+    '/analytics',
+
+    '/batch-import',
+
+    '/student-management',
+
+    '/course-management',
+
+    '/timetable',
+
+    '/class-views',
+
+    '/profile',
+  ],
+
+  teacher: [
+
+    '/dashboard',
+
+    '/attendance',
+    '/face',
+
+    '/history',
+
+    '/profile',
+  ],
+
+  student: [
+
+    '/attendance',
+
+    '/face',
+
+    '/history',
+
+    '/status',
+
+    '/profile',
+  ],
+};
+
+// ─────────────────────────────────────────────────────────────
+// Default Redirect
+// ─────────────────────────────────────────────────────────────
+
+function defaultRouteFor(
+  role: UserRole
+): string {
+
+  switch (
+    role
+  ) {
+
     case 'admin':
       return '/dashboard';
 
     case 'teacher':
+      return '/dashboard';
+
+    case 'faculty':
       return '/dashboard';
 
     case 'student':
@@ -66,55 +183,94 @@ function defaultRouteFor(role: UserRole): string {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Role Permissions
+// Route Permission Check
 // ─────────────────────────────────────────────────────────────
-
-const ROLE_ALLOWED: Record<
-  NonNullable<UserRole>,
-  string[]
-> = {
-  admin: [
-    '/dashboard',
-    '/history',
-    '/batch-import',
-    '/student-management',
-    '/course-management',
-    '/timetable',
-    '/class-views',
-    '/analytics',
-  ],
-
-  teacher: [
-    '/dashboard',
-    '/attendance',
-    '/history',
-  ],
-
-  student: [
-    '/attendance',
-    '/history',
-    '/status',
-  ],
-};
 
 function isAllowed(
   role: UserRole,
   routePath: string
 ): boolean {
-  if (!role) return false;
 
-  return ROLE_ALLOWED[role].includes(routePath);
+  if (!role)
+    return false;
+
+  return ROLE_ALLOWED[
+    role
+  ]?.includes(
+    routePath
+  );
 }
 
 // ─────────────────────────────────────────────────────────────
 // Loading Screen
 // ─────────────────────────────────────────────────────────────
 
-const LoadingScreen = () => (
-  <div className="flex items-center justify-center h-screen">
-    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600" />
-  </div>
-);
+const LoadingScreen =
+  () => (
+    <div className="flex items-center justify-center h-screen">
+      <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600" />
+    </div>
+  );
+
+// ─────────────────────────────────────────────────────────────
+// Student-only attendance page
+// IMPORTANT:
+// Students MUST NOT see teacher attendance tools
+// ─────────────────────────────────────────────────────────────
+
+const StudentAttendancePage: React.FC =
+  () => {
+
+    const studentId =
+      localStorage.getItem(
+        'user_id'
+      ) ?? '';
+
+    return (
+      <StudentDashboard
+        studentId={
+          studentId
+        }
+      />
+    );
+  };
+
+// ─────────────────────────────────────────────────────────────
+// Role-aware Dashboard
+// ─────────────────────────────────────────────────────────────
+
+const RoleDashboard: React.FC =
+  () => {
+
+    const role =
+      getStoredRole();
+
+    // Students never see
+    // admin dashboard analytics.
+
+    if (
+      role ===
+      'student'
+    ) {
+
+      const studentId =
+        sessionStorage.getItem(
+          'user_id'
+        ) ?? '';
+
+      return (
+        <StudentDashboard
+          studentId={
+            studentId
+          }
+        />
+      );
+    }
+
+    return (
+      <DashboardPage />
+    );
+  };
 
 // ─────────────────────────────────────────────────────────────
 // Auth Gate
@@ -124,37 +280,73 @@ interface AuthGateProps {
   children: React.ReactNode;
 }
 
-const AuthGate: React.FC<AuthGateProps> = ({
+const AuthGate: React.FC<
+  AuthGateProps
+> = ({
   children,
 }) => {
-  const [isAuthenticated, setIsAuthenticated] =
-    useState<boolean | null>(null);
+
+  const [
+    isAuthenticated,
+    setIsAuthenticated,
+  ] =
+    useState<
+      boolean | null
+    >(null);
 
   useEffect(() => {
-    const unsub = onAuthChange((user: unknown) => {
-      const hasFirebaseUser = !!user;
 
-      const hasToken = !!getSessionToken();
+    const unsub =
+      onAuthChange(
+        (
+          user: unknown
+        ) => {
 
-      const authenticated =
-        hasFirebaseUser || hasToken;
+          const hasFirebaseUser =
+            !!user;
 
-      if (!authenticated) {
-        clearSession();
-      }
+          const hasToken =
+            !!getSessionToken();
 
-      setIsAuthenticated(authenticated);
-    });
+          const authenticated =
+            hasFirebaseUser ||
+            hasToken;
 
-    return () => unsub();
+          if (
+            !authenticated
+          ) {
+            clearSession();
+          }
+
+          setIsAuthenticated(
+            authenticated
+          );
+        }
+      );
+
+    return () =>
+      unsub();
+
   }, []);
 
-  if (isAuthenticated === null) {
-    return <LoadingScreen />;
+  if (
+    isAuthenticated ===
+    null
+  ) {
+    return (
+      <LoadingScreen />
+    );
   }
 
-  if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
+  if (
+    !isAuthenticated
+  ) {
+    return (
+      <Navigate
+        to="/login"
+        replace
+      />
+    );
   }
 
   return <>{children}</>;
@@ -166,19 +358,34 @@ const AuthGate: React.FC<AuthGateProps> = ({
 
 interface RoleGateProps {
   children: React.ReactNode;
+
   routePath: string;
 }
 
-const RoleGate: React.FC<RoleGateProps> = ({
+const RoleGate: React.FC<
+  RoleGateProps
+> = ({
   children,
   routePath,
 }) => {
-  const role = getStoredRole();
 
-  if (!isAllowed(role, routePath)) {
+  const role =
+    getStoredRole();
+
+  // Prevent deep-link access
+
+  if (
+    !isAllowed(
+      role,
+      routePath
+    )
+  ) {
+
     return (
       <Navigate
-        to={defaultRouteFor(role)}
+        to={defaultRouteFor(
+          role
+        )}
         replace
       />
     );
@@ -192,16 +399,26 @@ const RoleGate: React.FC<RoleGateProps> = ({
 // ─────────────────────────────────────────────────────────────
 
 interface ProtectedRouteProps {
+
   children: React.ReactNode;
+
   routePath: string;
 }
 
 const ProtectedRoute: React.FC<
   ProtectedRouteProps
-> = ({ children, routePath }) => {
+> = ({
+  children,
+  routePath,
+}) => {
+
   return (
     <AuthGate>
-      <RoleGate routePath={routePath}>
+      <RoleGate
+        routePath={
+          routePath
+        }
+      >
         {children}
       </RoleGate>
     </AuthGate>
@@ -218,16 +435,25 @@ interface PublicOnlyRouteProps {
 
 const PublicOnlyRoute: React.FC<
   PublicOnlyRouteProps
-> = ({ children }) => {
+> = ({
+  children,
+}) => {
+
   const hasToken =
     !!getSessionToken();
 
-  const role = getStoredRole();
+  const role =
+    getStoredRole();
 
-  if (hasToken) {
+  if (
+    hasToken
+  ) {
+
     return (
       <Navigate
-        to={defaultRouteFor(role)}
+        to={defaultRouteFor(
+          role
+        )}
         replace
       />
     );
@@ -240,189 +466,233 @@ const PublicOnlyRoute: React.FC<
 // Default Redirect
 // ─────────────────────────────────────────────────────────────
 
-const DefaultRedirect: React.FC = () => {
-  const role = getStoredRole();
+const DefaultRedirect: React.FC =
+  () => {
 
-  const hasToken =
-    !!getSessionToken();
+    const role =
+      getStoredRole();
 
-  if (!hasToken) {
-    return <Navigate to="/login" replace />;
-  }
+    const hasToken =
+      !!getSessionToken();
 
-  return (
-    <Navigate
-      to={defaultRouteFor(role)}
-      replace
-    />
-  );
-};
+    if (
+      !hasToken
+    ) {
+
+      return (
+        <Navigate
+          to="/login"
+          replace
+        />
+      );
+    }
+
+    return (
+      <Navigate
+        to={defaultRouteFor(
+          role
+        )}
+        replace
+      />
+    );
+  };
 
 // ─────────────────────────────────────────────────────────────
 // App Router
 // ─────────────────────────────────────────────────────────────
 
-const AppRouter: React.FC = () => {
-  return (
-    <BrowserRouter
-      future={{
-        v7_startTransition: true,
-        v7_relativeSplatPath: true,
-      }}
-    >
-      <Routes>
+const AppRouter: React.FC =
+  () => {
 
-        {/* ───────────────── PUBLIC ───────────────── */}
+    return (
+      <BrowserRouter
+        future={{
+          v7_startTransition: true,
 
-        <Route
-          path="/login"
-          element={
-            <PublicOnlyRoute>
-              <LoginPage />
-            </PublicOnlyRoute>
-          }
-        />
+          v7_relativeSplatPath: true,
+        }}
+      >
+        <Routes>
 
-        <Route
-          path="/index.html"
-          element={<Navigate to="/" replace />}
-        />
+          {/* ───────────────── PUBLIC ───────────────── */}
 
-        {/* ───────────────── ADMIN ───────────────── */}
+          <Route
+            path="/login"
+            element={
+              <PublicOnlyRoute>
+                <LoginPage />
+              </PublicOnlyRoute>
+            }
+          />
 
-        <Route
-          path="/dashboard"
-          element={
-            <ProtectedRoute routePath="/dashboard">
-              <RoleLandingPage />
-            </ProtectedRoute>
-          }
-        />
+          <Route
+            path="/index.html"
+            element={
+              <Navigate
+                to="/"
+                replace
+              />
+            }
+          />
 
-        <Route
-          path="/analytics"
-          element={
-            <ProtectedRoute routePath="/analytics">
-              <AdminAnalyticsPage />
-            </ProtectedRoute>
-          }
-        />
+          {/* ───────────────── DASHBOARD ───────────────── */}
 
-        <Route
-          path="/timetable"
-          element={
-            <ProtectedRoute routePath="/timetable">
-              <AdminTimetablePage />
-            </ProtectedRoute>
-          }
-        />
+          <Route
+            path="/dashboard"
+            element={
+              <ProtectedRoute routePath="/dashboard">
+                <RoleDashboard />
+              </ProtectedRoute>
+            }
+          />
 
-        <Route
-          path="/class-views"
-          element={
-            <ProtectedRoute routePath="/class-views">
-              <AdminTimetablePage />
-            </ProtectedRoute>
-          }
-        />
+          {/* ───────────────── ATTENDANCE ───────────────── */}
 
-        <Route
-          path="/batch-import"
-          element={
-            <ProtectedRoute routePath="/batch-import">
-              <BatchImportPage />
-            </ProtectedRoute>
-          }
-        />
+          {/* 
+             STUDENTS:
+             → self-only live status
 
-        <Route
-          path="/student-management"
-          element={
-            <ProtectedRoute routePath="/student-management">
-              <StudentManagementPage />
-            </ProtectedRoute>
-          }
-        />
+             TEACHERS/ADMINS:
+             → full attendance tools
+          */}
 
-        <Route
-          path="/course-management"
-          element={
-            <ProtectedRoute routePath="/course-management">
-              <CourseManagementPage />
-            </ProtectedRoute>
-          }
-        />
+          <Route
+            path="/attendance"
+            element={
+              <ProtectedRoute routePath="/attendance">
 
-        {/* ───────────────── SHARED ───────────────── */}
+                {isStudent() ? (
+                  <StudentAttendancePage />
+                ) : (
+                  <AttendancePage />
+                )}
 
-        <Route
-          path="/attendance"
-          element={
-            <ProtectedRoute routePath="/attendance">
-              <AttendancePage />
-            </ProtectedRoute>
-          }
-        />
+              </ProtectedRoute>
+            }
+          />
 
-        <Route
-          path="/live-attendance"
-          element={
-            <ProtectedRoute routePath="/live-attendance">
-              <AttendancePage />
-            </ProtectedRoute>
-          }
-        />
+          {/* Face registration / live camera (students + staff) */}
+          <Route
+            path="/face"
+            element={
+              <ProtectedRoute routePath="/face">
+                <FaceRegistrationPage />
+              </ProtectedRoute>
+            }
+          />
 
-        <Route
-          path="/mark-attendance"
-          element={
-            <ProtectedRoute routePath="/mark-attendance">
-              <AttendancePage />
-            </ProtectedRoute>
-          }
-        />
+          {/* ───────────────── HISTORY ───────────────── */}
 
-        <Route
-          path="/history"
-          element={
-            <ProtectedRoute routePath="/history">
-              <HistoryPage />
-            </ProtectedRoute>
-          }
-        />
+          {/* 
+             HistoryPage MUST internally:
+             - call getStudentHistory(studentId)
+             - NEVER fetch all records for students
+          */}
 
-        <Route
-          path="/status"
-          element={
-            <ProtectedRoute routePath="/status">
-              <HistoryPage />
-            </ProtectedRoute>
-          }
-        />
+          <Route
+            path="/history"
+            element={
+              <ProtectedRoute routePath="/history">
+                <HistoryPage />
+              </ProtectedRoute>
+            }
+          />
 
-        <Route
-          path="/profile"
-          element={
-            <ProtectedRoute routePath="/profile">
-              <ProfilePage />
-            </ProtectedRoute>
-          }
-        />
+          <Route
+            path="/status"
+            element={
+              <ProtectedRoute routePath="/status">
+                <HistoryPage />
+              </ProtectedRoute>
+            }
+          />
 
-        {/* ───────────────── EXTRA ───────────────── */}
+          {/* ───────────────── PROFILE ───────────────── */}
 
-        {/* ───────────────── FALLBACK ───────────────── */}
+          <Route
+            path="/profile"
+            element={
+              <ProtectedRoute routePath="/profile">
+                <ProfilePage />
+              </ProtectedRoute>
+            }
+          />
 
-        <Route path="/" element={<DefaultRedirect />} />
+          {/* ───────────────── ADMIN ONLY ───────────────── */}
 
-        <Route
-          path="*"
-          element={<DefaultRedirect />}
-        />
+          <Route
+            path="/analytics"
+            element={
+              <ProtectedRoute routePath="/analytics">
+                <AdminAnalyticsPage />
+              </ProtectedRoute>
+            }
+          />
 
-      </Routes>
-    </BrowserRouter>
-  );
-};
+          <Route
+            path="/timetable"
+            element={
+              <ProtectedRoute routePath="/timetable">
+                <AdminTimetablePage />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/class-views"
+            element={
+              <ProtectedRoute routePath="/class-views">
+                <AdminTimetablePage />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/batch-import"
+            element={
+              <ProtectedRoute routePath="/batch-import">
+                <BatchImportPage />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/student-management"
+            element={
+              <ProtectedRoute routePath="/student-management">
+                <StudentManagementPage />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/course-management"
+            element={
+              <ProtectedRoute routePath="/course-management">
+                <CourseManagementPage />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* ───────────────── FALLBACKS ───────────────── */}
+
+          <Route
+            path="/"
+            element={
+              <DefaultRedirect />
+            }
+          />
+
+          <Route
+            path="*"
+            element={
+              <DefaultRedirect />
+            }
+          />
+
+        </Routes>
+      </BrowserRouter>
+    );
+  };
 
 export default AppRouter;

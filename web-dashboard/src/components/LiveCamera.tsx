@@ -17,6 +17,10 @@ interface LiveCameraProps {
   /** Called whenever the consecutive failure count changes — lets the parent
    *  page react (e.g. update a sidebar status card) without prop-drilling. */
   onConsecutiveFailures?: (count: number) => void;
+  /** When true, the component will start the camera automatically on mount */
+  autoStart?: boolean;
+  /** Optional student id to hint the detection flow (passed as query param) */
+  targetStudentId?: string | null;
 }
 
 // ── Confirmation Modal ─────────────────────────────────────────────────────────
@@ -394,6 +398,8 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
   onProcessing,
   isLoading,
   onConsecutiveFailures,
+  autoStart,
+  targetStudentId,
 }) => {
   const videoRef    = useRef<HTMLVideoElement>(null);
   const canvasRef   = useRef<HTMLCanvasElement>(null);
@@ -409,6 +415,8 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
   const [cameraState, setCameraState]         = useState<'idle' | 'requesting' | 'active' | 'error'>('idle');
   const [cameraError, setCameraError]         = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
+  const [availableCameras, setAvailableCameras] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [frameCount, setFrameCount]           = useState(0);
 
   // Inline status banner
@@ -502,8 +510,12 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
     }
 
     try {
+      const videoConstraints: any = selectedDeviceId
+        ? { deviceId: { exact: selectedDeviceId } }
+        : { facingMode: 'user', width: { ideal: 1280, min: 640 }, height: { ideal: 720, min: 480 } };
+
       const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 1280, min: 640 }, height: { ideal: 720, min: 480 } },
+        video: videoConstraints,
         audio: false,
       });
       streamRef.current = mediaStream;
@@ -528,6 +540,8 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
         setPermissionDenied(true);
       } else if (name === 'NotFoundError') {
         msg = 'No camera found. Please connect a camera and try again.';
+        // Try to enumerate devices to offer an explicit choice
+        try { await enumerateCameras(); } catch (_) {}
       } else if (name === 'NotReadableError') {
         msg = 'Camera is already in use by another application.';
       } else if (err?.message) {
@@ -538,6 +552,32 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
       stopCamera();
     }
   };
+
+  const enumerateCameras = async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return [];
+    try {
+      const list = await navigator.mediaDevices.enumerateDevices();
+      const cams = list.filter(d => d.kind === 'videoinput');
+      setAvailableCameras(cams);
+      if (cams.length === 1) setSelectedDeviceId(cams[0].deviceId);
+      return cams;
+    } catch (e) {
+      console.error('enumerateDevices failed', e);
+      return [];
+    }
+  };
+
+  // Auto-start camera when requested by parent (e.g. student clicked Live Camera)
+  useEffect(() => {
+    if (autoStart) {
+      // small delay so the page layout settles before requesting permission
+      const t = setTimeout(() => { void startCamera(); }, 220);
+      return () => clearTimeout(t);
+    }
+    // no-op when not requested
+    return;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [/* intentionally empty */]);
 
   // ── Frame capture ──────────────────────────────────────────────────────────
 
@@ -879,6 +919,35 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
                     💡 In Chrome: click the camera icon in the address bar → Allow. Then refresh.
                   </p>
                 )}
+                {/* Camera device diagnostics and selection */}
+                <div style={{ marginTop: 10 }}>
+                  {availableCameras.length > 0 ? (
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
+                      <select
+                        value={selectedDeviceId ?? ''}
+                        onChange={(e) => setSelectedDeviceId(e.target.value || null)}
+                        className="rounded px-2 py-1"
+                      >
+                        <option value="">Default camera</option>
+                        {availableCameras.map(c => (
+                          <option key={c.deviceId} value={c.deviceId}>{c.label || c.deviceId}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={async () => { setCameraError(null); await startCamera(); }}
+                        className="rounded px-3 py-1 bg-amber-500 text-white"
+                      >Use selected</button>
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 8 }}>
+                      <button
+                        onClick={async () => { await enumerateCameras(); }}
+                        className="rounded px-3 py-1 bg-slate-200 text-slate-800"
+                      >Detect cameras</button>
+                      <p className="text-xs text-red-600 mt-2">If no cameras are detected, ensure hardware is connected and not blocked by another app.</p>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}

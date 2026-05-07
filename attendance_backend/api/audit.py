@@ -23,6 +23,10 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
+try:
+    from google.cloud.firestore_v1 import FieldFilter
+except Exception:
+    FieldFilter = None
 
 from decorators.auth_decorators import require_admin
 from services.auth_service import UserContext
@@ -85,17 +89,17 @@ async def list_audit_logs(
         query = db.collection("audit_logs")
 
         if user_id:
-            query = query.where("user_id", "==", user_id)
+            query = query.where(filter=FieldFilter("user_id", "==", user_id))
         if action:
-            query = query.where("action", "==", action.upper())
+            query = query.where(filter=FieldFilter("action", "==", action.upper()))
         if resource:
-            query = query.where("resource", "==", resource)
+            query = query.where(filter=FieldFilter("resource", "==", resource))
         if success is not None:
-            query = query.where("success", "==", success)
+            query = query.where(filter=FieldFilter("success", "==", success))
         if date_from:
-            query = query.where("timestamp", ">=", date_from)
+            query = query.where(filter=FieldFilter("timestamp", ">=", date_from))
         if date_to:
-            query = query.where("timestamp", "<=", date_to)
+            query = query.where(filter=FieldFilter("timestamp", "<=", date_to))
 
         query = query.order_by("timestamp", direction="DESCENDING")
 
@@ -172,7 +176,7 @@ async def get_attendance_audit_trail(
     try:
         docs = (
             db.collection("audit_logs")
-            .where("resource_id", "==", record_id)
+            .where(filter=FieldFilter("resource_id", "==", record_id))
             .order_by("timestamp")
             .stream()
         )
@@ -214,7 +218,7 @@ async def get_user_audit_trail(
     try:
         docs = list(
             db.collection("audit_logs")
-            .where("user_id", "==", user_id)
+            .where(filter=FieldFilter("user_id", "==", user_id))
             .order_by("timestamp", direction="DESCENDING")
             .stream()
         )

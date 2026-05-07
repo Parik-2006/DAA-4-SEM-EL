@@ -45,6 +45,10 @@ from typing import Any, List, Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
+try:
+    from google.cloud.firestore_v1 import FieldFilter
+except Exception:
+    FieldFilter = None
 
 from database.firebase_client import FirebaseClient
 from database.student_repository import StudentRepository
@@ -160,7 +164,7 @@ async def get_today_attendance_stats(
 
         today = datetime.now().strftime("%Y-%m-%d")
         try:
-            docs = fb.fs.collection("attendance").where("date", "==", today).stream()
+            docs = fb.fs.collection("attendance").where(filter=FieldFilter("date", "==", today)).stream()
             today_records = [doc.to_dict() for doc in docs]
         except Exception as query_err:
             logger.warning("Failed to query attendance: %s", query_err)
@@ -214,7 +218,7 @@ async def get_attendance_records(
         if not fb.fs:
             return {"data": [], "total": 0, "page": page, "limit": limit}
 
-        query    = fb.fs.collection("attendance").where("date", "==", date)
+        query    = fb.fs.collection("attendance").where(filter=FieldFilter("date", "==", date))
         docs     = query.stream()
         records  = []
         for doc in docs:

@@ -34,6 +34,10 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
+try:
+    from google.cloud.firestore_v1 import FieldFilter
+except Exception:
+    FieldFilter = None
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +256,7 @@ class AuthService:
         try:
             docs = (
                 firestore_db.collection("users")
-                .where("email", "==", email)
+                .where(filter=FieldFilter("email", "==", email))
                 .limit(1)
                 .stream()
             )

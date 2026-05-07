@@ -1,4 +1,5 @@
 import React, { useMemo, useState, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   CheckCircle,
   Clock,
@@ -14,10 +15,11 @@ import {
   Wifi,
 } from 'lucide-react';
 
-import { attendanceAPI } from '../services/api';
+import { attendanceAPI, type BulkManualAttendanceResponse } from '../services/api';
+import { getStoredRole } from '../utils/roles';
 import {
   useManualAttendance,
-  type BulkManualAttendanceResponse,
+  type ManualStatus,
 } from '../hooks/useAttendanceHooks';
 
 export interface TeacherPeriod {
@@ -36,7 +38,7 @@ export interface TeacherPeriod {
 
 export interface AttendanceEntry {
   student_id: string;
-  status: 'present' | 'late' | 'absent' | 'not_marked';
+  status: ManualStatus;
   notes?: string;
   last_saved_at?: string | null;
   record_id?: string;
@@ -135,6 +137,13 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({ period, marked
     const saved = roster.filter((entry) => entry.last_saved_at).length;
     return { present, late, absent, unmarked, saved, total: roster.length };
   }, [roster]);
+
+  const navigate = useNavigate();
+
+  const navigateToFace = (studentId: string) => {
+    // include student id as query param so the Face page can focus on it if needed
+    navigate(`/face?student=${encodeURIComponent(studentId)}`);
+  };
 
   const handleChangeStatus = useCallback(
     async (studentId: string, status: 'present' | 'late' | 'absent') => {
@@ -383,19 +392,38 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({ period, marked
                   </div>
 
                   <div className="flex flex-wrap gap-2 lg:justify-end">
-                    {(['present', 'late', 'absent'] as const).map((quickStatus) => (
-                      <button
-                        key={quickStatus}
-                        type="button"
-                        onClick={() => handleChangeStatus(entry.student_id, quickStatus)}
-                        className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5"
-                        title={`Mark ${STATUS_META[quickStatus].label}`}
-                      >
-                        {quickStatus === 'present' && <CheckCircle size={16} className="text-emerald-600" />}
-                        {quickStatus === 'late' && <Clock size={16} className="text-amber-600" />}
-                        {quickStatus === 'absent' && <Trash2 size={16} className="text-red-600" />}
-                      </button>
-                    ))}
+                    {(['present', 'late', 'absent'] as const).map((quickStatus) => {
+                      const handleQuick = () => {
+                        // If a student clicks the 'present' quick button on their own row,
+                        // open the live camera page instead of immediately marking present.
+                        try {
+                          const role = getStoredRole();
+                          const currentUser = sessionStorage.getItem('user_id') ?? '';
+                          if (quickStatus === 'present' && role === 'student' && currentUser === entry.student_id) {
+                            navigateToFace(entry.student_id);
+                            return;
+                          }
+                        } catch {
+                          // fallthrough to default behaviour
+                        }
+
+                        void handleChangeStatus(entry.student_id, quickStatus);
+                      };
+
+                      return (
+                        <button
+                          key={quickStatus}
+                          type="button"
+                          onClick={handleQuick}
+                          className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5"
+                          title={`Mark ${STATUS_META[quickStatus].label}`}
+                        >
+                          {quickStatus === 'present' && <CheckCircle size={16} className="text-emerald-600" />}
+                          {quickStatus === 'late' && <Clock size={16} className="text-amber-600" />}
+                          {quickStatus === 'absent' && <Trash2 size={16} className="text-red-600" />}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               );
@@ -420,7 +448,7 @@ export const AttendanceSheet: React.FC<AttendanceSheetProps> = ({ period, marked
 
         {lastSaveResult && (
           <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-            Bulk save completed: {lastSaveResult.saved_count ?? 0} saved, {lastSaveResult.errors?.length ?? 0} errors.
+            Bulk save completed: {lastSaveResult.saved ?? 0} saved, {lastSaveResult.errors?.length ?? 0} errors.
           </div>
         )}
       </div>

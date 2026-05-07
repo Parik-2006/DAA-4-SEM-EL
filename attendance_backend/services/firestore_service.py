@@ -8,6 +8,10 @@ import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
 import numpy as np
+try:
+    from google.cloud.firestore_v1 import FieldFilter
+except Exception:
+    FieldFilter = None
 
 try:
     import firebase_admin
@@ -103,7 +107,7 @@ class FirestoreService:
         """Get all students enrolled in a course."""
         try:
             docs = self.db.collection('students').where(
-                'course_id', '==', course_id
+                filter=FieldFilter('course_id', '==', course_id)
             ).stream()
             return [{**doc.to_dict(), 'id': doc.id} for doc in docs]
         except Exception as e:
@@ -183,13 +187,13 @@ class FirestoreService:
             query = self.db.collection('attendance')
             
             if student_id:
-                query = query.where('student_id', '==', student_id)
+                query = query.where(filter=FieldFilter('student_id', '==', student_id))
             if course_id:
-                query = query.where('course_id', '==', course_id)
+                query = query.where(filter=FieldFilter('course_id', '==', course_id))
             
             # Filter by date
             cutoff_date = datetime.utcnow() - timedelta(days=days_back)
-            query = query.where('marked_at', '>=', cutoff_date)
+            query = query.where(filter=FieldFilter('marked_at', '>=', cutoff_date))
             query = query.order_by('marked_at', direction=firestore.Query.DESCENDING)
             
             docs = query.stream()
@@ -206,8 +210,8 @@ class FirestoreService:
         """Get attendance statistics for a student in a course."""
         try:
             records = self.db.collection('attendance').where(
-                'student_id', '==', student_id
-            ).where('course_id', '==', course_id).stream()
+                filter=FieldFilter('student_id', '==', student_id)
+            ).where(filter=FieldFilter('course_id', '==', course_id)).stream()
             
             stats = {'present': 0, 'absent': 0, 'late': 0, 'excused': 0}
             for doc in records:
@@ -249,7 +253,7 @@ class FirestoreService:
         """Get all embeddings for a student."""
         try:
             docs = self.db.collection('embeddings').where(
-                'student_id', '==', student_id
+                filter=FieldFilter('student_id', '==', student_id)
             ).stream()
             
             embeddings = []

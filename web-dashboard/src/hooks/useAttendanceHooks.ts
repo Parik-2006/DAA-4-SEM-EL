@@ -25,6 +25,269 @@ import {
   ManualAttendanceResponse,
 } from '../services/api';
 
+// -----------------------------------------------------------------------------
+// Seeded Timetable (UG CSE 4C, section C)
+// -----------------------------------------------------------------------------
+
+export const CSE4C_META = {
+  class_id: 'ug-cse-4c-sec-c',
+  display: 'UG CSE 4C',
+  semester: 4,
+  term: 'Even',
+  batch: '2023-24',
+  room: 'CSE-CC203',
+};
+
+export interface SeedPeriod {
+  period_id: string;
+  day: string;
+  start_time: string; // HH:MM
+  end_time: string; // HH:MM
+  course_code: string;
+  course_name: string;
+  course_color: string;
+  is_lab_class?: boolean;
+  room?: string;
+  faculty_name?: string;
+}
+
+// Colors chosen to match UI palette
+export const SEEDED_TIMETABLE: SeedPeriod[] = [
+  // Monday
+  { period_id: 'm-1', day: 'Monday', start_time: '09:00', end_time: '10:00', course_code: 'IOT', course_name: 'Internet of Things', course_color: '#6366F1', room: 'CSE-CC203' },
+  { period_id: 'm-2', day: 'Monday', start_time: '10:00', end_time: '11:00', course_code: 'DAA', course_name: 'Design and Analysis of Algorithms', course_color: '#EF4444', room: 'CSE-CC203' },
+  { period_id: 'm-3', day: 'Monday', start_time: '11:30', end_time: '12:30', course_code: 'DMS', course_name: 'Data Management Systems', course_color: '#F59E0B', room: 'CSE-CC203' },
+  { period_id: 'm-4', day: 'Monday', start_time: '12:30', end_time: '13:30', course_code: 'CN', course_name: 'Computer Networks', course_color: '#22C55E', room: 'CSE-CC203' },
+  { period_id: 'm-5', day: 'Monday', start_time: '14:30', end_time: '16:30', course_code: 'BASK', course_name: 'Basket Course', course_color: '#8B5CF6', room: 'CSE-CC203' },
+
+  // Tuesday
+  { period_id: 't-1', day: 'Tuesday', start_time: '09:00', end_time: '10:00', course_code: 'DAA', course_name: 'Design and Analysis of Algorithms', course_color: '#EF4444', room: 'CSE-CC203' },
+  { period_id: 't-2', day: 'Tuesday', start_time: '10:00', end_time: '11:00', course_code: 'BASK', course_name: 'Basket Course', course_color: '#8B5CF6', room: 'CSE-CC203' },
+  { period_id: 't-3', day: 'Tuesday', start_time: '11:30', end_time: '12:30', course_code: 'CN', course_name: 'Computer Networks', course_color: '#22C55E', room: 'CSE-CC203' },
+  { period_id: 't-4', day: 'Tuesday', start_time: '12:30', end_time: '13:30', course_code: 'IOT', course_name: 'Internet of Things', course_color: '#6366F1', room: 'CSE-CC203' },
+  { period_id: 't-5', day: 'Tuesday', start_time: '14:30', end_time: '16:30', course_code: 'AEC', course_name: 'AEC Course', course_color: '#06B6D4', room: 'CSE-CC203' },
+
+  // Wednesday
+  { period_id: 'w-1', day: 'Wednesday', start_time: '09:00', end_time: '10:00', course_code: 'DMS', course_name: 'Data Management Systems', course_color: '#F59E0B', room: 'CSE-CC203' },
+  { period_id: 'w-2', day: 'Wednesday', start_time: '10:00', end_time: '11:00', course_code: 'CN', course_name: 'Computer Networks', course_color: '#22C55E', room: 'CSE-CC203' },
+  { period_id: 'w-3', day: 'Wednesday', start_time: '11:30', end_time: '12:30', course_code: 'IOT', course_name: 'Internet of Things', course_color: '#6366F1', room: 'CSE-CC203' },
+  { period_id: 'w-4', day: 'Wednesday', start_time: '12:30', end_time: '13:30', course_code: 'EL', course_name: 'Engineering Lab', course_color: '#F97316', room: 'CSE-CC203' },
+  { period_id: 'w-5', day: 'Wednesday', start_time: '14:30', end_time: '16:30', course_code: 'BRIDGE', course_name: 'Bridge Course Maths', course_color: '#10B981', room: 'CSE-CC203' },
+
+  // Thursday
+  { period_id: 'th-1', day: 'Thursday', start_time: '09:00', end_time: '11:00', course_code: 'IOT-LAB', course_name: 'IOT Lab', course_color: '#6366F1', is_lab_class: true, room: 'CSE-LAB1' },
+  { period_id: 'th-2', day: 'Thursday', start_time: '11:30', end_time: '12:30', course_code: 'UHV', course_name: 'UHV', course_color: '#FB7185', room: 'CSE-CC203' },
+  { period_id: 'th-3', day: 'Thursday', start_time: '12:30', end_time: '13:30', course_code: 'DMS*', course_name: 'Data Management Systems', course_color: '#F59E0B', room: 'CSE-CC203' },
+
+  // Friday
+  { period_id: 'f-1', day: 'Friday', start_time: '09:00', end_time: '11:00', course_code: 'DAA-LAB', course_name: 'DAA Lab', course_color: '#EF4444', is_lab_class: true, room: 'CSE-LAB2' },
+  { period_id: 'f-2', day: 'Friday', start_time: '11:30', end_time: '12:30', course_code: 'UHV', course_name: 'UHV', course_color: '#FB7185', room: 'CSE-CC203' },
+  { period_id: 'f-3', day: 'Friday', start_time: '12:30', end_time: '13:30', course_code: 'DMS', course_name: 'Data Management Systems', course_color: '#F59E0B', room: 'CSE-CC203' },
+  { period_id: 'f-4', day: 'Friday', start_time: '14:30', end_time: '15:30', course_code: 'DAA', course_name: 'Design and Analysis of Algorithms', course_color: '#EF4444', room: 'CSE-CC203' },
+  { period_id: 'f-5', day: 'Friday', start_time: '15:30', end_time: '16:30', course_code: 'COUNS', course_name: 'Counselling', course_color: '#64748B', room: 'CSE-CC203' },
+
+  // Saturday (empty)
+];
+
+// Build course palette
+function buildCoursesFromSeed() {
+  const all: Record<string, { name: string; color: string }> = {};
+  SEEDED_TIMETABLE.forEach((p) => {
+    all[p.course_code] = { name: p.course_name, color: p.course_color };
+  });
+  return all;
+}
+
+// Local timetable hook used by TimetableView
+export function useCSE4CTimetableLocal(classId: string = CSE4C_META.class_id) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [days, setDays] = useState<TimetableDay>({});
+  const [all_courses, setAllCourses] = useState<Record<string, { name: string; color: string }>>(buildCoursesFromSeed());
+  const [source, setSource] = useState<'remote' | 'seeded'>('seeded');
+
+  const fetch = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const remote = await attendanceAPI.getClassTimetable(classId);
+      if (remote) {
+        // map ClassPeriod[] -> PeriodCard shape stored in TimetableDay
+        const mapped: TimetableDay = {};
+        Object.entries(remote.days).forEach(([day, arr]) => {
+          mapped[day] = arr.map((p) => ({
+            period_id: p.period_id,
+            start_time: p.start_time,
+            end_time: p.end_time,
+            course_code: p.course_code,
+            course_name: p.course_name,
+            faculty_id: '',
+            faculty_name: p.faculty_name ?? '',
+            is_lab_class: Boolean(p.is_lab_class ?? false),
+            room: p.room,
+            course_color: p.course_color ?? '#6366F1',
+          }));
+        });
+        setDays(mapped);
+        setAllCourses(remote.courses ?? buildCoursesFromSeed());
+        setSource('remote');
+      } else {
+        // fallback to seeded
+        const seededDays: TimetableDay = {};
+        SEEDED_TIMETABLE.forEach((p) => {
+          if (!seededDays[p.day]) seededDays[p.day] = [];
+          seededDays[p.day].push({
+            period_id: p.period_id,
+            start_time: p.start_time,
+            end_time: p.end_time,
+            course_code: p.course_code,
+            course_name: p.course_name,
+            faculty_id: '',
+            faculty_name: p.faculty_name ?? '',
+            is_lab_class: Boolean(p.is_lab_class),
+            room: p.room,
+            course_color: p.course_color,
+          });
+        });
+        Object.keys(seededDays).forEach((d) => {
+          seededDays[d].sort((a, b) => {
+            const [ah, am] = a.start_time.split(':').map(Number);
+            const [bh, bm] = b.start_time.split(':').map(Number);
+            return ah * 60 + am - (bh * 60 + bm);
+          });
+        });
+        setDays(seededDays);
+        setAllCourses(buildCoursesFromSeed());
+        setSource('seeded');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load timetable');
+      // fallback seeded
+      const seededDays: TimetableDay = {};
+      SEEDED_TIMETABLE.forEach((p) => {
+        if (!seededDays[p.day]) seededDays[p.day] = [];
+        seededDays[p.day].push({
+          period_id: p.period_id,
+          start_time: p.start_time,
+          end_time: p.end_time,
+          course_code: p.course_code,
+          course_name: p.course_name,
+          faculty_id: '',
+          faculty_name: p.faculty_name ?? '',
+          is_lab_class: Boolean(p.is_lab_class),
+          room: p.room,
+          course_color: p.course_color,
+        });
+      });
+      Object.keys(seededDays).forEach((d) => {
+        seededDays[d].sort((a, b) => {
+          const [ah, am] = a.start_time.split(':').map(Number);
+          const [bh, bm] = b.start_time.split(':').map(Number);
+          return ah * 60 + am - (bh * 60 + bm);
+        });
+      });
+      setDays(seededDays);
+      setAllCourses(buildCoursesFromSeed());
+      setSource('seeded');
+    } finally {
+      setLoading(false);
+    }
+  }, [classId]);
+
+  useEffect(() => { fetch(); }, [fetch]);
+  return { loading, error, days, all_courses, source, refetch: fetch };
+}
+
+// PeriodAttendanceSlot used by DashboardPage
+export interface PeriodAttendanceSlot {
+  period: SeedPeriod;
+  present: number;
+  late: number;
+  absent: number;
+  pending: number;
+  total_students: number;
+  records: AttendanceRecord[];
+  is_active: boolean;
+}
+
+// useAttendanceByPeriod — returns slots for a given day
+export function useAttendanceByPeriod({ day, date, classId = CSE4C_META.class_id, enabled = true }: { day: string; date?: string; classId?: string; enabled?: boolean }) {
+  const [slots, setSlots] = useState<PeriodAttendanceSlot[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const fetch = useCallback(async () => {
+    if (!enabled) return;
+    setLoading(true);
+    try {
+      const periods = SEEDED_TIMETABLE.filter((p) => p.day === day).sort((a, b) => {
+        const [ah, am] = a.start_time.split(':').map(Number);
+        const [bh, bm] = b.start_time.split(':').map(Number);
+        return ah * 60 + am - (bh * 60 + bm);
+      });
+
+      const now = new Date();
+      const todayKey = date ?? now.toISOString().slice(0, 10);
+
+      const results: PeriodAttendanceSlot[] = [];
+
+      for (const p of periods) {
+        // Try server summary first
+        let summary = null as any;
+        try {
+          summary = await attendanceAPI.getPeriodSummary(p.period_id, classId, todayKey);
+        } catch {
+          summary = null;
+        }
+
+        if (summary) {
+          results.push({
+            period: p,
+            present: summary.present_count,
+            late: summary.late_count,
+            absent: summary.absent_count,
+            pending: summary.not_scanned_count,
+            total_students: summary.total_enrolled,
+            records: summary.students.map((s: any) => ({ date: summary.date, time: s.scan_timestamp ?? s.marked_at, status: s.status as any, course_code: summary.course_code, course_name: summary.course_name, timestamp: s.scan_timestamp ?? s.marked_at, student_id: s.student_id, student_name: s.student_name, status_color: '' })),
+            is_active: (() => {
+              const [sh, sm] = p.start_time.split(':').map(Number);
+              const [eh, em] = p.end_time.split(':').map(Number);
+              const start = new Date(); start.setHours(sh, sm, 0, 0);
+              const end = new Date(); end.setHours(eh, em, 0, 0);
+              return now >= start && now < end;
+            })(),
+          });
+        } else {
+          // Fallback seeded slot
+          const total = 70;
+          results.push({
+            period: p,
+            present: 0,
+            late: 0,
+            absent: 0,
+            pending: total,
+            total_students: total,
+            records: [],
+            is_active: (() => {
+              const [sh, sm] = p.start_time.split(':').map(Number);
+              const [eh, em] = p.end_time.split(':').map(Number);
+              const start = new Date(); start.setHours(sh, sm, 0, 0);
+              const end = new Date(); end.setHours(eh, em, 0, 0);
+              return now >= start && now < end;
+            })(),
+          });
+        }
+      }
+
+      setSlots(results);
+    } finally {
+      setLoading(false);
+    }
+  }, [day, date, enabled]);
+
+  useEffect(() => { fetch(); }, [fetch]);
+  return { slots, loading, refetch: fetch };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Auth token resolution
 // Supports both localStorage (legacy) and sessionStorage (enterprise).
@@ -62,7 +325,7 @@ export type {
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BASE = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '');
+const BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
 const TIMETABLE_TTL_MS = 5 * 60 * 1000;
 
 // ─────────────────────────────────────────────────────────────────────────────

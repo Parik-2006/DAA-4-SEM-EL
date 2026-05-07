@@ -31,6 +31,11 @@ for /f "tokens=3,4 delims= " %%A in ('tasklist /v ^| find "python"') do (
 echo [MEMORY TIP] Models use ~2-3GB RAM. Close unused apps if needed.
 echo.
 
+:: (No port-detection) Start services unconditionally to avoid cmd parsing issues
+
+set "BACKEND_RUNNING=0"
+set "FRONTEND_RUNNING=0"
+
 :: Enable memory optimization for Python
 set OPENBLAS_NUM_THREADS=2
 set OMP_NUM_THREADS=2

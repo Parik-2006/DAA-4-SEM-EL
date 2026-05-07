@@ -545,6 +545,54 @@ class AttendanceAPI {
     }
   }
 
+  /**
+   * Fetch full timetable for a class. Returns an object with days mapped to periods
+   * and a simple course palette. If the backend doesn't provide the endpoint
+   * or it fails, the caller should handle fallback to seeded timetable.
+   */
+  async getClassTimetable(classId: string): Promise<{ class_id: string; days: Record<string, ClassPeriod[]>; courses: Record<string, { name: string; color: string }> } | null> {
+    try {
+      return await withRetry(async () => {
+        const response = await apiClient.get('/api/v1/timetable/class', { params: { class_id: classId } });
+        const data = response.data as Record<string, unknown>;
+
+        // Expecting { class_id, days: { Monday: [...periods] }, courses: { CODE: { name, color } } }
+        const daysRaw = (data.days ?? {}) as Record<string, unknown[]>;
+        const days: Record<string, ClassPeriod[]> = {};
+
+        Object.entries(daysRaw).forEach(([day, arr]) => {
+          days[day] = toArray<Record<string, unknown>>(arr).map((p) => ({
+            period_id: String(p.period_id ?? p.id ?? ''),
+            class_id: String(p.class_id ?? classId),
+            course_code: String(p.course_code ?? ''),
+            course_name: String(p.course_name ?? ''),
+            start_time: String(p.start_time ?? ''),
+            end_time: String(p.end_time ?? ''),
+            faculty_name: p.faculty_name ? String(p.faculty_name) : undefined,
+            room: p.room ? String(p.room) : undefined,
+            is_lab_class: Boolean(p.is_lab_class ?? false),
+            course_color: p.course_color ? String(p.course_color) : '#6366F1',
+          }));
+        });
+
+        const courses = (data.courses ?? {}) as Record<string, { name?: string; color?: string }>;
+        const palette: Record<string, { name: string; color: string }> = {};
+        Object.entries(courses).forEach(([code, info]) => {
+          palette[code] = { name: info?.name ?? code, color: info?.color ?? '#6366F1' };
+        });
+
+        return {
+          class_id: String(data.class_id ?? classId),
+          days,
+          courses: palette,
+        };
+      }, this.retryConfig);
+    } catch (err) {
+      console.warn('[getClassTimetable] could not fetch timetable:', err instanceof Error ? err.message : err);
+      return null;
+    }
+  }
+
   async getClassRoster(classId: string): Promise<ClassRosterStudent[]> {
     try {
       return await withRetry(async () => {

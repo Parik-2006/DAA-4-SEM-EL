@@ -103,9 +103,23 @@ export function resolveUserRole({
     };
   }
 
-  // Step 2 — Backend is authoritative when it sends a recognised role.
+  // Step 2 — Backend SHOULD be authoritative, but do not allow it to elevate
+  // privileges beyond what the email whitelist permits. For example, an
+  // *@rvce.edu.in address must remain a student even if the backend returns
+  // 'admin'. This prevents unauthorized elevation from server-side data.
   const serverRole = normaliseBackendRole(backendRole);
-  const finalRole: UserRole = serverRole ?? emailRole;
+
+  const rank = (r: UserRole) => (r === 'admin' ? 3 : r === 'teacher' ? 2 : 1);
+
+  let finalRole: UserRole = emailRole;
+  if (serverRole) {
+    // Choose the lower privilege between email-derived and server-provided
+    // role (i.e., min rank). This prevents server escalation.
+    const chosenRank = Math.min(rank(serverRole), rank(emailRole));
+    finalRole = chosenRank === 3 ? 'admin' : chosenRank === 2 ? 'teacher' : 'student';
+  } else {
+    finalRole = emailRole;
+  }
 
   return { role: finalRole, rejected: false };
 }

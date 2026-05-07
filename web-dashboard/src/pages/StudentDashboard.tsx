@@ -5,10 +5,11 @@
  *  - Today's timetable as large color-coded status cards
  *  - Active period with live countdown
  *  - Overall attendance stats with warning badges
- *  - Quick-access links to history and timetable
+ *  - Quick-access links to history and status
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Clock, BookOpen, AlertTriangle, CheckCircle, XCircle,
   Activity, TrendingUp, Calendar, ChevronRight, Wifi, WifiOff
@@ -145,7 +146,7 @@ function PeriodStatusCard({ period, isActive }: { period: PeriodCard; isActive: 
 
 // ── Stats card ─────────────────────────────────────────────────────────────────
 
-function OverallStatsCard({ overall }: { overall: ReturnType<typeof useStudentAttendance>['summary'] extends null ? never : ReturnType<typeof useStudentAttendance>['summary']['overall'] }) {
+function OverallStatsCard({ overall }: { overall: NonNullable<ReturnType<typeof useStudentAttendance>['summary']>['overall'] }) {
   const pct = overall.percentage;
   const band = overall.band;
   const color = band === 'safe' ? '#22C55E' : band === 'warning' ? '#F59E0B' : '#EF4444';
@@ -231,7 +232,7 @@ function OverallStatsCard({ overall }: { overall: ReturnType<typeof useStudentAt
 interface StudentDashboardProps {
   studentId: string;
   classId?: string;
-  onNavigate?: (page: 'timetable' | 'history' | 'warnings') => void;
+  onNavigate?: (page: 'history' | 'warnings') => void;
 }
 
 export const StudentDashboard: React.FC<StudentDashboardProps> = ({
@@ -251,6 +252,8 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
   const now = new Date();
   const timeStr = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+
+  const navigate = useNavigate();
 
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '320px', flexDirection: 'column', gap: '14px' }}>
@@ -287,12 +290,29 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             {dashboard?.today_date} · {timeStr}
           </p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', borderRadius: '99px', background: lastChecked ? '#f0fdf4' : '#fef2f2', border: `1px solid ${lastChecked ? '#bbf7d0' : '#fecaca'}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <button
+            onClick={() => navigate('/face')}
+            style={{
+              padding: '8px 12px',
+              borderRadius: 12,
+              background: '#111827',
+              color: '#fff',
+              fontWeight: 700,
+              border: 'none',
+              cursor: 'pointer',
+              marginRight: 8,
+            }}
+          >
+            Live Camera
+          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', borderRadius: '99px', background: lastChecked ? '#f0fdf4' : '#fef2f2', border: `1px solid ${lastChecked ? '#bbf7d0' : '#fecaca'}` }}>
           {lastChecked ? <Wifi size={12} style={{ color: '#22c55e' }} /> : <WifiOff size={12} style={{ color: '#ef4444' }} />}
           <span style={{ fontSize: '0.65rem', fontWeight: 600, color: lastChecked ? '#16a34a' : '#dc2626' }}>
             {lastChecked ? `Synced ${lastChecked.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` : 'Offline'}
           </span>
         </div>
+      </div>
       </div>
 
       {/* Summary pills */}
@@ -352,14 +372,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             <Calendar size={16} style={{ color: '#6366F1' }} />
             Today's Classes
           </h2>
-          {onNavigate && (
-            <button
-              onClick={() => onNavigate('timetable')}
-              style={{ fontSize: '0.75rem', color: '#6366F1', fontWeight: 600, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
-            >
-              Full Week <ChevronRight size={14} />
-            </button>
-          )}
+          {onNavigate && null}
         </div>
 
         {periods.length === 0 ? (
@@ -431,7 +444,8 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
 // ── Countdown display sub-component ───────────────────────────────────────────
 
-function CountdownDisplay({ seconds: initial, color }: { seconds: number; color: string }) {
+function CountdownDisplay(props: { seconds: number; color: string }) {
+  const { seconds: initial, color } = props;
   const secs = useCountdown(initial);
   return (
     <p style={{ fontSize: '1.1rem', fontWeight: 900, color, fontFamily: 'monospace' }}>

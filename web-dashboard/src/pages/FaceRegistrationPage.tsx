@@ -2,7 +2,9 @@ import React, {
   useState,
   useCallback,
   useMemo,
+  useEffect,
 } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import {
   Layout,
@@ -79,6 +81,10 @@ const FaceRegistrationPage: React.FC = () => {
     },
     []
   );
+
+  // Read optional query param to auto-start camera for a particular student
+  const [searchParams] = useSearchParams();
+  const targetStudent = searchParams.get('student');
 
   // ─────────────────────────────────────────────────────────
   // Derived State
@@ -200,6 +206,8 @@ const FaceRegistrationPage: React.FC = () => {
               onConsecutiveFailures={
                 handleConsecutiveFailures
               }
+              autoStart={!!targetStudent}
+              targetStudentId={targetStudent}
             />
           </div>
 
