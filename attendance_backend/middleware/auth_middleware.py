@@ -57,7 +57,6 @@ from typing import Callable, FrozenSet, Optional
 from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
@@ -160,7 +159,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 "Authenticated: user=%s role=%s → %s",
                 payload.user_id, payload.role, path,
             )
-        except JWTError as exc:
+        except ValueError as exc:
             logger.warning("JWT validation failed for %s: %s", path, exc)
             return JSONResponse(
                 status_code=401,
@@ -199,10 +198,10 @@ def _extract_token(credentials: Optional[HTTPAuthorizationCredentials]) -> str:
 
 
 def _decode(token: str) -> TokenPayload:
-    """Decode and validate the JWT, mapping JWTError → HTTP 401."""
+    """Decode and validate the JWT, mapping ValueError → HTTP 401."""
     try:
         return AuthService.verify_access_token(token)
-    except JWTError as exc:
+    except ValueError as exc:
         logger.warning("JWT validation failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -214,6 +214,20 @@ class AuthService:
         except Exception as exc:
             raise ValueError(f"Token decode failed: {exc}") from exc
 
+    # ── Static method for middleware (wraps decode_token) ─────────────────────
+
+    @staticmethod
+    def verify_access_token(token: str) -> UserContext:
+        """
+        Static method for middleware to verify and decode a JWT token.
+
+        Raises
+        ------
+        ValueError  : malformed token, bad signature, expired.
+        """
+        service = get_auth_service()
+        return service.decode_token(token)
+
     # ── Password hashing helpers ───────────────────────────────────────────────
 
     @staticmethod

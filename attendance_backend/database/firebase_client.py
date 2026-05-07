@@ -115,7 +115,7 @@ class FirebaseClient:
                     self.fs = _firestore.Client(
                         project=raw_cred.project_id,
                         credentials=raw_cred.get_credential(),
-                        database="(default)",
+                        database="default",
                     )
                     logger.info("✓ Firestore initialised (project: %s)", raw_cred.project_id)
                 except Exception as exc:

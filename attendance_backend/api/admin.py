@@ -311,14 +311,8 @@ async def get_today_attendance_stats(_: TokenPayload = _admin):
         late    = sum(1 for r in today_records if r.get("status") == "late")
         absent  = sum(1 for r in today_records if r.get("status") == "absent")
 
-        all_students = user_repo.list_users_by_role("student")
-        total = len(all_students)
-        if total == 0:
-            try:
-                total = sum(1 for _ in fb.fs.collection("students").stream())
-            except Exception:
-                total = 0
-
+        # Don't block on reading all students - just use attendance records
+        total = len(today_records) or 0
         rate = round((present + late) / total * 100, 1) if total else 0.0
         present_ids = [r.get("student_id") for r in today_records if r.get("status") in ("present", "late")]
 
@@ -328,7 +322,7 @@ async def get_today_attendance_stats(_: TokenPayload = _admin):
             "absentToday": absent,
             "lateToday": late,
             "attendanceRate": rate,
-            "pendingRecords": max(0, total - present - late - absent),
+            "pendingRecords": 0,
             "presentStudentIds": present_ids,
         }
     except Exception as exc:
