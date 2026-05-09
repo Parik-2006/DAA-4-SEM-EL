@@ -1,8 +1,8 @@
 /// <reference types="vite/client" />
 
-import axios, { AxiosError, AxiosInstance } from 'axios';
+import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig } from 'axios';
 import { withRetry, isRetryableError, RetryConfig } from '../utils/retry-handler';
-import { SESSION_TOKEN_KEY } from './firebase/auth.service';
+import { getAuthToken, clearSession, SESSION_TOKEN_KEY } from './firebase/auth.service';
 import { resolveUserRole } from '../utils/roles';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -22,18 +22,49 @@ export const apiClient: AxiosInstance = axios.create({
   maxRedirects: 5,
 });
 
-let retryAttemptCount = 0;
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Request Interceptor
+// Auth Redirect Helper
 // ─────────────────────────────────────────────────────────────────────────────
 
-apiClient.interceptors.request.use((config) => {
-  const token = sessionStorage.getItem(SESSION_TOKEN_KEY);
-  if (token) config.headers.Authorization = `Bearer ${token}`;
-  console.log(`[API Request] ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`);
-  return config;
-});
+/**
+ * Wipes the session and sends the browser to /login.
+ * Idempotent — safe to call multiple times; subsequent calls while a redirect
+ * is already in progress are suppressed.
+ */
+let redirectingToLogin = false;
+function forceLogin(reason: string): void {
+  if (redirectingToLogin) return;
+  redirectingToLogin = true;
+  console.warn(`[API] Forcing re-login: ${reason}`);
+  clearSession();
+  window.location.replace('/login');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Request Interceptor — Attach JWT via Firebase getValidToken
+// ─────────────────────────────────────────────────────────────────────────────
+
+apiClient.interceptors.request.use(
+  async (config: InternalAxiosRequestConfig) => {
+    const url = config.url ?? '';
+    const isPublic =
+      url.includes('/health') ||
+      url.includes('/auth/login') ||
+      url.includes('/auth/register');
+
+    if (!isPublic) {
+      const token = await getAuthToken();
+      config.headers = config.headers ?? {};
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+
+    console.log(
+      `[API →] ${config.method?.toUpperCase()} ${config.baseURL ?? ''}${config.url}`
+    );
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Response Interceptor
@@ -41,53 +72,55 @@ apiClient.interceptors.request.use((config) => {
 
 apiClient.interceptors.response.use(
   (response) => {
-    retryAttemptCount = 0;
+    console.log(`[API ←] ${response.status} ${response.config?.url}`);
 
     if (response.status >= 400) {
-      const status = response.status;
-      const message =
+      const msg =
         response.data?.detail ||
         response.data?.message ||
         response.statusText ||
-        'Unknown error';
+        'Request failed';
 
-      console.error(`[API Error] ${status} - ${response.config?.url}: ${message}`);
-
-      if (status === 401) {
-        sessionStorage.removeItem(SESSION_TOKEN_KEY);
-        window.location.replace('/login');
-        return Promise.reject(
-          new axios.AxiosError(message, String(status), response.config, response.request, response)
-        );
+      if (response.status === 401) {
+        forceLogin('401 received from server');
       }
 
       return Promise.reject(
-        new axios.AxiosError(message, String(status), response.config, response.request, response)
+        new axios.AxiosError(
+          msg,
+          String(response.status),
+          response.config,
+          response.request,
+          response
+        )
       );
     }
 
-    console.log(`[API Response] ${response.status} ${response.config?.url}`);
     return response;
   },
-
   (error: AxiosError) => {
+    if (axios.isCancel(error)) return Promise.reject(error);
+
     const status = error.response?.status;
-    const message =
-      (error.response?.data as any)?.detail ||
-      (error.response?.data as any)?.message ||
+    const msg =
+      (error.response?.data as Record<string, unknown>)?.detail ||
+      (error.response?.data as Record<string, unknown>)?.message ||
       error.message ||
       'Unknown error';
 
-    console.error(`[API Error] ${status || 'Network'} - ${error.config?.url}: ${message}`);
+    console.error(`[API ✕] ${status ?? 'Network'} — ${error.config?.url}: ${msg}`);
 
     if (status === 401) {
-      sessionStorage.removeItem(SESSION_TOKEN_KEY);
-      window.location.replace('/login');
+      forceLogin('401 on error path');
+      return Promise.reject(error);
+    }
+
+    if (status === 403) {
+      console.warn('[API] 403 Forbidden — insufficient permissions');
     }
 
     if (isRetryableError(error)) {
-      retryAttemptCount++;
-      console.warn(`[API] Retryable error detected. Attempt: ${retryAttemptCount}`);
+      console.warn('[API] Retryable error detected');
     }
 
     return Promise.reject(error);
@@ -135,6 +168,7 @@ export interface Course {
   students_count: number;
 }
 
+/** Response from detect-face-only endpoint (Step 1). No record saved yet. */
 export interface DetectFaceResponse {
   matched: boolean;
   message: string;
@@ -145,6 +179,7 @@ export interface DetectFaceResponse {
   timestamp?: string;
 }
 
+/** Response from confirm-attendance endpoint (Step 2). Record persisted. */
 export interface ConfirmAttendanceResponse {
   success: boolean;
   record_id: string;
@@ -153,6 +188,88 @@ export interface ConfirmAttendanceResponse {
   confidence: number;
   timestamp: string;
   message: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin / Role-Aware Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A single attendance record as seen by admin/teacher — includes
+ * class, period, method, manual-override flag, and who marked it.
+ */
+export interface AdminAttendanceRecord {
+  record_id: string;
+  student_id: string;
+  student_name: string;
+  roll_no?: string;
+  class_id?: string;
+  class_name?: string;
+  course_code?: string;
+  course_name?: string;
+  /** period_id from the timetable */
+  period_id?: string;
+  /** Formatted as "HH:MM–HH:MM", e.g. "09:00–10:00" */
+  period_time?: string;
+  date: string;
+  /** Time portion only, e.g. "09:43" */
+  time?: string;
+  status: 'present' | 'absent' | 'late' | 'pending';
+  marked_by?: string;
+  marked_by_name?: string;
+  method?: 'face_recognition' | 'manual' | 'qr_code' | 'auto';
+  /** 0–1 face-recognition confidence score */
+  confidence?: number;
+  /** True when a teacher/admin manually changed the status */
+  is_manual_override?: boolean;
+  override_reason?: string;
+}
+
+export interface PaginatedAdminHistory {
+  records: AdminAttendanceRecord[];
+  total: number;
+  page: number;
+  total_pages: number;
+  stats?: {
+    present: number;
+    absent: number;
+    late: number;
+    total: number;
+    /** 0–100 percentage */
+    rate: number;
+  };
+}
+
+export interface ClassInfo {
+  class_id: string;
+  class_name: string;
+  section?: string;
+  semester?: string;
+  department?: string;
+}
+
+export interface PeriodInfo {
+  period_id: string;
+  start_time: string;
+  end_time: string;
+  course_code: string;
+  course_name: string;
+  class_id: string;
+  day_of_week?: string;
+}
+
+export interface AdminHistoryFilters {
+  classId?: string;
+  periodId?: string;
+  /** ISO date e.g. "2025-05-08". Mutually exclusive with startDate/endDate. */
+  date?: string;
+  startDate?: string;
+  endDate?: string;
+  status?: string;
+  /** Free-text search on student name or ID */
+  search?: string;
+  page?: number;
+  limit?: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -219,7 +336,6 @@ export interface ClassPeriod {
 
 /**
  * Payload for teacher's manual attendance marking.
- * `marked_by` should be the authenticated faculty's user ID.
  * `audit_source` is always "manual_teacher" so backend can distinguish
  * manual entries from face-recognition ones.
  */
@@ -231,13 +347,12 @@ export interface ManualAttendancePayload {
   course_id: string;
   marked_by: string;
   notes?: string;
-  /** ISO-8601 timestamp of when the teacher clicked save. */
+  /** ISO-8601 timestamp of when the teacher clicked save */
   client_timestamp: string;
   audit_source: 'manual_teacher';
   metadata?: Record<string, unknown>;
 }
 
-/** Server response after a successful manual mark. */
 export interface ManualAttendanceResponse {
   success: boolean;
   record_id: string;
@@ -253,7 +368,6 @@ export interface ManualAttendanceResponse {
   message: string;
 }
 
-/** Bulk payload for saving an entire roster in one request. */
 export interface BulkManualAttendancePayload {
   class_id: string;
   period_id: string;
@@ -281,7 +395,7 @@ export interface BulkManualAttendanceResponse {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helpers
+// Internal Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 function toArray<T>(data: unknown): T[] {
@@ -307,6 +421,52 @@ function normaliseRecord(r: Record<string, unknown>): AttendanceRecord {
       : 'present') as AttendanceRecord['status'],
     avatar_url: r.avatar_url ? String(r.avatar_url) : undefined,
     confidence: r.confidence != null ? Number(r.confidence) : undefined,
+  };
+}
+
+function normaliseAdminRecord(r: Record<string, unknown>): AdminAttendanceRecord {
+  const periodTime = r.period_time
+    ? String(r.period_time)
+    : r.start_time && r.end_time
+    ? `${r.start_time}–${r.end_time}`
+    : undefined;
+
+  const rawTimestamp = String(r.timestamp ?? r.marked_at ?? '');
+  const timeFromTimestamp =
+    rawTimestamp.length >= 16 ? rawTimestamp.slice(11, 16) : undefined;
+
+  const rawMethod = String(r.method ?? r.detection_method ?? '');
+  const validMethods = ['face_recognition', 'manual', 'qr_code', 'auto'];
+
+  return {
+    record_id: String(r.record_id ?? r.id ?? ''),
+    student_id: String(r.student_id ?? ''),
+    student_name: String(r.student_name ?? r.name ?? 'Unknown'),
+    roll_no: r.roll_no ? String(r.roll_no) : undefined,
+    class_id: r.class_id ? String(r.class_id) : undefined,
+    class_name: r.class_name ? String(r.class_name) : undefined,
+    course_code: r.course_code ? String(r.course_code) : undefined,
+    course_name: r.course_name ? String(r.course_name) : undefined,
+    period_id: r.period_id ? String(r.period_id) : undefined,
+    period_time: periodTime,
+    date: String(r.date ?? rawTimestamp.slice(0, 10) ?? ''),
+    time: r.time ? String(r.time) : timeFromTimestamp,
+    status: (['present', 'absent', 'late', 'pending'].includes(String(r.status))
+      ? r.status
+      : 'present') as AdminAttendanceRecord['status'],
+    marked_by: r.marked_by ? String(r.marked_by) : undefined,
+    marked_by_name: r.marked_by_name
+      ? String(r.marked_by_name)
+      : r.marked_by
+      ? String(r.marked_by)
+      : undefined,
+    method: validMethods.includes(rawMethod)
+      ? (rawMethod as AdminAttendanceRecord['method'])
+      : undefined,
+    confidence: r.confidence != null ? Number(r.confidence) : undefined,
+    is_manual_override:
+      r.is_manual_override != null ? Boolean(r.is_manual_override) : undefined,
+    override_reason: r.override_reason ? String(r.override_reason) : undefined,
   };
 }
 
@@ -342,9 +502,16 @@ function buildDetectError(err: unknown): DetectFaceResponse {
 
   console.error('[DetectError]', { status, detail, code: axiosErr.code });
 
-  if (status && status >= 400 && status < 500) return { matched: false, message: detail };
-  if (isRetryableError(err)) return { matched: false, message: 'Backend is starting up. Please wait a moment and try again.' };
-  return { matched: false, message: `Server error (${status ?? 'network'}): ${detail}. Check backend logs.` };
+  if (status && status >= 400 && status < 500) {
+    return { matched: false, message: String(detail) };
+  }
+  if (isRetryableError(err)) {
+    return { matched: false, message: 'Backend is starting up. Please wait a moment and try again.' };
+  }
+  return {
+    matched: false,
+    message: `Server error (${status ?? 'network'}): ${detail}. Check backend logs.`,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -355,16 +522,20 @@ class AttendanceAPI {
   private retryConfig: RetryConfig = {
     maxRetries: 5,
     initialDelayMs: 500,
-    maxDelayMs: 10000,
+    maxDelayMs: 10_000,
     backoffMultiplier: 2,
     retryableStatusCodes: [408, 429, 500, 502, 503, 504],
     onRetry: (attempt, error, delayMs) => {
-      console.warn(`[AttendanceAPI] Retry ${attempt} in ${delayMs}ms`, error.message);
+      console.warn(`[AttendanceAPI] Retry ${attempt} in ${delayMs}ms — ${error.message}`);
     },
   };
 
   // ── Auth ────────────────────────────────────────────────────────────────────
 
+  /**
+   * Resolves the user's role from a login response, stores the session token,
+   * and returns the resolved role string.
+   */
   resolveLoginResponse(email: string, data: Record<string, unknown>): string {
     const resolution = resolveUserRole({
       email,
@@ -386,7 +557,7 @@ class AttendanceAPI {
     return resolution.role;
   }
 
-  // ── Face Detection ──────────────────────────────────────────────────────────
+  // ── Two-Step Attendance Flow ────────────────────────────────────────────────
 
   async detectFaceOnly(formData: FormData): Promise<DetectFaceResponse> {
     try {
@@ -395,7 +566,7 @@ class AttendanceAPI {
           const response = await apiClient.post<DetectFaceResponse>(
             '/api/v1/attendance/detect-face-only',
             formData,
-            { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 25000 }
+            { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 25_000 }
           );
           return response.data;
         },
@@ -407,12 +578,16 @@ class AttendanceAPI {
     }
   }
 
-  async confirmAttendance(studentId: string, confidence: number): Promise<ConfirmAttendanceResponse> {
-    return await withRetry(
+  async confirmAttendance(
+    studentId: string,
+    confidence: number
+  ): Promise<ConfirmAttendanceResponse> {
+    return withRetry(
       async () => {
         const response = await apiClient.post<ConfirmAttendanceResponse>(
           '/api/v1/attendance/confirm-attendance',
-          { student_id: studentId, confidence }
+          { student_id: studentId, confidence },
+          { timeout: 15_000 }
         );
         return response.data;
       },
@@ -420,7 +595,7 @@ class AttendanceAPI {
     );
   }
 
-  /** @deprecated Use detectFaceOnly + confirmAttendance */
+  /** @deprecated Use detectFaceOnly + confirmAttendance for the two-step flow. */
   async detectAndMarkAttendance(formData: FormData): Promise<DetectFaceResponse> {
     try {
       return await withRetry(
@@ -428,14 +603,13 @@ class AttendanceAPI {
           const response = await apiClient.post<DetectFaceResponse>(
             '/api/v1/attendance/detect-face',
             formData,
-            { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 25000 }
+            { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 25_000 }
           );
           return response.data;
         },
         { ...this.retryConfig, maxRetries: 3 }
       );
     } catch (err) {
-      console.error('[detectAndMarkAttendance] Failed after retries:', err);
       return buildDetectError(err);
     }
   }
@@ -546,17 +720,20 @@ class AttendanceAPI {
   }
 
   /**
-   * Fetch full timetable for a class. Returns an object with days mapped to periods
-   * and a simple course palette. If the backend doesn't provide the endpoint
-   * or it fails, the caller should handle fallback to seeded timetable.
+   * Fetch full timetable for a class. Returns days mapped to periods and a
+   * course colour palette. Returns null on failure; caller handles fallback.
    */
-  async getClassTimetable(classId: string): Promise<{ class_id: string; days: Record<string, ClassPeriod[]>; courses: Record<string, { name: string; color: string }> } | null> {
+  async getClassTimetable(classId: string): Promise<{
+    class_id: string;
+    days: Record<string, ClassPeriod[]>;
+    courses: Record<string, { name: string; color: string }>;
+  } | null> {
     try {
       return await withRetry(async () => {
-        const response = await apiClient.get('/api/v1/timetable/class', { params: { class_id: classId } });
+        const response = await apiClient.get('/api/v1/timetable/class', {
+          params: { class_id: classId },
+        });
         const data = response.data as Record<string, unknown>;
-
-        // Expecting { class_id, days: { Monday: [...periods] }, courses: { CODE: { name, color } } }
         const daysRaw = (data.days ?? {}) as Record<string, unknown[]>;
         const days: Record<string, ClassPeriod[]> = {};
 
@@ -575,20 +752,22 @@ class AttendanceAPI {
           }));
         });
 
-        const courses = (data.courses ?? {}) as Record<string, { name?: string; color?: string }>;
+        const coursesRaw = (data.courses ?? {}) as Record<
+          string,
+          { name?: string; color?: string }
+        >;
         const palette: Record<string, { name: string; color: string }> = {};
-        Object.entries(courses).forEach(([code, info]) => {
+        Object.entries(coursesRaw).forEach(([code, info]) => {
           palette[code] = { name: info?.name ?? code, color: info?.color ?? '#6366F1' };
         });
 
-        return {
-          class_id: String(data.class_id ?? classId),
-          days,
-          courses: palette,
-        };
+        return { class_id: String(data.class_id ?? classId), days, courses: palette };
       }, this.retryConfig);
     } catch (err) {
-      console.warn('[getClassTimetable] could not fetch timetable:', err instanceof Error ? err.message : err);
+      console.warn(
+        '[getClassTimetable] Failed:',
+        err instanceof Error ? err.message : err
+      );
       return null;
     }
   }
@@ -617,25 +796,30 @@ class AttendanceAPI {
 
   /**
    * Mark a single student's attendance manually (teacher action).
-   *
-   * Falls back gracefully: if the dedicated endpoint is missing (404/405), the
-   * method retries against the legacy `/mark-attendance` endpoint.
+   * Falls back to the legacy `/mark-attendance` endpoint on 404/405.
    */
-  async markAttendanceManual(payload: ManualAttendancePayload): Promise<ManualAttendanceResponse> {
+  async markAttendanceManual(
+    payload: ManualAttendancePayload
+  ): Promise<ManualAttendanceResponse> {
     return withRetry(
       async () => {
         try {
           const response = await apiClient.post<ManualAttendanceResponse>(
             '/api/v1/attendance/mark-manual',
             payload,
-            { timeout: 15000 }
+            { timeout: 15_000 }
           );
           return response.data;
         } catch (primaryErr: unknown) {
           const axiosErr = primaryErr as AxiosError;
-          if (axiosErr.response?.status === 404 || axiosErr.response?.status === 405) {
-            console.warn('[markAttendanceManual] Dedicated endpoint missing — falling back to /mark-attendance');
-            const fallbackResponse = await apiClient.post(
+          if (
+            axiosErr.response?.status === 404 ||
+            axiosErr.response?.status === 405
+          ) {
+            console.warn(
+              '[markAttendanceManual] Dedicated endpoint missing — falling back to /mark-attendance'
+            );
+            const fallback = await apiClient.post(
               '/api/v1/attendance/mark-attendance',
               {
                 student_id: payload.student_id,
@@ -652,9 +836,9 @@ class AttendanceAPI {
                   ...payload.metadata,
                 },
               },
-              { timeout: 15000 }
+              { timeout: 15_000 }
             );
-            const d = fallbackResponse.data as Record<string, unknown>;
+            const d = fallback.data as Record<string, unknown>;
             return {
               success: true,
               record_id: String(d.record_id ?? d.id ?? ''),
@@ -679,47 +863,56 @@ class AttendanceAPI {
 
   /**
    * Save an entire class roster in one request.
-   * Falls back to sequential `markAttendanceManual` calls if the bulk endpoint
-   * is unavailable (404/405).
+   * Falls back to sequential `markAttendanceManual` calls on 404/405.
    */
-  async markAttendanceBulk(payload: BulkManualAttendancePayload): Promise<BulkManualAttendanceResponse> {
+  async markAttendanceBulk(
+    payload: BulkManualAttendancePayload
+  ): Promise<BulkManualAttendanceResponse> {
     return withRetry(
       async () => {
         try {
           const response = await apiClient.post<BulkManualAttendanceResponse>(
             '/api/v1/attendance/mark-manual-bulk',
             payload,
-            { timeout: 30000 }
+            { timeout: 30_000 }
           );
           return response.data;
         } catch (primaryErr: unknown) {
           const axiosErr = primaryErr as AxiosError;
-          if (axiosErr.response?.status === 404 || axiosErr.response?.status === 405) {
-            console.warn('[markAttendanceBulk] Bulk endpoint missing — falling back to individual saves');
+          if (
+            axiosErr.response?.status === 404 ||
+            axiosErr.response?.status === 405
+          ) {
+            console.warn(
+              '[markAttendanceBulk] Bulk endpoint missing — falling back to individual saves'
+            );
+            const toSave = payload.entries.filter((e) => e.status !== 'not_marked');
             const results = await Promise.allSettled(
-              payload.entries
-                .filter((e) => e.status !== 'not_marked')
-                .map((entry) =>
-                  this.markAttendanceManual({
-                    student_id: entry.student_id,
-                    status: entry.status as ManualAttendancePayload['status'],
-                    class_id: payload.class_id,
-                    period_id: payload.period_id,
-                    course_id: payload.course_id,
-                    marked_by: payload.marked_by,
-                    notes: entry.notes,
-                    client_timestamp: payload.client_timestamp,
-                    audit_source: 'manual_teacher',
-                    metadata: payload.metadata,
-                  })
-                )
+              toSave.map((entry) =>
+                this.markAttendanceManual({
+                  student_id: entry.student_id,
+                  status: entry.status as ManualAttendancePayload['status'],
+                  class_id: payload.class_id,
+                  period_id: payload.period_id,
+                  course_id: payload.course_id,
+                  marked_by: payload.marked_by,
+                  notes: entry.notes,
+                  client_timestamp: payload.client_timestamp,
+                  audit_source: 'manual_teacher',
+                  metadata: payload.metadata,
+                })
+              )
             );
             const saved = results.filter((r) => r.status === 'fulfilled').length;
             const failed = results.filter((r) => r.status === 'rejected').length;
             const errors = results
               .map((r, i) =>
                 r.status === 'rejected'
-                  ? { student_id: payload.entries[i].student_id, reason: (r as PromiseRejectedResult).reason?.message ?? 'Unknown' }
+                  ? {
+                      student_id: toSave[i].student_id,
+                      reason:
+                        (r as PromiseRejectedResult).reason?.message ?? 'Unknown',
+                    }
                   : null
               )
               .filter(Boolean) as BulkManualAttendanceResponse['errors'];
@@ -742,33 +935,6 @@ class AttendanceAPI {
   }
 
   // ── Data Fetching ───────────────────────────────────────────────────────────
-
-  async getAttendanceRecords(date: string, classId?: string): Promise<{ data: AttendanceRecord[] }> {
-    try {
-      return await withRetry(async () => {
-        const response = await apiClient.get('/api/v1/attendance/records', {
-          params: { date, ...(classId ? { class_id: classId } : {}) },
-        });
-        return { data: toArray<Record<string, unknown>>(response.data).map(normaliseRecord) };
-      }, this.retryConfig);
-    } catch {
-      return { data: [] };
-    }
-  }
-
-  async getPeriodAttendance(periodId: string, classId: string): Promise<AttendanceRecord[]> {
-    try {
-      return await withRetry(async () => {
-        const response = await apiClient.get('/api/v1/attendance/period', {
-          params: { period_id: periodId, class_id: classId },
-        });
-        return toArray<Record<string, unknown>>(response.data).map(normaliseRecord);
-      }, this.retryConfig);
-    } catch (err) {
-      console.error('[getPeriodAttendance] Error:', err);
-      return [];
-    }
-  }
 
   async getLiveAttendance(courseId?: string, limit = 50): Promise<AttendanceRecord[]> {
     try {
@@ -804,7 +970,10 @@ class AttendanceAPI {
       }, this.retryConfig);
     } catch (err) {
       console.error('[getAttendanceStats] Error:', err);
-      return { total_present: 0, total_late: 0, total_absent: 0, total_excused: 0, last_updated: new Date().toISOString() };
+      return {
+        total_present: 0, total_late: 0, total_absent: 0, total_excused: 0,
+        last_updated: new Date().toISOString(),
+      };
     }
   }
 
@@ -841,9 +1010,10 @@ class AttendanceAPI {
   ): Promise<Record<string, number>> {
     try {
       return await withRetry(async () => {
-        const response = await apiClient.get('/api/v1/attendance/attendance/daily-report', {
-          params: { ...(startDate ? { date: startDate } : {}) },
-        });
+        const response = await apiClient.get(
+          '/api/v1/attendance/attendance/daily-report',
+          { params: { ...(startDate ? { date: startDate } : {}) } }
+        );
         const d = response.data as Record<string, unknown>;
         return {
           total_records: Number(d.total_records ?? 0),
@@ -853,6 +1023,52 @@ class AttendanceAPI {
     } catch (err) {
       console.error('[getAttendanceSummary] Error:', err);
       return {};
+    }
+  }
+
+  async getAttendanceRecords(
+    date?: string,
+    classId?: string
+  ): Promise<{ data: AttendanceRecord[]; total: number }> {
+    try {
+      return await withRetry(async () => {
+        const response = await apiClient.get('/api/v1/attendance/records', {
+          params: {
+            ...(date ? { date } : {}),
+            ...(classId ? { class_id: classId } : {}),
+            limit: 200,
+          },
+        });
+        const raw = response.data;
+        const arr = toArray<Record<string, unknown>>(raw).map(normaliseRecord);
+        return {
+          data: arr,
+          total: Array.isArray(raw)
+            ? raw.length
+            : Number((raw as Record<string, unknown>)?.total ?? arr.length),
+        };
+      }, this.retryConfig);
+    } catch {
+      // Graceful fallback to live attendance
+      const records = await this.getLiveAttendance(undefined, 100);
+      return { data: records, total: records.length };
+    }
+  }
+
+  async getPeriodAttendance(
+    periodId: string,
+    classId: string
+  ): Promise<AttendanceRecord[]> {
+    try {
+      return await withRetry(async () => {
+        const response = await apiClient.get('/api/v1/attendance/period', {
+          params: { period_id: periodId, class_id: classId },
+        });
+        return toArray<Record<string, unknown>>(response.data).map(normaliseRecord);
+      }, this.retryConfig);
+    } catch (err) {
+      console.error('[getPeriodAttendance] Error:', err);
+      return [];
     }
   }
 
@@ -896,7 +1112,131 @@ class AttendanceAPI {
     }
   }
 
-  // ── Admin ───────────────────────────────────────────────────────────────────
+  // ── Admin / Teacher History ─────────────────────────────────────────────────
+
+  /**
+   * Paginated, filterable attendance history for admin and teacher roles.
+   * Supports filtering by class, period, date (single or range), status, and
+   * free-text search. Falls back to live attendance on error.
+   */
+  async getAdminHistory(filters: AdminHistoryFilters): Promise<PaginatedAdminHistory> {
+    const {
+      classId, periodId, date, startDate, endDate,
+      status, search, page = 1, limit = 50,
+    } = filters;
+
+    try {
+      return await withRetry(async () => {
+        const response = await apiClient.get('/api/v1/admin/attendance/history', {
+          params: {
+            ...(classId   ? { class_id:   classId   } : {}),
+            ...(periodId  ? { period_id:  periodId  } : {}),
+            ...(date      ? { date                   } : {}),
+            ...(startDate ? { start_date: startDate } : {}),
+            ...(endDate   ? { end_date:   endDate   } : {}),
+            ...(status    ? { status                 } : {}),
+            ...(search    ? { search                 } : {}),
+            page,
+            limit,
+          },
+        });
+        const d = response.data as Record<string, unknown>;
+        const rawRecords = toArray<Record<string, unknown>>(
+          (d.records ?? d.data ?? d) as unknown
+        );
+        const total = Number(d.total ?? rawRecords.length);
+        const totalPages = Number(d.total_pages ?? Math.ceil(total / limit));
+        const stats = d.stats as Record<string, unknown> | undefined;
+
+        return {
+          records: rawRecords.map(normaliseAdminRecord),
+          total,
+          page: Number(d.page ?? page),
+          total_pages: totalPages,
+          stats: stats
+            ? {
+                present: Number(stats.present ?? 0),
+                absent:  Number(stats.absent  ?? 0),
+                late:    Number(stats.late    ?? 0),
+                total:   Number(stats.total   ?? 0),
+                rate:    Number(stats.rate ?? stats.attendance_rate ?? 0),
+              }
+            : undefined,
+        };
+      }, this.retryConfig);
+    } catch (err) {
+      console.error('[getAdminHistory] Error — attempting live-attendance fallback:', err);
+      try {
+        const live = await this.getLiveAttendance(undefined, limit);
+        const shaped: AdminAttendanceRecord[] = live.map((r) => ({
+          record_id: r.id,
+          student_id: r.student_id,
+          student_name: r.student_name,
+          course_name: r.course_name,
+          date: r.marked_at.slice(0, 10),
+          time: r.marked_at.slice(11, 16),
+          status: r.status as AdminAttendanceRecord['status'],
+          confidence: r.confidence,
+        }));
+        return { records: shaped, total: shaped.length, page: 1, total_pages: 1 };
+      } catch {
+        return { records: [], total: 0, page: 1, total_pages: 0 };
+      }
+    }
+  }
+
+  /**
+   * Returns the list of classes/sections visible to the current user.
+   * Admin sees all; teacher sees only their assigned classes.
+   */
+  async getClasses(): Promise<ClassInfo[]> {
+    try {
+      return await withRetry(async () => {
+        let response = await apiClient.get('/api/v1/admin/classes');
+        if (response.status === 404 || response.status === 403) {
+          response = await apiClient.get('/api/v1/timetable/classes');
+        }
+        return toArray<Record<string, unknown>>(response.data).map((c) => ({
+          class_id: String(c.class_id ?? c.id ?? ''),
+          class_name: String(c.class_name ?? c.name ?? ''),
+          section: c.section ? String(c.section) : undefined,
+          semester: c.semester ? String(c.semester) : undefined,
+          department: c.department ? String(c.department) : undefined,
+        }));
+      }, this.retryConfig);
+    } catch (err) {
+      console.error('[getClasses] Error:', err);
+      return [];
+    }
+  }
+
+  /**
+   * Returns timetable periods for a given class, optionally filtered
+   * to a specific date (returns only periods scheduled on that day of week).
+   */
+  async getPeriodsByClass(classId: string, date?: string): Promise<PeriodInfo[]> {
+    try {
+      return await withRetry(async () => {
+        const response = await apiClient.get('/api/v1/timetable/periods', {
+          params: { class_id: classId, ...(date ? { date } : {}) },
+        });
+        return toArray<Record<string, unknown>>(response.data).map((p) => ({
+          period_id: String(p.period_id ?? p.id ?? ''),
+          start_time: String(p.start_time ?? ''),
+          end_time: String(p.end_time ?? ''),
+          course_code: String(p.course_code ?? ''),
+          course_name: String(p.course_name ?? ''),
+          class_id: String(p.class_id ?? classId),
+          day_of_week: p.day_of_week ? String(p.day_of_week) : undefined,
+        }));
+      }, this.retryConfig);
+    } catch (err) {
+      console.error('[getPeriodsByClass] Error:', err);
+      return [];
+    }
+  }
+
+  // ── Admin Helpers ───────────────────────────────────────────────────────────
 
   async getAdminAttendanceToday(): Promise<Record<string, unknown>> {
     try {
@@ -931,9 +1271,13 @@ class AttendanceAPI {
     }, { ...this.retryConfig, maxRetries: 3 });
   }
 
-  async updateStudent(studentId: string, name: string, email: string, courses: string[]): Promise<unknown> {
+  async updateStudent(
+    studentId: string, name: string, email: string, courses: string[]
+  ): Promise<unknown> {
     return withRetry(async () => {
-      const response = await apiClient.put(`/api/v1/admin/students/${studentId}`, { name, email, courses });
+      const response = await apiClient.put(`/api/v1/admin/students/${studentId}`, {
+        name, email, courses,
+      });
       return response.data;
     }, { ...this.retryConfig, maxRetries: 3 });
   }
@@ -955,7 +1299,9 @@ class AttendanceAPI {
   async getAllCourses(page = 1, limit = 50): Promise<unknown[]> {
     try {
       return await withRetry(async () => {
-        const response = await apiClient.get('/api/v1/admin/courses', { params: { page, limit } });
+        const response = await apiClient.get('/api/v1/admin/courses', {
+          params: { page, limit },
+        });
         return toArray(response.data);
       }, this.retryConfig);
     } catch (err) {
@@ -964,16 +1310,22 @@ class AttendanceAPI {
     }
   }
 
-  async createCourse(name: string, code: string, schedule: string, room: string): Promise<unknown> {
+  async createCourse(
+    name: string, code: string, schedule: string, room: string
+  ): Promise<unknown> {
     return withRetry(async () => {
       const response = await apiClient.post('/api/v1/admin/courses', { name, code, schedule, room });
       return response.data;
     }, { ...this.retryConfig, maxRetries: 3 });
   }
 
-  async updateCourse(courseId: string, name: string, code: string, schedule: string, room: string): Promise<unknown> {
+  async updateCourse(
+    courseId: string, name: string, code: string, schedule: string, room: string
+  ): Promise<unknown> {
     return withRetry(async () => {
-      const response = await apiClient.put(`/api/v1/admin/courses/${courseId}`, { name, code, schedule, room });
+      const response = await apiClient.put(`/api/v1/admin/courses/${courseId}`, {
+        name, code, schedule, room,
+      });
       return response.data;
     }, { ...this.retryConfig, maxRetries: 3 });
   }
@@ -994,7 +1346,9 @@ class AttendanceAPI {
 
   // ── Face Registration ───────────────────────────────────────────────────────
 
-  async registerStudentFace(studentId: string, faceImageBase64: string): Promise<unknown> {
+  async registerStudentFace(
+    studentId: string, faceImageBase64: string
+  ): Promise<unknown> {
     return withRetry(async () => {
       const response = await apiClient.post('/api/v1/admin/register-face', {
         student_id: studentId,
@@ -1022,37 +1376,53 @@ class AttendanceAPI {
 
   async scanQRCode(token: string, studentId: string): Promise<unknown> {
     return withRetry(async () => {
-      const response = await apiClient.post('/api/v1/qr/scan', { token, student_id: studentId });
+      const response = await apiClient.post('/api/v1/qr/scan', {
+        token, student_id: studentId,
+      });
       return response.data;
     }, { ...this.retryConfig, maxRetries: 3 });
   }
 
-  // ── Health ───────────────────────────────────────────────────────────────────
+  // ── Health Check ─────────────────────────────────────────────────────────────
 
+  /**
+   * Calls the health endpoint via plain fetch so it is never intercepted by
+   * the auth layer — health checks must work even when logged out.
+   */
   async healthCheck(): Promise<boolean> {
     try {
-      const response = await apiClient.get('/api/v1/attendance/health');
-      return response.status === 200;
-    } catch (err) {
-      console.warn('[healthCheck] Backend not healthy:', err instanceof Error ? err.message : err);
+      const baseUrl = (
+        import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
+      ).replace(/\/$/, '');
+      const res = await fetch(`${baseUrl}/api/v1/attendance/health`, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(5_000),
+      });
+      return res.ok;
+    } catch {
       return false;
     }
   }
 
-  async waitForBackend(maxRetries = 30): Promise<void> {
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        if (await this.healthCheck()) {
-          console.log(`[AttendanceAPI] ✓ Backend healthy (attempt ${attempt})`);
-          return;
-        }
-      } catch { /* continue */ }
-      if (attempt < maxRetries) {
-        const delayMs = Math.min(1000 * Math.pow(1.5, attempt - 1), 5000);
-        await new Promise((r) => setTimeout(r, delayMs));
+  /**
+   * Polls the health endpoint until it responds or `maxAttempts` is reached.
+   * Resolves silently rather than throwing — the app proceeds and surfaces
+   * errors in normal API calls.
+   */
+  async waitForBackend(maxAttempts = 30): Promise<void> {
+    for (let i = 1; i <= maxAttempts; i++) {
+      const ok = await this.healthCheck();
+      if (ok) {
+        console.log(`[API] Backend healthy (attempt ${i})`);
+        return;
+      }
+      if (i < maxAttempts) {
+        const delay = Math.min(1_000 * Math.pow(1.4, i - 1), 5_000);
+        await new Promise((r) => setTimeout(r, delay));
       }
     }
-    console.warn(`[AttendanceAPI] Backend still not healthy after ${maxRetries} attempts. Proceeding anyway...`);
+    console.warn('[API] Backend did not become healthy; proceeding anyway.');
   }
 }
 

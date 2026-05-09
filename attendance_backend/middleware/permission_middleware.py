@@ -76,6 +76,13 @@ _FULLY_PUBLIC: FrozenSet[str] = frozenset({
     "/openapi.json",
     "/api/v1/auth/login",
     "/api/v1/auth/refresh",
+    "/api/v1/user/register",
+    "/api/v1/user/forgot-password",
+    "/api/v1/user/reset-password",
+    "/user/register",
+    "/user/login",
+    "/user/forgot-password",
+    "/user/reset-password",
     "/api/v1/attendance/health",
     "/api/v1/health",
 })

@@ -395,9 +395,6 @@ export const Layout: React.FC<
             const email =
               sessionStorage.getItem(
                 'user_email'
-              ) ??
-              localStorage.getItem(
-                'user_email'
               );
 
             setCurrentUser({
@@ -477,20 +474,6 @@ export const Layout: React.FC<
         );
 
       } finally {
-
-        [
-          'auth_token',
-          'user_role',
-          'user_email',
-          'user_id',
-        ].forEach(
-          (
-            key
-          ) =>
-            localStorage.removeItem(
-              key
-            )
-        );
 
         sessionStorage.clear();
 

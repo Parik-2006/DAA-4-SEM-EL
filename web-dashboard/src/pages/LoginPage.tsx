@@ -6,6 +6,7 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { signIn, clearSession } from '../services/firebase/auth.service';
+import { getStoredRole } from '../utils/roles';
 
 // Minimal field-level validation messages
 type FieldError = { email?: string; password?: string; general?: string };
@@ -14,8 +15,13 @@ export const LoginPage: React.FC = () => {
   const navigate  = useNavigate();
   const location  = useLocation();
 
-  // Where to send the user after a successful sign-in
-  const from = (location.state as { from?: string } | null)?.from ?? '/dashboard';
+  // Role-aware redirect: admin/teacher → /dashboard, student → /attendance
+  const getRedirectPath = (): string => {
+    const role = getStoredRole();
+    if (role === 'student') return '/attendance';
+    if (role === 'admin' || role === 'teacher') return '/dashboard';
+    return '/login'; // Fallback
+  };
 
   const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
@@ -48,7 +54,10 @@ export const LoginPage: React.FC = () => {
     setLoading(true);
     try {
       await signIn(email.trim().toLowerCase(), password);
-      navigate(from, { replace: true });
+      // Get role-appropriate redirect path after sign-in (role now in sessionStorage)
+      const from = (location.state as { from?: string } | null)?.from;
+      const redirectPath = from || getRedirectPath();
+      navigate(redirectPath, { replace: true });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Login failed. Please check your credentials.';
       setErrors({ general: message });
