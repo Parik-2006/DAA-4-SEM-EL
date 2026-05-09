@@ -35,6 +35,38 @@ class UserRepository:
         self.db = db or FirebaseClient()
         self.collection = _COLLECTION
 
+    def _normalize_user(self, user: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Ensure stored user dict has sane types/defaults for callers.
+
+        - `assigned_sections` must be a list (empty list if missing/invalid)
+        - `role` defaults to 'student' if missing/invalid
+        - preserves other fields
+        Returns None if user is falsy.
+        """
+        if not user:
+            return None
+        # copy to avoid mutating caller's dict
+        normalized = dict(user)
+        secs = normalized.get("assigned_sections", [])
+        if secs is None or not isinstance(secs, list):
+            # allow comma-separated strings as a convenience
+            if isinstance(secs, str):
+                try:
+                    # split on commas and strip
+                    parts = [s.strip() for s in secs.split(",") if s.strip()]
+                    normalized["assigned_sections"] = parts
+                except Exception:
+                    normalized["assigned_sections"] = []
+            else:
+                normalized["assigned_sections"] = []
+
+        # role fallback
+        role = normalized.get("role")
+        if role not in ("admin", "teacher", "student"):
+            normalized["role"] = "student"
+
+        return normalized
+
     # ── Internal helper ───────────────────────────────────────────────────────
 
     def _path(self, user_id: str) -> str:
@@ -71,7 +103,7 @@ class UserRepository:
                 return None
             for uid, user in users.items():
                 if isinstance(user, dict) and user.get("email") == email:
-                    return {**user, "user_id": uid}
+                    return {**self._normalize_user(user), "user_id": uid}
             return None
         except Exception as exc:
             logger.error("Error fetching user by email: %s", exc)
@@ -81,8 +113,9 @@ class UserRepository:
         """Return user by primary key, or None."""
         try:
             user = self.db.read_data(self._path(user_id))
-            if user:
-                return {**user, "user_id": user_id}
+            n = self._normalize_user(user)
+            if n:
+                return {**n, "user_id": user_id}
             return None
         except Exception as exc:
             logger.error("Error fetching user %s: %s", user_id, exc)
@@ -95,7 +128,17 @@ class UserRepository:
             if not user:
                 logger.warning("update_user: user %s not found", user_id)
                 return False
-            self.db.write_data(self._path(user_id), {**user, **update_data})
+            merged = {**user, **update_data}
+            # normalize assigned_sections if provided
+            if "assigned_sections" in merged:
+                secs = merged.get("assigned_sections")
+                if secs is None or not isinstance(secs, list):
+                    if isinstance(secs, str):
+                        merged["assigned_sections"] = [s.strip() for s in secs.split(",") if s.strip()]
+                    else:
+                        merged["assigned_sections"] = []
+
+            self.db.write_data(self._path(user_id), merged)
             logger.info("User updated: %s fields=%s", user_id, list(update_data))
             return True
         except Exception as exc:
@@ -116,11 +159,14 @@ class UserRepository:
         """Return all users with the given role (password_hash stripped by caller)."""
         try:
             users = self.db.read_data(self.collection) or {}
-            return [
-                {**u, "user_id": uid}
-                for uid, u in users.items()
-                if isinstance(u, dict) and u.get("role") == role
-            ]
+            result = []
+            for uid, u in users.items():
+                if not isinstance(u, dict):
+                    continue
+                n = self._normalize_user(u)
+                if n.get("role") == role:
+                    result.append({**n, "user_id": uid})
+            return result
         except Exception as exc:
             logger.error("Error listing users by role %s: %s", role, exc)
             return []
@@ -129,11 +175,13 @@ class UserRepository:
         """Return every user document."""
         try:
             users = self.db.read_data(self.collection) or {}
-            return [
-                {**u, "user_id": uid}
-                for uid, u in users.items()
-                if isinstance(u, dict)
-            ]
+            result = []
+            for uid, u in users.items():
+                if not isinstance(u, dict):
+                    continue
+                n = self._normalize_user(u)
+                result.append({**n, "user_id": uid})
+            return result
         except Exception as exc:
             logger.error("Error listing all users: %s", exc)
             return []
