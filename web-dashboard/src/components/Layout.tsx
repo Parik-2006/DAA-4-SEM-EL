@@ -232,7 +232,6 @@ const VISIBLE_PATHS_BY_ROLE: Record<
 
   student: new Set([
     '/dashboard',
-    '/attendance',
     '/face',
     '/history',
     '/status',

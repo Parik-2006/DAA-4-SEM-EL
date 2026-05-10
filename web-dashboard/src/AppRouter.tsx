@@ -55,7 +55,7 @@ const ROLE_ALLOWED: Record<NonNullable<UserRole>, string[]> = {
     '/course-management', '/timetable', '/class-views', '/profile',
   ],
   teacher: ['/dashboard', '/attendance', '/face', '/history', '/profile'],
-  student: ['/dashboard', '/attendance', '/face', '/history', '/status', '/profile'],
+  student: ['/dashboard', '/face', '/history', '/status', '/profile'],
 };
 
 function defaultRouteFor(role: UserRole): string {
@@ -114,14 +114,6 @@ const RoleDashboard: React.FC = () => {
  * IMPORTANT: Students MUST NOT see teacher attendance tools.
  */
 const RoleAttendancePage: React.FC = () => {
-  if (isStudent()) {
-    const studentId = sessionStorage.getItem('user_id') ?? '';
-    return (
-      <Layout>
-        <StudentDashboard studentId={studentId} />
-      </Layout>
-    );
-  }
   return <AttendancePage />;
 };
 
