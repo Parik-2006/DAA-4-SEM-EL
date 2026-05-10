@@ -20,11 +20,11 @@ import {
 // ── Pages ─────────────────────────────────────────────────────────────────────
 
 import { LoginPage } from './pages/LoginPage';
-import { DashboardPage } from './pages';
 import { ProfilePage } from './pages/ProfilePage';
 import { AttendancePage } from './pages/AttendancePage';
 import { HistoryPage } from './pages/HistoryPage';
 import { StudentDashboard } from './pages/StudentDashboard';
+import RoleLandingPage from './pages/RoleLandingPage';
 import FaceRegistrationPage from './pages/FaceRegistrationPage';
 import BatchImportPage from './pages/BatchImportPage';
 import StudentManagementPage from './pages/StudentManagementPage';
@@ -55,16 +55,15 @@ const ROLE_ALLOWED: Record<NonNullable<UserRole>, string[]> = {
     '/course-management', '/timetable', '/class-views', '/profile',
   ],
   teacher: ['/dashboard', '/attendance', '/face', '/history', '/profile'],
-  student: ['/attendance', '/face', '/history', '/status', '/profile'],
+  student: ['/dashboard', '/attendance', '/face', '/history', '/status', '/profile'],
 };
 
 function defaultRouteFor(role: UserRole): string {
   switch (role) {
     case 'admin':
     case 'teacher':
-      return '/dashboard';
     case 'student':
-      return '/attendance';
+      return '/dashboard';
     default:
       return '/login';
   }
@@ -107,12 +106,7 @@ const LoadingScreen: React.FC = () => (
  * Students see their own live status dashboard; staff see the admin dashboard.
  */
 const RoleDashboard: React.FC = () => {
-  const role = getStoredRole();
-  if (role === 'student') {
-    const studentId = sessionStorage.getItem('user_id') ?? '';
-    return <StudentDashboard studentId={studentId} />;
-  }
-  return <DashboardPage />;
+  return <RoleLandingPage />;
 };
 
 /**

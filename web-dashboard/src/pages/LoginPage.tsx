@@ -18,7 +18,7 @@ export const LoginPage: React.FC = () => {
   // Role-aware redirect: admin/teacher → /dashboard, student → /attendance
   const getRedirectPath = (): string => {
     const role = getStoredRole();
-    if (role === 'student') return '/attendance';
+    if (role === 'student') return '/dashboard';
     if (role === 'admin' || role === 'teacher') return '/dashboard';
     return '/login'; // Fallback
   };

@@ -231,6 +231,7 @@ const VISIBLE_PATHS_BY_ROLE: Record<
   // STRICT SELF-ONLY VISIBILITY
 
   student: new Set([
+    '/dashboard',
     '/attendance',
     '/face',
     '/history',
