@@ -40,6 +40,7 @@ set "FRONTEND_RUNNING=0"
 set OPENBLAS_NUM_THREADS=2
 set OMP_NUM_THREADS=2
 set PYTHONHASHSEED=0
+set ENABLE_PERIOD_DETECTION=False
 
 :: Load JWT_SECRET from root .env for backend startup
 if exist ".env" (
@@ -56,7 +57,7 @@ if not defined JWT_SECRET (
 
 echo [1/2] Starting Backend API (Port 8000)...
 echo [INFO] Using optimized memory settings (OPENBLAS_NUM_THREADS=2)
-start "Backend API" cmd /k "title Backend API && cd attendance_backend && ..\.venv\Scripts\python.exe -u main.py 2>&1"
+start "Backend API" cmd /k "title Backend API && cd attendance_backend && set ENABLE_PERIOD_DETECTION=False && ..\.venv\Scripts\python.exe -u main.py 2>&1"
 
 echo [INFO] Waiting 20 seconds for backend to initialize models...
 timeout /t 20 /nobreak

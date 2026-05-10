@@ -523,7 +523,7 @@ ENABLE_EMBEDDING_CACHE:      Final[bool] = True
 ENABLE_DUPLICATE_DETECTION:  Final[bool] = True
 ENABLE_CIE_MANAGEMENT:       Final[bool] = True
 ENABLE_TIMETABLE_LOOKUP:     Final[bool] = True
-ENABLE_PERIOD_DETECTION:     Final[bool] = True   # NEW — controls background service
+ENABLE_PERIOD_DETECTION:     Final[bool] = _os.getenv("ENABLE_PERIOD_DETECTION", "false").lower() == "true"   # controls background service
 
 # ───────────────────────────────────────────────────────────────
 # 📄 PAGINATION
