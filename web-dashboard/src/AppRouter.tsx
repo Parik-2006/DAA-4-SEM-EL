@@ -31,6 +31,7 @@ import StudentManagementPage from './pages/StudentManagementPage';
 import CourseManagementPage from './pages/CourseManagementPage';
 import AdminAnalyticsPage from './pages/AdminAnalyticsPage';
 import AdminTimetablePage from './pages/AdminTimetablePage';
+import { Layout } from './components';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -121,7 +122,11 @@ const RoleDashboard: React.FC = () => {
 const RoleAttendancePage: React.FC = () => {
   if (isStudent()) {
     const studentId = sessionStorage.getItem('user_id') ?? '';
-    return <StudentDashboard studentId={studentId} />;
+    return (
+      <Layout>
+        <StudentDashboard studentId={studentId} />
+      </Layout>
+    );
   }
   return <AttendancePage />;
 };
