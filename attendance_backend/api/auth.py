@@ -79,6 +79,15 @@ def _get_firestore():
         return None
 
 
+def _normalize_assigned_sections(value: Any) -> List[str]:
+    """Coerce malformed stored assigned_sections values into a list."""
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    return []
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # POST /api/v1/auth/login
 # ══════════════════════════════════════════════════════════════════════════════
@@ -131,7 +140,9 @@ async def login(body: LoginRequest, request: Request):
 
     user_id: str = user_doc.get("id") or user_doc.get("doc_id", "")
     role: str = user_doc.get("role", "student")
-    assigned_sections: List[str] = user_doc.get("assigned_sections", [])
+    assigned_sections: List[str] = _normalize_assigned_sections(
+        user_doc.get("assigned_sections", [])
+    )
     email: str = user_doc.get("email", body.email)
 
     try:
@@ -197,7 +208,7 @@ async def refresh_token(
         user_id=user.user_id,
         email=user.email,
         role=user.role,
-        assigned_sections=user.assigned_sections,
+        assigned_sections=_normalize_assigned_sections(user.assigned_sections),
     )
     ctx = auth_svc.decode_token(token)
     expires_in = ctx.expires_at - ctx.issued_at
@@ -212,7 +223,7 @@ async def refresh_token(
         email=user.email,
         role=user.role,
         permissions=user.permissions,
-        assigned_sections=user.assigned_sections,
+        assigned_sections=_normalize_assigned_sections(user.assigned_sections),
     )
 
 
