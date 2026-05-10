@@ -234,7 +234,7 @@ const VISIBLE_PATHS_BY_ROLE: Record<
     '/dashboard',
     '/face',
     '/history',
-    '/status',
+    '/profile',
   ]),
 };
 
