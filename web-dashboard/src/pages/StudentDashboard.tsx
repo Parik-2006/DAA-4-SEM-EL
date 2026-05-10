@@ -5,11 +5,10 @@
  *  - Today's timetable as large color-coded status cards
  *  - Active period with live countdown
  *  - Overall attendance stats with warning badges
- *  - Quick-access links to history and status
+ *  - Quick-access links to history and timetable
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
 import {
   Clock, BookOpen, AlertTriangle, CheckCircle, XCircle,
   Activity, TrendingUp, Calendar, ChevronRight, Wifi, WifiOff
@@ -253,8 +252,6 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   const now = new Date();
   const timeStr = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
 
-  const navigate = useNavigate();
-
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '320px', flexDirection: 'column', gap: '14px' }}>
       <div style={{ width: '36px', height: '36px', border: '3px solid #e2e8f0', borderTopColor: '#6366F1', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
@@ -290,29 +287,12 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             {dashboard?.today_date} · {timeStr}
           </p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <button
-            onClick={() => navigate('/face')}
-            style={{
-              padding: '8px 12px',
-              borderRadius: 12,
-              background: '#111827',
-              color: '#fff',
-              fontWeight: 700,
-              border: 'none',
-              cursor: 'pointer',
-              marginRight: 8,
-            }}
-          >
-            Live Camera
-          </button>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', borderRadius: '99px', background: lastChecked ? '#f0fdf4' : '#fef2f2', border: `1px solid ${lastChecked ? '#bbf7d0' : '#fecaca'}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', borderRadius: '99px', background: lastChecked ? '#f0fdf4' : '#fef2f2', border: `1px solid ${lastChecked ? '#bbf7d0' : '#fecaca'}` }}>
           {lastChecked ? <Wifi size={12} style={{ color: '#22c55e' }} /> : <WifiOff size={12} style={{ color: '#ef4444' }} />}
           <span style={{ fontSize: '0.65rem', fontWeight: 600, color: lastChecked ? '#16a34a' : '#dc2626' }}>
             {lastChecked ? `Synced ${lastChecked.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}` : 'Offline'}
           </span>
         </div>
-      </div>
       </div>
 
       {/* Summary pills */}
@@ -372,7 +352,14 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             <Calendar size={16} style={{ color: '#6366F1' }} />
             Today's Classes
           </h2>
-          {onNavigate && null}
+          {onNavigate && (
+            <button
+              onClick={() => onNavigate('history')}
+              style={{ fontSize: '0.75rem', color: '#6366F1', fontWeight: 600, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
+            >
+              Full Week <ChevronRight size={14} />
+            </button>
+          )}
         </div>
 
         {periods.length === 0 ? (
