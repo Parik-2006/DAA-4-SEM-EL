@@ -41,6 +41,7 @@ import BatchImportPage             from './pages/BatchImportPage';
 import StudentManagementPage       from './pages/StudentManagementPage';
 import CourseManagementPage        from './pages/CourseManagementPage';
 import AdminTimetablePage          from './pages/AdminTimetablePage';
+import StudentDashboardPage       from './pages/StudentDashboardPage';
 
 // ★ Replaced AdminAnalyticsPage with the new real-time analytics page
 import AttendanceAnalyticsPage from './pages/AttendanceAnalyticsPage.tsx';
@@ -62,10 +63,10 @@ const ROLE_ALLOWED: Record<NonNullable<UserRole>, string[]> = {
   admin: [
     '/dashboard', '/attendance', '/face', '/history',
     '/analytics', '/batch-import', '/student-management',
-    '/course-management', '/timetable', '/class-views', '/profile',
+    '/course-management', '/timetable', '/class-views', '/profile', '/student-dashboard',
   ],
-  teacher: ['/dashboard', '/attendance', '/face', '/history', '/profile'],
-  student: ['/dashboard', '/face', '/history', '/profile'],
+  teacher: ['/dashboard', '/attendance', '/face', '/history', '/profile', '/student-dashboard'],
+  student: ['/dashboard', '/face', '/history', '/profile', '/student-dashboard'],
 };
 
 function defaultRouteFor(role: UserRole): string {
@@ -265,7 +266,12 @@ export const AppRouter: React.FC = () => (
         path="/status"
         element={protect('/history', <HistoryPage />)}
       />
+      {/* ── Student Dashboard ─────────────────────────────────────────────── */}
 
+      <Route
+        path="/student-dashboard"
+        element={protect('/student-dashboard', <StudentDashboardPage />)}
+      />
       {/* ── Profile ──────────────────────────────────────────────────────── */}
 
       <Route
