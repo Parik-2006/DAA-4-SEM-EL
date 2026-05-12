@@ -395,6 +395,45 @@ export interface BulkManualAttendanceResponse {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Analytics Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AnalyticsPeriodRecord {
+  student_id: string;
+  student_name: string;
+  status: 'present' | 'absent' | 'late';
+  method: string;
+  timestamp: string;
+}
+
+export interface AnalyticsPeriodSummary {
+  present: number;
+  absent: number;
+  late: number;
+  not_marked: number;
+  total: number;
+}
+
+export interface AnalyticsPeriodResponse {
+  records: AnalyticsPeriodRecord[];
+  summary: AnalyticsPeriodSummary;
+  period: { course_code: string; day: string; date: string };
+}
+
+export interface AnalyticsSectionSummaryItem {
+  course_code: string;
+  course_name: string;
+  day: string;
+  time: string;
+  present: number;
+  absent: number;
+  late: number;
+  not_marked: number;
+  total: number;
+  percentage: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Internal Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1055,6 +1094,13 @@ class AttendanceAPI {
     }
   }
 
+  /**
+   * Fetch attendance records for a specific timetable period and class.
+   * Uses the period/{periodId}/summary endpoint path.
+   *
+   * For analytics-style queries by course_code + day, use
+   * `getAnalyticsPeriodAttendance` instead.
+   */
   async getPeriodAttendance(
     periodId: string,
     classId: string
@@ -1342,6 +1388,195 @@ class AttendanceAPI {
       const response = await apiClient.delete(`/api/v1/admin/courses/${courseId}`);
       return response.data;
     }, { ...this.retryConfig, maxRetries: 3 });
+  }
+
+  // ── Analytics ───────────────────────────────────────────────────────────────
+
+  /**
+   * Period-scoped attendance records for the analytics page.
+   * Queries by course_code + day (day of week), unlike `getPeriodAttendance`
+   * which queries by period_id + class_id.
+   *
+   * GET /api/v1/attendance/period
+   * Query: course_code, day, date (ISO YYYY-MM-DD), limit
+   */
+  async getAnalyticsPeriodAttendance(
+    courseCode: string,
+    day: string,
+    date?: string,
+    limit = 100,
+  ): Promise<AnalyticsPeriodResponse> {
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.get('/api/v1/attendance/period', {
+            params: {
+              course_code: courseCode,
+              day,
+              ...(date ? { date } : {}),
+              limit,
+            },
+          });
+          return response.data;
+        },
+        this.retryConfig,
+      );
+    } catch (err) {
+      console.error('[getAnalyticsPeriodAttendance] Error:', err);
+      return {
+        records: [],
+        summary: { present: 0, absent: 0, late: 0, not_marked: 0, total: 0 },
+        period: { course_code: courseCode, day, date: date ?? '' },
+      };
+    }
+  }
+
+  /**
+   * Per-course 7-session attendance trend for sparkline charts.
+   *
+   * GET /api/v1/attendance/trend
+   * Query: course_code, day, sessions (default 7)
+   */
+  async getCourseTrend(
+    courseCode: string,
+    day: string,
+    sessions = 7,
+  ): Promise<Array<{ date: string; percentage: number }>> {
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.get('/api/v1/attendance/trend', {
+            params: { course_code: courseCode, day, sessions },
+          });
+          const data = response.data;
+          if (Array.isArray(data)) return data;
+          if (Array.isArray(data?.trend)) return data.trend;
+          return [];
+        },
+        this.retryConfig,
+      );
+    } catch (err) {
+      console.error('[getCourseTrend] Error:', err);
+      return [];
+    }
+  }
+
+  /**
+   * Mark attendance for one student in a period (admin / manual override).
+   *
+   * POST /api/v1/attendance/period/mark
+   * Body: { student_id, course_code, day, status, method, date? }
+   */
+  async markPeriodAttendance(params: {
+    studentId: string;
+    courseCode: string;
+    day: string;
+    status: 'present' | 'absent' | 'late';
+    method?: string;
+    date?: string;
+  }): Promise<{ success: boolean; record_id: string; message: string }> {
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.post('/api/v1/attendance/period/mark', {
+            student_id: params.studentId,
+            course_code: params.courseCode,
+            day: params.day,
+            status: params.status,
+            method: params.method ?? 'Manual',
+            ...(params.date ? { date: params.date } : {}),
+          });
+          return response.data;
+        },
+        { ...this.retryConfig, maxRetries: 3 },
+      );
+    } catch (err) {
+      console.error('[markPeriodAttendance] Error:', err);
+      throw err;
+    }
+  }
+
+  /**
+   * Bulk-update all student statuses for a period in a single request.
+   *
+   * POST /api/v1/attendance/period/bulk
+   * Body: { course_code, day, date?, entries: [{student_id, status}] }
+   */
+  async bulkMarkPeriod(params: {
+    courseCode: string;
+    day: string;
+    date?: string;
+    entries: Array<{ studentId: string; status: 'present' | 'absent' | 'late' }>;
+  }): Promise<{ success: number; failed: number; errors?: string[] }> {
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.post('/api/v1/attendance/period/bulk', {
+            course_code: params.courseCode,
+            day: params.day,
+            ...(params.date ? { date: params.date } : {}),
+            entries: params.entries.map((e) => ({
+              student_id: e.studentId,
+              status: e.status,
+            })),
+          });
+          return response.data;
+        },
+        { ...this.retryConfig, maxRetries: 2 },
+      );
+    } catch (err) {
+      console.error('[bulkMarkPeriod] Error:', err);
+      throw err;
+    }
+  }
+
+  /**
+   * Section-wide attendance summary — all courses for one day.
+   *
+   * GET /api/v1/attendance/section-summary
+   * Query: section (e.g. "C"), date (ISO)
+   */
+  async getSectionSummary(
+    section: string,
+    date?: string,
+  ): Promise<AnalyticsSectionSummaryItem[]> {
+    try {
+      return await withRetry(
+        async () => {
+          const response = await apiClient.get('/api/v1/attendance/section-summary', {
+            params: {
+              section,
+              ...(date ? { date } : {}),
+            },
+          });
+          const data = response.data;
+          return Array.isArray(data)         ? data
+               : Array.isArray(data?.items)  ? data.items
+               : [];
+        },
+        this.retryConfig,
+      );
+    } catch (err) {
+      console.error('[getSectionSummary] Error:', err);
+      return [];
+    }
+  }
+
+  /**
+   * Export full period attendance as a server-generated CSV blob.
+   *
+   * GET /api/v1/attendance/export/period
+   */
+  async exportPeriodCSV(
+    courseCode: string,
+    day: string,
+    date?: string,
+  ): Promise<Blob> {
+    const response = await apiClient.get('/api/v1/attendance/export/period', {
+      params: { course_code: courseCode, day, ...(date ? { date } : {}) },
+      responseType: 'blob',
+    });
+    return response.data as Blob;
   }
 
   // ── Face Registration ───────────────────────────────────────────────────────

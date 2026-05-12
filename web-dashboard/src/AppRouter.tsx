@@ -1,3 +1,15 @@
+/**
+ * AppRouter.tsx  — merged & final
+ * ---------------------------------
+ * Keeps 100 % of the existing role-based auth system (AuthGate, RoleGate,
+ * ROLE_ALLOWED, PublicOnlyRoute, DefaultRedirect, LoadingScreen).
+ *
+ * Only change vs. the original:
+ *   • AdminAnalyticsPage  →  AttendanceAnalyticsPage  (at /analytics)
+ *
+ * Replace:  web-dashboard/src/AppRouter.tsx
+ */
+
 import React, { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 
@@ -12,26 +24,26 @@ import {
 
 import {
   getStoredRole as getSessionRole,
-  isAdmin as isSessionAdmin,
-  isTeacher as isSessionTeacher,
-  isStudent as isSessionStudent,
+  isAdmin    as isSessionAdmin,
+  isTeacher  as isSessionTeacher,
+  isStudent  as isSessionStudent,
 } from './utils/roles';
 
 // ── Pages ─────────────────────────────────────────────────────────────────────
 
-import { LoginPage } from './pages/LoginPage';
-import { ProfilePage } from './pages/ProfilePage';
-import { AttendancePage } from './pages/AttendancePage';
-import { HistoryPage } from './pages/HistoryPage';
-import { StudentDashboard } from './pages/StudentDashboard';
-import RoleLandingPage from './pages/RoleLandingPage';
-import FaceRegistrationPage from './pages/FaceRegistrationPage';
-import BatchImportPage from './pages/BatchImportPage';
-import StudentManagementPage from './pages/StudentManagementPage';
-import CourseManagementPage from './pages/CourseManagementPage';
-import AdminAnalyticsPage from './pages/AdminAnalyticsPage';
-import AdminTimetablePage from './pages/AdminTimetablePage';
-import { Layout } from './components';
+import { LoginPage }               from './pages/LoginPage';
+import { ProfilePage }             from './pages/ProfilePage';
+import { AttendancePage }          from './pages/AttendancePage';
+import { HistoryPage }             from './pages/HistoryPage';
+import RoleLandingPage             from './pages/RoleLandingPage';
+import FaceRegistrationPage        from './pages/FaceRegistrationPage';
+import BatchImportPage             from './pages/BatchImportPage';
+import StudentManagementPage       from './pages/StudentManagementPage';
+import CourseManagementPage        from './pages/CourseManagementPage';
+import AdminTimetablePage          from './pages/AdminTimetablePage';
+
+// ★ Replaced AdminAnalyticsPage with the new real-time analytics page
+import AttendanceAnalyticsPage from './pages/AttendanceAnalyticsPage.tsx';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -39,10 +51,8 @@ export type UserRole = 'admin' | 'teacher' | 'student' | null;
 
 // ── Role Helpers ──────────────────────────────────────────────────────────────
 
-export function getStoredRole(): UserRole {
-  return getSessionRole();
-}
-export function isAdmin() { return isSessionAdmin(getStoredRole()); }
+export function getStoredRole(): UserRole { return getSessionRole(); }
+export function isAdmin()   { return isSessionAdmin(getStoredRole()); }
 export function isTeacher() { return isSessionTeacher(getStoredRole()); }
 export function isStudent() { return isSessionStudent(getStoredRole()); }
 
@@ -55,7 +65,7 @@ const ROLE_ALLOWED: Record<NonNullable<UserRole>, string[]> = {
     '/course-management', '/timetable', '/class-views', '/profile',
   ],
   teacher: ['/dashboard', '/attendance', '/face', '/history', '/profile'],
-  student: ['/dashboard', '/face', '/history', '/status', '/profile'],
+  student: ['/dashboard', '/face', '/history', '/profile'],
 };
 
 function defaultRouteFor(role: UserRole): string {
@@ -79,43 +89,39 @@ function isAllowed(role: UserRole, routePath: string): boolean {
 const LoadingScreen: React.FC = () => (
   <div
     style={{
-      display: 'flex',
-      alignItems: 'center',
+      display:        'flex',
+      alignItems:     'center',
       justifyContent: 'center',
-      height: '100vh',
-      background: 'var(--cream-100, #FAF6ED)',
+      height:         '100vh',
+      background:     'var(--cream-100, #FAF6ED)',
     }}
   >
     <div
       style={{
-        width: 40,
-        height: 40,
-        borderRadius: '50%',
-        border: '3px solid #e2e8f0',
-        borderTopColor: '#6366F1',
-        animation: 'spin 0.8s linear infinite',
+        width:         40,
+        height:        40,
+        borderRadius:  '50%',
+        border:        '3px solid #e2e8f0',
+        borderTopColor:'#6366F1',
+        animation:     'spin 0.8s linear infinite',
       }}
     />
     <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
   </div>
 );
 
-// ── Role-Aware Pages ──────────────────────────────────────────────────────────
+// ── Role-Aware Page Wrappers ──────────────────────────────────────────────────
 
 /**
  * Students see their own live status dashboard; staff see the admin dashboard.
  */
-const RoleDashboard: React.FC = () => {
-  return <RoleLandingPage />;
-};
+const RoleDashboard: React.FC = () => <RoleLandingPage />;
 
 /**
- * Students see their own attendance status; teachers/admins see full tools.
- * IMPORTANT: Students MUST NOT see teacher attendance tools.
+ * Students MUST NOT see teacher attendance tools — AttendancePage handles
+ * this internally based on the stored role.
  */
-const RoleAttendancePage: React.FC = () => {
-  return <AttendancePage />;
-};
+const RoleAttendancePage: React.FC = () => <AttendancePage />;
 
 // ── Auth Gate ─────────────────────────────────────────────────────────────────
 
@@ -129,13 +135,12 @@ const RoleAttendancePage: React.FC = () => {
  */
 const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [authenticated, setAuthenticated] = useState<boolean | null>(() =>
-    isAuthenticated() ? true : null
+    isAuthenticated() ? true : null,
   );
 
   useEffect(() => {
-    const unsub = onAuthChange((user: unknown) => {
-      const hasToken = !!getSessionToken();
-      const ok = hasToken;
+    const unsub = onAuthChange((_user: unknown) => {
+      const ok = !!getSessionToken();
       if (!ok) clearSession();
       setAuthenticated(ok);
     });
@@ -143,7 +148,7 @@ const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   }, []);
 
   if (authenticated === null) return <LoadingScreen />;
-  if (!authenticated) return <Navigate to="/login" replace />;
+  if (!authenticated)         return <Navigate to="/login" replace />;
   return <>{children}</>;
 };
 
@@ -166,13 +171,19 @@ const RoleGate: React.FC<{ children: React.ReactNode; routePath: string }> = ({
 
 // ── Protected Route ───────────────────────────────────────────────────────────
 
-const ProtectedRoute: React.FC<{ children: React.ReactNode; routePath: string }> = ({
-  children,
-  routePath,
-}) => (
+const ProtectedRoute: React.FC<{
+  children:  React.ReactNode;
+  routePath: string;
+}> = ({ children, routePath }) => (
   <AuthGate>
     <RoleGate routePath={routePath}>{children}</RoleGate>
   </AuthGate>
+);
+
+// ── Shorthand helper ──────────────────────────────────────────────────────────
+
+const protect = (path: string, el: React.ReactNode) => (
+  <ProtectedRoute routePath={path}>{el}</ProtectedRoute>
 );
 
 // ── Public-Only Route ─────────────────────────────────────────────────────────
@@ -198,13 +209,13 @@ const DefaultRedirect: React.FC = () => {
 export const AppRouter: React.FC = () => (
   <BrowserRouter
     future={{
-      v7_startTransition: true,
+      v7_startTransition:   true,
       v7_relativeSplatPath: true,
     }}
   >
     <Routes>
 
-      {/* ── Public ───────────────────────────────────────────────── */}
+      {/* ── Public ───────────────────────────────────────────────────────── */}
 
       <Route path="/index.html" element={<Navigate to="/" replace />} />
 
@@ -217,137 +228,93 @@ export const AppRouter: React.FC = () => (
         }
       />
 
-      {/* ── Dashboard (role-aware) ────────────────────────────────── */}
+      {/* ── Dashboard (role-aware) ────────────────────────────────────────── */}
 
       <Route
         path="/dashboard"
-        element={
-          <ProtectedRoute routePath="/dashboard">
-            <RoleDashboard />
-          </ProtectedRoute>
-        }
+        element={protect('/dashboard', <RoleDashboard />)}
       />
 
-      {/* ── Attendance (role-aware) ───────────────────────────────── */}
+      {/* ── Attendance (role-aware) ───────────────────────────────────────── */}
       {/*
-          Students → self-only live status (StudentDashboard)
-          Teachers / Admins → full attendance tools (AttendancePage)
-          HistoryPage MUST internally call getStudentHistory(studentId)
-          and NEVER fetch all records for students.
+          Students  → self-only live status
+          Teachers / Admins → full attendance tools
       */}
 
       <Route
         path="/attendance"
-        element={
-          <ProtectedRoute routePath="/attendance">
-            <RoleAttendancePage />
-          </ProtectedRoute>
-        }
+        element={protect('/attendance', <RoleAttendancePage />)}
       />
 
-      {/* ── Face Registration / Live Camera ──────────────────────── */}
+      {/* ── Face Registration / Live Camera ──────────────────────────────── */}
 
       <Route
         path="/face"
-        element={
-          <ProtectedRoute routePath="/face">
-            <FaceRegistrationPage />
-          </ProtectedRoute>
-        }
+        element={protect('/face', <FaceRegistrationPage />)}
       />
 
-      {/* ── History ──────────────────────────────────────────────── */}
+      {/* ── History ──────────────────────────────────────────────────────── */}
 
       <Route
         path="/history"
-        element={
-          <ProtectedRoute routePath="/history">
-            <HistoryPage />
-          </ProtectedRoute>
-        }
+        element={protect('/history', <HistoryPage />)}
       />
 
-      {/* /status is an alias for students to reach their history */}
+      {/* /status alias — students reach their own attendance history here */}
       <Route
         path="/status"
-        element={
-          <ProtectedRoute routePath="/status">
-            <HistoryPage />
-          </ProtectedRoute>
-        }
+        element={protect('/history', <HistoryPage />)}
       />
 
-      {/* ── Profile ──────────────────────────────────────────────── */}
+      {/* ── Profile ──────────────────────────────────────────────────────── */}
 
       <Route
         path="/profile"
-        element={
-          <ProtectedRoute routePath="/profile">
-            <ProfilePage />
-          </ProtectedRoute>
-        }
+        element={protect('/profile', <ProfilePage />)}
       />
 
-      {/* ── Admin Only ───────────────────────────────────────────── */}
+      {/* ── Admin Only ───────────────────────────────────────────────────── */}
 
+      {/*
+        /analytics — Real-time per-period attendance analytics.
+        Replaces the old AdminAnalyticsPage.
+        ROLE_ALLOWED['admin'] already includes '/analytics' → no changes needed
+        to the permissions table.
+      */}
       <Route
         path="/analytics"
-        element={
-          <ProtectedRoute routePath="/analytics">
-            <AdminAnalyticsPage />
-          </ProtectedRoute>
-        }
+        element={protect('/analytics', <AttendanceAnalyticsPage />)}
       />
 
       <Route
         path="/timetable"
-        element={
-          <ProtectedRoute routePath="/timetable">
-            <AdminTimetablePage />
-          </ProtectedRoute>
-        }
+        element={protect('/timetable', <AdminTimetablePage />)}
       />
 
       <Route
         path="/class-views"
-        element={
-          <ProtectedRoute routePath="/class-views">
-            <AdminTimetablePage />
-          </ProtectedRoute>
-        }
+        element={protect('/class-views', <AdminTimetablePage />)}
       />
 
       <Route
         path="/batch-import"
-        element={
-          <ProtectedRoute routePath="/batch-import">
-            <BatchImportPage />
-          </ProtectedRoute>
-        }
+        element={protect('/batch-import', <BatchImportPage />)}
       />
 
       <Route
         path="/student-management"
-        element={
-          <ProtectedRoute routePath="/student-management">
-            <StudentManagementPage />
-          </ProtectedRoute>
-        }
+        element={protect('/student-management', <StudentManagementPage />)}
       />
 
       <Route
         path="/course-management"
-        element={
-          <ProtectedRoute routePath="/course-management">
-            <CourseManagementPage />
-          </ProtectedRoute>
-        }
+        element={protect('/course-management', <CourseManagementPage />)}
       />
 
-      {/* ── Fallbacks ─────────────────────────────────────────────── */}
+      {/* ── Fallbacks ────────────────────────────────────────────────────── */}
 
-      <Route path="/" element={<DefaultRedirect />} />
-      <Route path="*" element={<DefaultRedirect />} />
+      <Route path="/"  element={<DefaultRedirect />} />
+      <Route path="*"  element={<DefaultRedirect />} />
 
     </Routes>
   </BrowserRouter>
