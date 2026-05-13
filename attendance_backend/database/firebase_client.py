@@ -96,19 +96,31 @@ class FirebaseClient:
     def _initialize_connection(self) -> None:
         try:
             logger.info("Initializing Firebase connections…")
+
+            # Validate RTDB URL before any Firebase network initialization.
+            rtdb_url = self.settings.firebase_database_url
+            if not rtdb_url or "your-project" in rtdb_url.lower():
+                raise RuntimeError(
+                    "FIREBASE_DATABASE_URL is missing or still a placeholder.\n"
+                    "  -> Set it in .env before starting the server.\n"
+                    f"  -> Got: {rtdb_url!r}"
+                )
+
             cred_path = self.settings.get_credentials_path()
             if not cred_path.exists():
                 raise FileNotFoundError(f"Firebase credentials not found: {cred_path}")
 
             cred = credentials.Certificate(str(cred_path))
 
-            # Realtime Database (legacy — unchanged)
+            # Realtime Database
             if not firebase_admin._apps:
-                initialize_app(cred, {"databaseURL": self.settings.firebase_database_url})
+                initialize_app(cred, {"databaseURL": rtdb_url})
             self.db = db.reference()
-            logger.info("✓ Realtime Database initialised")
+            rtdb_ok = True
 
             # Firestore
+            fs_ok = False
+            fs_reason = "google-cloud-firestore not installed"
             if _FIRESTORE_AVAILABLE:
                 raw_cred = credentials.Certificate(str(cred_path))
                 try:
@@ -117,17 +129,24 @@ class FirebaseClient:
                         credentials=raw_cred.get_credential(),
                         database="default",
                     )
-                    logger.info("✓ Firestore initialised (project: %s)", raw_cred.project_id)
+                    fs_ok = True
+                    fs_reason = f"project={raw_cred.project_id}"
                 except Exception as exc:
-                    logger.warning("⚠ Firestore init failed (will retry on first use): %s", exc)
+                    fs_reason = str(exc)
                     self.fs = None
-            else:
-                logger.warning(
-                    "google-cloud-firestore not installed — "
-                    "section-scoped features unavailable"
-                )
 
             FirebaseClient._initialized = True
+
+            # Single startup diagnostic summary (no secrets).
+            _project_hint = rtdb_url.split("//")[-1].split(".")[0]
+            logger.info(
+                "\n┌─ Firebase startup ──────────────────────────────────┐\n"
+                "│  RTDB     : %-40s│\n"
+                "│  Firestore: %-39s│\n"
+                "└─────────────────────────────────────────────────────┘",
+                f"{'✓ ' + _project_hint if rtdb_ok else '✗ not connected':<40}",
+                f"{'✓ ' + fs_reason if fs_ok else '✗ ' + fs_reason:<39}",
+            )
 
         except FileNotFoundError as exc:
             raise RuntimeError(f"Firebase initialization failed: {exc}")

@@ -15,6 +15,26 @@ Changes from original (backward-compatible)
 • POST /user/forgot-password     — unchanged.
 • POST /user/reset-password      — unchanged.
 • NEW  PATCH /user/profile/{user_id}  — self-service profile update (name).
+
+Hardening (2024-05 pass)
+------------------------
+reset_password (line ~296 in original)
+    The full users tree is fetched from RTDB as a single `.get()` call.
+    Previously the result was assumed to be a dict; RTDB returns None when the
+    "users" node is entirely absent (fresh/empty deployment).  The ``or {}``
+    guard was present but the subsequent iteration over `.items()` would then
+    silently succeed with an empty dict — correct.  However the outer
+    ``except Exception`` block re-raised as HTTP 400 ("Password reset failed")
+    which obscures real errors (e.g. Firebase network timeouts).
+
+    Changes:
+    1. Explicit ``isinstance(users_data, dict)`` check — if RTDB returns None
+       or a non-dict value, log a warning and raise 400 with the specific
+       "Invalid or expired reset token." message (same user-visible behaviour,
+       better internal observability).
+    2. Each user record ``isinstance(udata, dict)`` guard retained.
+    3. ``except FirebaseError`` logged at ERROR before the outer handler sees it,
+       so Firebase-side failures are distinguishable from logic failures in logs.
 """
 from __future__ import annotations
 
@@ -283,7 +303,14 @@ def forgot_password(email: str):
 
 @router.post("/reset-password")
 def reset_password(token: str, new_password: str):
-    """Reset password using a valid reset token (expires in 24 h)."""
+    """
+    Reset password using a valid reset token (expires in 24 h).
+
+    Hardening: RTDB ``users`` node may be None (empty deployment) or a non-dict
+    value.  Both cases are now explicitly handled — a warning is logged and the
+    caller receives the same user-visible 400 "Invalid or expired reset token."
+    response.  Firebase errors are logged at ERROR level for observability.
+    """
     if len(new_password) < 6:
         raise HTTPException(
             status_code=400,
@@ -293,7 +320,27 @@ def reset_password(token: str, new_password: str):
     try:
         from database.firebase_client import FirebaseClient
         fb = FirebaseClient()
-        users_data: dict = fb.get_reference("users").get() or {}
+
+        try:
+            raw_users = fb.get_reference("users").get()
+        except Exception as fb_exc:
+            # Firebase transport / auth error — log loudly, respond safely
+            logger.error("reset_password: Firebase read error: %s", fb_exc)
+            raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
+
+        # Guard: missing node (None) or unexpected type both mean no valid token
+        if raw_users is None:
+            logger.warning("reset_password: RTDB 'users' node is absent (None)")
+            raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
+
+        if not isinstance(raw_users, dict):
+            logger.warning(
+                "reset_password: RTDB 'users' node is type %s, expected dict",
+                type(raw_users).__name__,
+            )
+            raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
+
+        users_data: dict = raw_users  # now guaranteed to be dict
 
         user_id = None
         for uid, udata in users_data.items():
@@ -307,7 +354,10 @@ def reset_password(token: str, new_password: str):
                             user_id = uid
                             break
                     except ValueError:
-                        pass
+                        logger.warning(
+                            "reset_password: malformed reset_expires '%s' for user %s",
+                            expires_raw, uid,
+                        )
 
         if not user_id:
             raise HTTPException(status_code=400, detail="Invalid or expired reset token.")

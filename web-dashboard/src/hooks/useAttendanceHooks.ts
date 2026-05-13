@@ -178,6 +178,7 @@ async function apiFetch<T>(
   params?: Record<string, string | number | undefined>
 ): Promise<T> {
   const token = await getSessionAuthToken();
+  // Use standard Authorization: Bearer <token> for all requests
   const response = await axios.get<T>(`${BASE}${path}`, {
     params,
     headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -748,7 +749,7 @@ export function useStudentAttendance({
     setError(null);
     try {
       const [hist, summ, dash, warn] = await Promise.allSettled([
-        apiFetch<PaginatedHistory>('/api/v1/student/attendance-history', {
+        apiFetch<PaginatedHistory>('/api/v1/student/attendance/history', {
           student_id: studentId,
           page,
           page_size: pageSize,
@@ -776,6 +777,28 @@ export function useStudentAttendance({
   }, [studentId, enabled, page, pageSize, courseId, startDate, endDate]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  useEffect(() => {
+    if (!enabled || !studentId) return;
+
+    const refresh = () => {
+      void fetchAll();
+    };
+
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === 'attendance_last_updated') {
+        refresh();
+      }
+    };
+
+    window.addEventListener('attendance:updated', refresh as EventListener);
+    window.addEventListener('storage', onStorage);
+
+    return () => {
+      window.removeEventListener('attendance:updated', refresh as EventListener);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [enabled, studentId, fetchAll]);
   return { history, summary, dashboard, warnings, loading, error, refetch: fetchAll };
 }
 

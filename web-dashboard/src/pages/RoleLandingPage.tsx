@@ -3,7 +3,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Layout } from '../components';
 import { DashboardPage } from './DashboardPage';
 import { TeacherDashboard, type TeacherPeriod } from './TeacherDashboard';
-import { StudentDashboard } from './StudentDashboard';
 import { attendanceAPI } from '../services/api';
 import { getStoredRole } from '../utils/roles';
 
@@ -159,7 +158,7 @@ export const RoleLandingPage: React.FC = () => {
 
     return (
       <Layout>
-        <StudentDashboard studentId={userId} />
+        <DashboardPage />
       </Layout>
     );
   }

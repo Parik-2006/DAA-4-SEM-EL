@@ -37,6 +37,7 @@ import { AttendancePage }          from './pages/AttendancePage';
 import { HistoryPage }             from './pages/HistoryPage';
 import RoleLandingPage             from './pages/RoleLandingPage';
 import FaceRegistrationPage        from './pages/FaceRegistrationPage';
+import QRCodePage                  from './pages/QRCodePage';
 import BatchImportPage             from './pages/BatchImportPage';
 import StudentManagementPage       from './pages/StudentManagementPage';
 import CourseManagementPage        from './pages/CourseManagementPage';
@@ -61,12 +62,16 @@ export function isStudent() { return isSessionStudent(getStoredRole()); }
 
 const ROLE_ALLOWED: Record<NonNullable<UserRole>, string[]> = {
   admin: [
-    '/dashboard', '/attendance', '/face', '/history',
-    '/analytics', '/batch-import', '/student-management',
-    '/course-management', '/timetable', '/class-views', '/profile', '/student-dashboard',
+    '/dashboard', '/attendance', '/face', '/face-registration', '/history',
+    '/analytics', '/batch-import', '/student-management', '/qr-attendance',
+    '/course-management', '/settings', '/timetable', '/class-views', '/profile', '/student-dashboard',
   ],
-  teacher: ['/dashboard', '/attendance', '/face', '/history', '/profile', '/student-dashboard'],
-  student: ['/dashboard', '/face', '/history', '/profile', '/student-dashboard'],
+  teacher: [
+    '/dashboard', '/attendance', '/face', '/face-registration', '/history',
+    '/analytics', '/batch-import', '/student-management', '/qr-attendance',
+    '/course-management', '/settings', '/timetable', '/class-views', '/profile', '/student-dashboard',
+  ],
+  student: ['/dashboard', '/face', '/history', '/analytics', '/profile', '/student-dashboard'],
 };
 
 function defaultRouteFor(role: UserRole): string {
@@ -123,6 +128,11 @@ const RoleDashboard: React.FC = () => <RoleLandingPage />;
  * this internally based on the stored role.
  */
 const RoleAttendancePage: React.FC = () => <AttendancePage />;
+
+const RoleAnalyticsPage: React.FC = () => {
+  const role = getStoredRole();
+  return role === 'student' ? <StudentDashboardPage /> : <AttendanceAnalyticsPage />;
+};
 
 // ── Auth Gate ─────────────────────────────────────────────────────────────────
 
@@ -254,6 +264,11 @@ export const AppRouter: React.FC = () => (
         element={protect('/face', <FaceRegistrationPage />)}
       />
 
+      <Route
+        path="/face-registration"
+        element={protect('/face-registration', <FaceRegistrationPage />)}
+      />
+
       {/* ── History ──────────────────────────────────────────────────────── */}
 
       <Route
@@ -289,7 +304,17 @@ export const AppRouter: React.FC = () => (
       */}
       <Route
         path="/analytics"
-        element={protect('/analytics', <AttendanceAnalyticsPage />)}
+        element={protect('/analytics', <RoleAnalyticsPage />)}
+      />
+
+      <Route
+        path="/qr-attendance"
+        element={protect('/qr-attendance', <QRCodePage />)}
+      />
+
+      <Route
+        path="/settings"
+        element={protect('/settings', <ProfilePage />)}
       />
 
       <Route

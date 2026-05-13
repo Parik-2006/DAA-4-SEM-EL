@@ -21,11 +21,19 @@ GET /api/v1/student/warnings
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any
 
+import logging
 from fastapi import APIRouter, HTTPException, Query
 
 from database.firebase_client import FirebaseClient
+
+# ── firebase_admin guard for RTDB NotFound
+try:
+    from firebase_admin import exceptions as fb_exceptions
+    _FIREBASE_NOT_FOUND = fb_exceptions.NotFoundError
+except Exception:  # pragma: no cover
+    _FIREBASE_NOT_FOUND = Exception
 
 # ── Security ───────────────────────────────────────────────────────────────────
 from decorators.auth_decorators import (
@@ -36,6 +44,8 @@ from services.auth_service import UserContext
 # ──────────────────────────────────────────────────────────────────────────────
 
 from services.student_service import StudentService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/student", tags=["student"])
 
@@ -69,8 +79,11 @@ async def get_today_attendance(
         if data and isinstance(data, dict):
             return data
         return {"status": "not_marked"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except _FIREBASE_NOT_FOUND:
+        return {"status": "not_marked"}
+    except Exception as exc:
+        logger.error("student_secured.get_today_attendance | student_id=%s | exc=%s", student_id, exc)
+        raise HTTPException(status_code=500, detail="Could not retrieve attendance record.")
 
 
 @router.get(

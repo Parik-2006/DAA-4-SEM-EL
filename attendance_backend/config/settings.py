@@ -7,10 +7,26 @@ using Pydantic's BaseSettings, ensuring type safety and validation.
 
 from functools import lru_cache
 from typing import List
+import re
 from pathlib import Path
 
 from pydantic_settings import BaseSettings
 from pydantic import Field, validator
+
+# RTDB URL must be a real Firebase endpoint, not placeholders.
+_RTDB_URL_RE = re.compile(
+    r"^https://[a-zA-Z0-9][a-zA-Z0-9\-]*"
+    r"(\.firebaseio\.com|(\.[a-z0-9\-]+)?\.firebasedatabase\.app)/?$"
+)
+_PLACEHOLDER_FRAGMENTS = frozenset({
+    "your-project",
+    "placeholder",
+    "example",
+    "change-me",
+    "replace",
+    "todo",
+    "<project",
+})
 
 
 class Settings(BaseSettings):
@@ -58,7 +74,7 @@ class Settings(BaseSettings):
         alias="FIREBASE_CREDENTIALS_PATH"
     )
     firebase_database_url: str = Field(
-        default="https://your-project.firebaseio.com",
+        default="",
         alias="FIREBASE_DATABASE_URL"
     )
     firebase_collection_students: str = Field(
@@ -107,6 +123,40 @@ class Settings(BaseSettings):
     }
     
     # ============ Validators ============
+
+    @validator("firebase_database_url")
+    def validate_rtdb_url(cls, v: str) -> str:
+        """
+        Reject missing, placeholder, or malformed RTDB URLs at startup.
+        """
+        if not v or not v.strip():
+            raise ValueError(
+                "FIREBASE_DATABASE_URL is not set.\n"
+                "  -> Open .env and set it to your project's Realtime Database URL.\n"
+                "  -> Example: https://my-app-default-rtdb.firebaseio.com\n"
+                "  -> Find it in Firebase Console -> Realtime Database -> Data tab."
+            )
+
+        v = v.strip().rstrip("/")
+        lower = v.lower()
+
+        for fragment in _PLACEHOLDER_FRAGMENTS:
+            if fragment in lower:
+                raise ValueError(
+                    f"FIREBASE_DATABASE_URL still contains a placeholder ({fragment!r}).\n"
+                    "  -> Replace the placeholder with your real project URL.\n"
+                    f"  -> Got: {v}"
+                )
+
+        if not _RTDB_URL_RE.match(v):
+            raise ValueError(
+                "FIREBASE_DATABASE_URL is malformed.\n"
+                "  -> Must match: https://<project>.firebaseio.com "
+                "or https://<project>.<region>.firebasedatabase.app\n"
+                f"  -> Got: {v}"
+            )
+
+        return v
     
     @validator('fastapi_env')
     def validate_env(cls, v):

@@ -144,26 +144,34 @@ const AdminTimetablePage: React.FC = () => {
                       </div>
                     ) : (
                       periods.map((period, index) => (
+                        (() => {
+                          const periodRecord = period as Record<string, unknown>;
+                          const room = toStringValue(periodRecord.room);
+                          const facultyName = toStringValue(periodRecord.faculty_name);
+                          const periodType = toStringValue(periodRecord.period_type);
+                          return (
                         <div key={`${day}-${index}`} className="rounded-xl border border-slate-200 p-4">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div>
                               <p className="text-sm font-semibold text-slate-900">
-                                {toStringValue(period.course_code, 'COURSE')} - {toStringValue(period.course_name, 'Untitled course')}
+                                {toStringValue(periodRecord.course_code, 'COURSE')} - {toStringValue(periodRecord.course_name, 'Untitled course')}
                               </p>
                               <p className="text-xs text-slate-500">
-                                {toStringValue(period.start_time)} - {toStringValue(period.end_time)}
+                                {toStringValue(periodRecord.start_time)} - {toStringValue(periodRecord.end_time)}
                               </p>
                             </div>
                             <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-600">
-                              {toStringValue(period.class_id, classId)}
+                              {toStringValue(periodRecord.class_id, classId)}
                             </span>
                           </div>
                           <div className="mt-3 flex flex-wrap gap-3 text-xs text-slate-500">
-                            {period.room && <span>Room: {String(period.room)}</span>}
-                            {period.faculty_name && <span>Faculty: {String(period.faculty_name)}</span>}
-                            {period.period_type && <span>Type: {String(period.period_type)}</span>}
+                            {room ? <span>Room: {room}</span> : null}
+                            {facultyName ? <span>Faculty: {facultyName}</span> : null}
+                            {periodType ? <span>Type: {periodType}</span> : null}
                           </div>
                         </div>
+                          );
+                        })()
                       ))
                     )}
                   </div>

@@ -553,6 +553,18 @@ function buildDetectError(err: unknown): DetectFaceResponse {
   };
 }
 
+function publishAttendanceUpdated(): void {
+  try {
+    const payload = String(Date.now());
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('attendance_last_updated', payload);
+      window.dispatchEvent(new CustomEvent('attendance:updated', { detail: { timestamp: payload } }));
+    }
+  } catch (error) {
+    console.warn('[AttendanceAPI] Could not publish attendance update:', error);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // AttendanceAPI
 // ─────────────────────────────────────────────────────────────────────────────
@@ -621,7 +633,7 @@ class AttendanceAPI {
     studentId: string,
     confidence: number
   ): Promise<ConfirmAttendanceResponse> {
-    return withRetry(
+    const response = await withRetry(
       async () => {
         const response = await apiClient.post<ConfirmAttendanceResponse>(
           '/api/v1/attendance/confirm-attendance',
@@ -632,6 +644,8 @@ class AttendanceAPI {
       },
       { ...this.retryConfig, maxRetries: 3 }
     );
+    publishAttendanceUpdated();
+    return response;
   }
 
   /** @deprecated Use detectFaceOnly + confirmAttendance for the two-step flow. */
@@ -1296,6 +1310,35 @@ class AttendanceAPI {
     }
   }
 
+  async getAdminAnalyticsOverview(): Promise<Record<string, unknown>> {
+    try {
+      return await withRetry(async () => {
+        const response = await apiClient.get('/api/v1/admin/analytics/overview');
+        return response.data as Record<string, unknown>;
+      }, this.retryConfig);
+    } catch (err) {
+      console.error('[getAdminAnalyticsOverview] Error:', err);
+      return {};
+    }
+  }
+
+  async getTeacherDashboard(facultyId: string, date?: string): Promise<Record<string, unknown>> {
+    try {
+      return await withRetry(async () => {
+        const response = await apiClient.get('/api/v1/teacher/dashboard', {
+          params: {
+            faculty_id: facultyId,
+            ...(date ? { date } : {}),
+          },
+        });
+        return response.data as Record<string, unknown>;
+      }, this.retryConfig);
+    } catch (err) {
+      console.error('[getTeacherDashboard] Error:', err);
+      return {};
+    }
+  }
+
   async getAllStudents(page = 1, limit = 50): Promise<unknown[]> {
     try {
       return await withRetry(async () => {
@@ -1486,7 +1529,9 @@ class AttendanceAPI {
             method: params.method ?? 'Manual',
             ...(params.date ? { date: params.date } : {}),
           });
-          return response.data;
+          const data = response.data;
+          publishAttendanceUpdated();
+          return data;
         },
         { ...this.retryConfig, maxRetries: 3 },
       );

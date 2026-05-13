@@ -44,6 +44,8 @@ export interface AttendanceEntry {
   record_id?: string;
 }
 
+export type AttendanceStatus = ManualStatus;
+
 interface TeacherStudent {
   student_id: string;
   roll_no: string;

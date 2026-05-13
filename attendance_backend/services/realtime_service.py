@@ -128,15 +128,34 @@ class RealtimeService:
         })
 
         async def _sender() -> None:
-            while True:
-                event = await subscriber.queue.get()
-                await websocket.send_json(event)
+            try:
+                while True:
+                    event = await subscriber.queue.get()
+                    try:
+                        await websocket.send_json(event)
+                    except Exception as e:
+                        # Connection closed or broken — stop sender
+                        logger.debug("WebSocket send failed: %s", type(e).__name__)
+                        raise
+
+            except (ConnectionResetError, BrokenPipeError, RuntimeError) as e:
+                logger.debug("WebSocket connection lost during send: %s", type(e).__name__)
+            except asyncio.CancelledError:
+                pass
 
         async def _receiver() -> None:
-            while True:
-                message = await websocket.receive_text()
-                if message.strip().lower() == "ping":
-                    await websocket.send_json({"event": "pong", "ts": _now()})
+            try:
+                while True:
+                    message = await websocket.receive_text()
+                    if message.strip().lower() == "ping":
+                        try:
+                            await websocket.send_json({"event": "pong", "ts": _now()})
+                        except Exception:
+                            break
+            except (ConnectionResetError, BrokenPipeError, RuntimeError):
+                logger.debug("WebSocket connection lost during receive")
+            except asyncio.CancelledError:
+                pass
 
         sender_task = asyncio.create_task(_sender())
         receiver_task = asyncio.create_task(_receiver())
@@ -147,9 +166,14 @@ class RealtimeService:
                 return_when=asyncio.FIRST_EXCEPTION,
             )
             for task in done:
-                exc = task.exception()
-                if exc and not isinstance(exc, asyncio.CancelledError):
-                    logger.debug("WebSocket connection ended: %s", exc)
+                try:
+                    exc = task.exception()
+                    if exc and not isinstance(exc, asyncio.CancelledError):
+                        logger.debug("WebSocket connection ended: %s", type(exc).__name__)
+                except asyncio.CancelledError:
+                    pass
+        except Exception as e:
+            logger.debug("WebSocket error during wait: %s", type(e).__name__)
         finally:
             for task in (sender_task, receiver_task):
                 task.cancel()

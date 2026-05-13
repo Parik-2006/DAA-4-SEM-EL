@@ -138,7 +138,7 @@ async function fetchJSON<T>(url: string, params?: Record<string, string>): Promi
 
 async function fetchTodayPeriods(studentId: string): Promise<Period[]> {
   try {
-    return await fetchJSON<Period[]>('/api/v1/student/today-periods', { student_id: studentId });
+    return await fetchJSON<Period[]>('/api/v1/student/attendance/today', { student_id: studentId });
   } catch {
     return [
       { period_id: 'p1', course_code: 'CS401', course_name: 'Machine Learning',  start_time: '09:00', end_time: '10:00', faculty_name: 'Dr. Sharma',  room: 'A201',  is_lab_class: false, course_color: '#6366F1', status: 'present' },

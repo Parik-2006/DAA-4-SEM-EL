@@ -31,6 +31,7 @@ API versioning:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -38,6 +39,8 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import logging
 from dotenv import load_dotenv
 
 # ── Routers ───────────────────────────────────────────────────────────────────
@@ -99,8 +102,71 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
+# Suppress noisy Windows asyncio error logs (ProactorEventLoop connection reset messages)
+# These are cosmetic errors that don't affect functionality
+asyncio_logger = logging.getLogger("asyncio")
+asyncio_logger.setLevel(logging.WARNING)
+logging.getLogger("asyncio.proactor_events").setLevel(logging.WARNING)
+logging.getLogger("asyncio.events").setLevel(logging.WARNING)
+
 _INSECURE_JWT_DEFAULT = "CHANGE_ME_IN_PRODUCTION_USE_LONG_RANDOM_STRING"
 _DEV_FALLBACK         = "dev-secret-change-in-production-please"
+
+
+class _WindowsProactorNoiseFilter(logging.Filter):
+    """Drop known-benign Windows Proactor connection-reset tracebacks."""
+
+    _NOISY_CALLBACKS = (
+        "_ProactorBasePipeTransport._call_connection_lost",
+        "_ProactorReadPipeTransport._loop_reading",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if "ConnectionResetError" not in message and "WinError 10054" not in message:
+            return True
+        return not any(callback in message for callback in self._NOISY_CALLBACKS)
+
+
+def _install_windows_proactor_noise_filter() -> None:
+    filter_instance = _WindowsProactorNoiseFilter()
+    for logger_name in ("asyncio", "asyncio.proactor_events", "asyncio.events"):
+        logging.getLogger(logger_name).addFilter(filter_instance)
+
+
+def _install_windows_asyncio_exception_filter() -> None:
+    """Suppress benign Windows Proactor connection-reset tracebacks.
+
+    On Windows, idle browser connections and short-lived HTTP clients can
+    trigger `ConnectionResetError: [WinError 10054]` inside asyncio's
+    transport cleanup path. The default event-loop handler prints a noisy
+    traceback even though the request/response cycle already completed.
+
+    We only swallow the specific Proactor transport disconnect and defer every
+    other exception to the original handler.
+    """
+
+    loop = asyncio.get_event_loop()
+    previous_handler = loop.get_exception_handler()
+
+    def _exception_handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+        exception = context.get("exception")
+        message = context.get("message", "")
+
+        is_benign_windows_reset = (
+            isinstance(exception, ConnectionResetError)
+            and getattr(exception, "winerror", None) == 10054
+            and "_ProactorBasePipeTransport._call_connection_lost" in message
+        )
+
+        if is_benign_windows_reset:
+            logger.debug("Suppressed benign Windows connection reset: %s", message)
+            return
+
+        if previous_handler is not None:
+            previous_handler(loop, context)
+        else:
+            loop.default_exception_handler(context)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -110,6 +176,14 @@ _DEV_FALLBACK         = "dev-secret-change-in-production-please"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("═══ %s v%s — STARTUP ═══", SYSTEM_NAME, SYSTEM_VERSION)
+
+    if os.name == "nt":
+        try:
+            _install_windows_proactor_noise_filter()
+            _install_windows_asyncio_exception_filter()
+            logger.info("✓ Windows asyncio noise filter installed")
+        except Exception as exc:
+            logger.warning("⚠ Could not install Windows asyncio noise filter: %s", exc)
 
     # 1. Firebase / Firestore ─────────────────────────────────────────────────
     firebase_svc = firestore_db = None
@@ -251,9 +325,27 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=CORS_ALLOW_CREDENTIALS,
-    allow_methods=CORS_ALLOWED_METHODS,
-    allow_headers=CORS_ALLOWED_HEADERS,
+    # Accept all methods/headers for robust preflight handling; keep origins scoped.
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
+
+# Global HTTP middleware to catch unhandled exceptions and return JSON
+@app.middleware("http")
+async def catch_exceptions_middleware(request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as exc:  # catch everything from endpoints/dependencies
+        logging.getLogger("attendance_api").exception("Unhandled request exception: %s", exc)
+        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
+# Also register a generic exception handler (fallback for other execution paths)
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    logging.getLogger("attendance_api").exception("Unhandled exception: %s", exc)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -299,4 +391,31 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    import asyncio
+    import sys
+    
+    # ── Windows asyncio fix ──────────────────────────────────────────────────
+    # ProactorEventLoop on Windows has bugs with connection handling.
+    # Use WindowsSelectorEventLoop instead for better stability.
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        logger.info("✓ Using WindowsSelectorEventLoop for Windows stability")
+    
+    # ── Uvicorn configuration ────────────────────────────────────────────────
+    # Parameters optimized for Windows stability and connection handling:
+    # - timeout_keep_alive: reduce timeout to clean up idle connections
+    # - ws_ping_interval: keep WebSocket connections alive
+    # - ws_ping_timeout: detect dead WebSocket connections
+    # - loop: use "auto" to respect the event loop policy above
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="info",
+        loop="auto",
+        timeout_keep_alive=5,          # Close idle connections after 5s
+        ws_ping_interval=20,            # Send WebSocket ping every 20s
+        ws_ping_timeout=20,             # Wait 20s for pong response
+        access_log=True,
+        use_colors=True,
+    )

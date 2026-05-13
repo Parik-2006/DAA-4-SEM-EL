@@ -136,6 +136,9 @@ def _sign(header_b64: str, payload_b64: str, secret: str) -> str:
     sig = hmac.new(secret.encode(), msg, hashlib.sha256).digest()
     return _b64url_encode(sig)
 
+# Detailed auth logger for debugging token issues
+_auth_log = logging.getLogger("attendance_backend.services.auth_service")
+
 
 class AuthService:
     """Handles JWT issuance and validation."""
@@ -190,20 +193,28 @@ class AuthService:
         try:
             parts = token.split(".")
             if len(parts) != 3:
+                _auth_log.debug("Malformed token parts: %s", parts)
                 raise ValueError("Malformed token: expected 3 parts")
             h64, p64, sig = parts
 
             # Verify signature
             expected_sig = _sign(h64, p64, self._secret)
             if not hmac.compare_digest(sig, expected_sig):
+                _auth_log.warning("Token signature mismatch. expected=%s received=%s", expected_sig, sig)
                 raise ValueError("Invalid token signature")
 
-            payload: Dict[str, Any] = json.loads(_b64url_decode(p64))
+            try:
+                payload: Dict[str, Any] = json.loads(_b64url_decode(p64))
+            except Exception as exc:
+                _auth_log.exception("Failed to decode payload b64: %s", exc)
+                raise
 
             # Check expiry
             if int(time.time()) > payload.get("exp", 0):
+                _auth_log.info("Token expired for user=%s exp=%s now=%s", payload.get("user_id"), payload.get("exp"), int(time.time()))
                 raise ValueError("Token has expired")
 
+            _auth_log.debug("Token payload validated for user=%s", payload.get("user_id"))
             return UserContext(
                 user_id=payload["user_id"],
                 email=payload.get("email", ""),
@@ -216,6 +227,7 @@ class AuthService:
         except ValueError:
             raise
         except Exception as exc:
+            _auth_log.exception("Unexpected error decoding token: %s", exc)
             raise ValueError(f"Token decode failed: {exc}") from exc
 
     # ── Static method for middleware (wraps decode_token) ─────────────────────

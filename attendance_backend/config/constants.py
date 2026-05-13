@@ -511,7 +511,12 @@ else:
     CORS_ALLOWED_ORIGINS_PATTERN = None
 
 CORS_ALLOWED_METHODS     = ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"]
-CORS_ALLOWED_HEADERS     = ["Content-Type", "Authorization", "X-Requested-With"]
+CORS_ALLOWED_HEADERS     = [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "X-Student-Token",
+]
 CORS_ALLOW_CREDENTIALS: Final[bool] = True
 
 # ───────────────────────────────────────────────────────────────

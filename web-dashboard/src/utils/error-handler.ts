@@ -29,9 +29,10 @@ export class AppError extends Error {
 
   static fromAxiosError(error: AxiosError): AppError {
     const status = error.response?.status;
+    const responseData = error.response?.data as Record<string, unknown> | undefined;
     const detail =
-      error.response?.data?.detail ||
-      error.response?.data?.message ||
+      responseData?.detail ||
+      responseData?.message ||
       error.message ||
       'Unknown error';
 

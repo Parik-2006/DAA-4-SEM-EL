@@ -46,6 +46,34 @@ Design notes
 * A 5-second in-process cache is maintained per section_id for the teacher
   "active-class" roster.  The cache is busted whenever ``attendance_marked``
   or ``bulk_attendance`` events are broadcast for that section.
+
+Hardening (2024-05 pass)
+------------------------
+_validate_token (line ~49)
+    ``fb.get_reference(f"auth_tokens/{token}").get()`` — result guarded:
+    returns None immediately if RTDB node is absent (returns None from Firebase)
+    or if the value is not a dict (unexpected scalar/list in the tree).
+    Avoids AttributeError on ``.get("revoked")`` for non-dict nodes.
+
+_authorise teacher branch (line ~80)
+    BUG FIX: original code read ``course_assignments`` via the Realtime DB
+    client (``fb.get_reference("course_assignments").get()``) but
+    ``course_assignments`` is a *Firestore* collection, not an RTDB path.
+    The RTDB read would return None (node doesn't exist) → ``or {}`` silently
+    made every teacher lookup return an empty assigned_sections set → teachers
+    were incorrectly denied WebSocket access to their own sections.
+
+    Fix: use FirebaseClient().get_teacher_sections(teacher_id) which reads
+    from Firestore (the canonical location) and returns List[str].
+    RTDB fallback retained only for legacy deployments that still mirror
+    course_assignments into RTDB; if Firestore raises, fallback to RTDB and
+    log a warning.
+
+_authorise student branch (line ~92)
+    ``fb.get_reference(f"users/{client_id}").get()`` — result coerced via
+    ``or {}`` (was already present).  Added explicit ``isinstance`` guard so a
+    non-dict RTDB node (e.g. accidental scalar write) returns {} rather than
+    causing ``AttributeError`` on ``.get("class_id")``.
 """
 
 from __future__ import annotations
@@ -71,18 +99,29 @@ async def _validate_token(token: str) -> Optional[Dict[str, Any]]:
 
     Returns the token document on success, None on failure.
 
-    Stub – replace with JWT verification in production.
+    Hardening: RTDB `.get()` may return None (missing node), a scalar, or a
+    list for pathological data.  All non-dict results are treated as invalid
+    tokens rather than crashing with AttributeError.
     """
     if not token:
         return None
     try:
         from database.firebase_client import FirebaseClient
-        fb = FirebaseClient()
-        doc = fb.get_reference(f"auth_tokens/{token}").get()
-        if doc and isinstance(doc, dict) and not doc.get("revoked"):
-            return doc
+        fb  = FirebaseClient()
+        raw = fb.get_reference(f"auth_tokens/{token}").get()
+        if raw is None:
+            # Node does not exist in RTDB — token unknown
+            logger.debug("_validate_token: token node absent for '%s'", token[:8] + "…")
+        elif not isinstance(raw, dict):
+            logger.warning(
+                "_validate_token: unexpected type %s for token '%s…' — treating as invalid",
+                type(raw).__name__, token[:8],
+            )
+        elif not raw.get("revoked"):
+            return raw
     except Exception as exc:
         logger.warning("Token validation error: %s", exc)
+
     # Dev fallback: treat any non-empty token as valid so local testing works
     # REMOVE THIS IN PRODUCTION
     if token.startswith("dev_"):
@@ -104,8 +143,20 @@ async def _authorise(
     Rules
     -----
     • admin  → any section_id (including ADMIN_GLOBAL)
-    • teacher → only sections in their ``course_assignments`` Firebase record
-    • student → only their own ``class_id`` Firebase record
+    • teacher → only sections returned by FirebaseClient.get_teacher_sections()
+                (Firestore — the authoritative store for course_assignments).
+    • student → only their own ``class_id`` from the RTDB users node.
+
+    IMPORTANT — teacher authorisation fix
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    The original implementation read ``course_assignments`` via the RTDB client.
+    ``course_assignments`` is stored in Firestore, not RTDB.  The RTDB path
+    returns None → ``or {}`` iteration produces an empty assigned_sections set
+    → every teacher WebSocket connection was denied with "not authorised".
+
+    The fix uses ``FirebaseClient.get_teacher_sections(teacher_id)`` (Firestore)
+    as the primary path.  If Firestore is unavailable an RTDB fallback is
+    attempted for legacy deployments, with a warning log.
     """
     if role == "admin":
         return True
@@ -115,18 +166,57 @@ async def _authorise(
         fb = FirebaseClient()
 
         if role == "teacher":
-            # Look up faculty assignments
-            assignments_raw = fb.get_reference(f"course_assignments").get() or {}
-            assigned_sections = {
-                v.get("class_id")
-                for v in assignments_raw.values()
-                if isinstance(v, dict) and v.get("faculty_id") == client_id
-            }
-            return section_id in assigned_sections
+            # ── Primary: Firestore course_assignments (correct) ──────────────
+            try:
+                assigned_sections = set(fb.get_teacher_sections(client_id))
+                if assigned_sections:
+                    return section_id in assigned_sections
+                # Empty set from Firestore — may mean not assigned, or Firestore
+                # not yet populated.  Fall through to RTDB legacy path.
+                logger.debug(
+                    "_authorise: no Firestore sections for teacher '%s', trying RTDB fallback",
+                    client_id,
+                )
+            except Exception as fs_exc:
+                logger.warning(
+                    "_authorise: Firestore get_teacher_sections failed for '%s': %s — "
+                    "falling back to RTDB legacy path",
+                    client_id, fs_exc,
+                )
+
+            # ── Fallback: RTDB legacy mirror (some deployments still write here) ─
+            try:
+                raw = fb.get_reference("course_assignments").get()
+                if not isinstance(raw, dict):
+                    if raw is not None:
+                        logger.warning(
+                            "_authorise: RTDB course_assignments is type %s (expected dict)",
+                            type(raw).__name__,
+                        )
+                    return False
+                assigned_sections = {
+                    v.get("class_id")
+                    for v in raw.values()
+                    if isinstance(v, dict) and v.get("faculty_id") == client_id
+                }
+                return section_id in assigned_sections
+            except Exception as rtdb_exc:
+                logger.warning(
+                    "_authorise: RTDB course_assignments fallback failed for '%s': %s",
+                    client_id, rtdb_exc,
+                )
+            return False
 
         if role == "student":
             # Student may only watch their own class
-            user = fb.get_reference(f"users/{client_id}").get() or {}
+            raw  = fb.get_reference(f"users/{client_id}").get()
+            # Guard: treat None, scalars, and lists as "user not found"
+            user = raw if isinstance(raw, dict) else {}
+            if raw is not None and not isinstance(raw, dict):
+                logger.warning(
+                    "_authorise: RTDB users/%s is type %s (expected dict)",
+                    client_id, type(raw).__name__,
+                )
             return user.get("class_id") == section_id
 
     except Exception as exc:
