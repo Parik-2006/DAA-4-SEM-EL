@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 class IdentityScopeType(str, Enum):
     SELF    = "self"      # student: match only own embeddings
+    SELF_VERIFY = "self_verify"  # logged-in student: anchored quick-accept path
     SECTION = "section"   # teacher: match only section's enrolled students
     GLOBAL  = "global"    # admin / legacy: full index scan
 
@@ -38,3 +39,4 @@ class ScopedMatchResult:
     candidates_searched: int
     message: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
+    quick_accept: bool = False

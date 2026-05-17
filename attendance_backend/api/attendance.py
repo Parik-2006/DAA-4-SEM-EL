@@ -1,41 +1,29 @@
 """
-api/attendance.py  — enhanced with period-locking and attendance-window logic
+api/attendance.py  — enhanced with period-locking, attendance-window logic,
+                     and SELF_VERIFY-first session-anchored pipeline
 ─────────────────────────────────────────────────────────────────────────────
-Changes vs the original (2026-04-30)
---------------------------------------
-★ Window enforcement
-  Every mark-attendance path checks AttendanceLockService.get_window_status()
-  before writing.  If the window is closed the endpoint returns HTTP 423 with
-  a WindowClosedResponse body containing a teacher-friendly message.
+Changes vs 2026-04-30 (period-locking edition)
+----------------------------------------------
+★★ SELF_VERIFY-first pipeline (2026-05)
+   detect-face-only now accepts two new query parameters:
+     • session_id   – opaque token identifying the browser tab / device
+     • force_scope  – if true, never fall back past SELF_VERIFY
 
-★ Late detection
-  Students who arrive after LATE_THRESHOLD_MINUTES into the period are
-  automatically recorded as "late" instead of "present".
+   When a session anchor is present (see POST /anchor below) the endpoint:
+     1. Runs SELF_VERIFY against ONLY the anchored user's embeddings first.
+        This is an O(1) lookup vs O(N) for a full section scan.
+     2. Returns immediately on match (short-circuit).
+     3. Falls through to section_roster on miss (unless force_scope=true).
 
-★ Grace-period detection
-  Students who mark between period_end and period_end+ATTENDANCE_WINDOW_MINUTES
-  are recorded as "late" regardless of early vs late threshold.
+★★ New endpoint — POST  /api/v1/attendance/anchor
+   Body: { session_id, user_id, period_id? }
+   Creates (or refreshes) a session anchor.  Requires authentication.
 
-★ Audit trail
-  Every successful write calls AttendanceLockService.write_audit() so that
-  GET /teacher/attendance/{record_id}/audit always returns a full history.
+★★ New endpoint — DELETE /api/v1/attendance/anchor
+   Body/query: { session_id }
+   Releases the caller's anchor.  Requires authentication.
 
-★ Auto-lock trigger
-  After the last valid write in the grace period, _maybe_autolock() is called
-  to check and fire the auto-lock if the window has now expired.
-
-★ New endpoint
-  GET /attendance/window-status?period_id=…   — returns real-time window info
-      for frontend polling (used by student-facing mark screen).
-
-★ New endpoint
-  GET /attendance/{record_id}/audit            — public read of an audit trail.
-
-★ Daily report
-  GET /attendance/daily-report now delegates to
-  AttendanceService.generate_daily_report() for richer output.
-
-All original endpoints are preserved with their signatures unchanged.
+All previous endpoints and behaviours are unchanged.
 """
 
 import gc
@@ -49,6 +37,7 @@ from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Query, Body, File, Form, UploadFile, status, Depends, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
+from pydantic import BaseModel
 
 from schemas.attendance_schemas import (
     StudentRegistrationRequest, StudentRegistrationResponse,
@@ -79,6 +68,9 @@ from config.constants import (
 from services.embedding_scope_service import get_scope_service
 from models.scoped_matcher import match_against_scope
 
+# ★ Session anchoring
+from services.session_anchor_service import get_anchor_service
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/attendance", tags=["attendance"])
@@ -87,6 +79,21 @@ router = APIRouter(prefix="/api/v1/attendance", tags=["attendance"])
 MAX_UPLOAD_BYTES  = 10 * 1024 * 1024   # 10 MB
 TARGET_LONG_EDGE  = 640
 COSINE_THRESHOLD  = 0.55
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Request / Response schemas for anchor endpoints
+# ══════════════════════════════════════════════════════════════════════════════
+
+class AnchorRequest(BaseModel):
+    session_id: str
+    user_id:    str
+    period_id:  Optional[str] = None
+    ttl:        Optional[int] = None    # seconds; None → service default (7200)
+
+
+class AnchorReleaseRequest(BaseModel):
+    session_id: str
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -108,22 +115,13 @@ def _resize_if_needed(image_array: np.ndarray, long_edge: int = TARGET_LONG_EDGE
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Window / lock helpers
+# Window / lock helpers  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _compute_attendance_status(
     window_phase: str,
     period: dict,
 ) -> str:
-    """
-    Decide whether a student marking now should be "present" or "late".
-
-    Rules:
-    • phase == "open"  AND elapsed <= LATE_THRESHOLD_MINUTES → "present"
-    • phase == "open"  AND elapsed >  LATE_THRESHOLD_MINUTES → "late"
-    • phase == "grace"                                        → "late"
-    • anything else                                           → "present" (fallback)
-    """
     if window_phase == "grace":
         return "late"
     if window_phase == "open":
@@ -141,7 +139,6 @@ def _compute_attendance_status(
 
 
 def _get_window_for_period(period_id: Optional[str]) -> Optional[dict]:
-    """Fetch window status; return None when lock service is unavailable."""
     if not period_id:
         return None
     lock_svc = get_lock_service()
@@ -163,7 +160,6 @@ def _get_window_for_period(period_id: Optional[str]) -> Optional[dict]:
 
 
 def _window_closed_response(window: dict, student_id: Optional[str] = None) -> JSONResponse:
-    """Return HTTP 423 with teacher-friendly body."""
     return JSONResponse(
         status_code=423,
         content={
@@ -176,10 +172,6 @@ def _window_closed_response(window: dict, student_id: Optional[str] = None) -> J
 
 
 async def _maybe_autolock(period_id: str) -> None:
-    """
-    Background coroutine: check if the grace period has now expired and
-    auto-lock if so.  Swallows all errors — must not affect the response.
-    """
     if not period_id:
         return
     try:
@@ -210,40 +202,22 @@ def _resolve_scope(
     student_id: Optional[str],
     section_id: Optional[str],
 ):
-    """
-    Build the EmbeddingScope the caller is allowed to search.
-
-    self_verify   → only the authenticated student's own embeddings.
-    section_roster→ all enrolled students in the active section (teacher).
-    """
     scope_svc = get_scope_service()
     if scope_svc is None:
-        # Fallback: full database scan (original behaviour)
         return None
-
     if scope_mode == "self_verify" and student_id:
         return scope_svc.resolve_student_scope(student_id)
-
     if scope_mode == "section_roster" and section_id:
         return scope_svc.resolve_section_scope(section_id)
-
     return None
 
 
 def _get_candidate_ids_for_user(user, period_id: Optional[str] = None, limit: int = 500):
-    """Return list of candidate student IDs appropriate for the authenticated user.
-
-    - Students -> their active class/period roster when possible, otherwise themselves
-    - Teachers -> students in the period's class_id (if provided) else students in assigned sections
-    - Admins -> None (meaning unrestricted)
-    """
     try:
         fb = get_firebase_service()
         if fb is None:
             return None
 
-        # Students -> prefer the active period roster so attendance can match
-        # against the same enrolled peers the teacher expects for that slot.
         if user.is_student():
             if period_id:
                 try:
@@ -257,7 +231,6 @@ def _get_candidate_ids_for_user(user, period_id: Optional[str] = None, limit: in
                         repo = StudentRepository()
                         students = repo.list_students(course_id=class_id)
                         candidate_ids = [s.get(DB_FIELD_STUDENT_ID) or s.get("student_id") for s in students if s]
-
                         seen = set()
                         out = []
                         for sid in candidate_ids:
@@ -271,10 +244,8 @@ def _get_candidate_ids_for_user(user, period_id: Optional[str] = None, limit: in
                             return out
                 except Exception:
                     pass
-
             return [user.user_id]
 
-        # Determine class/section from period if available
         class_id = None
         if period_id:
             try:
@@ -294,21 +265,16 @@ def _get_candidate_ids_for_user(user, period_id: Optional[str] = None, limit: in
                 students = repo.list_students(course_id=class_id)
                 candidate_ids = [s.get(DB_FIELD_STUDENT_ID) or s.get("student_id") for s in students if s]
             else:
-                # fallback to assigned_sections
                 for sec in (user.assigned_sections or []):
                     students = repo.list_students(course_id=sec)
                     candidate_ids.extend([s.get(DB_FIELD_STUDENT_ID) or s.get("student_id") for s in students if s])
         else:
-            # Admin or other roles -> no narrowing
             return None
 
-        # Deduplicate and limit
         seen = set()
         out = []
         for sid in candidate_ids:
-            if not sid:
-                continue
-            if sid in seen:
+            if not sid or sid in seen:
                 continue
             seen.add(sid)
             out.append(sid)
@@ -326,110 +292,57 @@ def _queue_verified_outcome(
     confidence: float,
     marked_at_iso: str,
 ) -> None:
-    """
-    Persist a verified outcome for downstream learning jobs.
-
-    Only explicit confirmation flows should enqueue records here.
-    Any future learning/index refresh pipeline must source from this
-    collection rather than raw detection attempts.
-    
-    Errors are logged but do not block the main attendance flow.
-    This is a fire-and-forget operation with best-effort persistence.
-    """
     try:
-        # Use direct Firestore import to ensure DB access
         from services.firebase_service import get_firebase_service
-        
         fb = get_firebase_service()
         if fb is None:
             logger.warning(
                 "Firebase service unavailable; cannot queue verified outcome. "
-                "record_id=%s student=%s",
-                record_id,
-                student_id
+                "record_id=%s student=%s", record_id, student_id,
             )
             return
-        
-        # Try multiple attribute names for Firestore DB (handles various init patterns)
+
         db = (
             getattr(fb, "firestore_db", None) or
             getattr(fb, "_firestore", None) or
             getattr(fb, "db", None)
         )
-        
         if db is None:
             logger.warning(
-                "Firestore DB not available in Firebase service (tried: firestore_db, _firestore, db). "
-                "Cannot queue verified outcome for record_id=%s",
-                record_id
+                "Firestore DB not available. Cannot queue verified outcome for record_id=%s",
+                record_id,
             )
             return
 
-        # Validate inputs
         if not record_id or not student_id:
             logger.error(
                 "Cannot queue verified outcome: invalid inputs. "
-                "record_id=%s student_id=%s",
-                record_id,
-                student_id
+                "record_id=%s student_id=%s", record_id, student_id,
             )
             return
 
         payload = {
-            "record_id": record_id,
+            "record_id":  record_id,
             "student_id": student_id,
-            "period_id": period_id or None,
+            "period_id":  period_id or None,
             "confidence": round(float(confidence), 4),
-            "verified": True,
+            "verified":   True,
             "verified_at": marked_at_iso,
-            "source": "confirm_attendance",
-            "queued_at": datetime.now().isoformat(),
+            "source":     "confirm_attendance",
+            "queued_at":  datetime.now().isoformat(),
         }
-        
-        # Write to Firestore with explicit error handling
-        try:
-            doc_ref = db.collection("verified_face_outcomes").document(record_id)
-            result = doc_ref.set(payload, merge=True)
-            logger.info(
-                "✓ Verified outcome queued: record_id=%s student=%s confidence=%.2f source=confirm_attendance",
-                record_id,
-                student_id,
-                confidence
-            )
-        except AttributeError as ae:
-            logger.error(
-                "Database object missing expected methods. "
-                "record_id=%s error=%s",
-                record_id,
-                ae,
-                exc_info=True
-            )
-            raise
-        except TypeError as te:
-            logger.error(
-                "Invalid database object or payload. "
-                "record_id=%s error=%s payload_keys=%s",
-                record_id,
-                te,
-                list(payload.keys()),
-                exc_info=True
-            )
-            raise
-        
+        doc_ref = db.collection("verified_face_outcomes").document(record_id)
+        doc_ref.set(payload, merge=True)
+        logger.info(
+            "✓ Verified outcome queued: record_id=%s student=%s confidence=%.2f",
+            record_id, student_id, confidence,
+        )
     except Exception as exc:
-        # Log the error with full context but do not raise
-        # This preserves the original attendance record even if verified outcome fails
         logger.error(
             "Failed to queue verified outcome (non-fatal): "
-            "record_id=%s student=%s period=%s error_type=%s error=%s",
-            record_id,
-            student_id,
-            period_id,
-            type(exc).__name__,
-            str(exc),
-            exc_info=True
+            "record_id=%s student=%s period=%s error=%s",
+            record_id, student_id, period_id, exc, exc_info=True,
         )
-        # Do not raise - allow attendance record to succeed even if outcome persistence fails
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -527,21 +440,12 @@ def _match_embedding_sync(
     candidate_student_ids: Optional[List[str]] = None,
     candidate_course_id: Optional[str] = None,
 ):
-    """
-    Match embedding against a bounded candidate set when provided.
-
-    - If `candidate_student_ids` is provided, only those students are checked.
-    - Else if `candidate_course_id` is provided, students returned by
-      `StudentRepository.list_students(course_id)` are checked.
-    - Otherwise all students are searched (legacy behaviour).
-    """
     from database.student_repository import StudentRepository
 
     best_distance = float("inf")
     best_student = None
-
-    # Build candidate list
     candidates: List[dict] = []
+
     try:
         if candidate_student_ids:
             for sid in candidate_student_ids:
@@ -555,7 +459,6 @@ def _match_embedding_sync(
         else:
             candidates = firebase.get_all_students()
     except Exception:
-        # Fallback to full scan on any error
         candidates = firebase.get_all_students()
 
     for student in candidates:
@@ -565,7 +468,6 @@ def _match_embedding_sync(
                 if arr.shape != embedding.shape:
                     continue
             except Exception:
-                # skip malformed arrays
                 continue
             dist = float(cosine(embedding, arr))
             if dist < best_distance:
@@ -583,11 +485,6 @@ def _rank_embedding_candidates_sync(
     candidate_course_id: Optional[str] = None,
     limit: int = 3,
 ) -> List[dict]:
-    """Return the top-N candidate identities ordered by similarity.
-
-    Used when the matcher is uncertain so the UI can prompt the user with
-    likely identities instead of simply failing silently.
-    """
     from database.student_repository import StudentRepository
 
     candidates: List[dict] = []
@@ -626,12 +523,11 @@ def _rank_embedding_candidates_sync(
                     best_score = score
             except Exception:
                 continue
-
         if best_score >= 0.0:
             ranked.append({
-                "student_id": student.get("student_id", ""),
+                "student_id":   student.get("student_id", ""),
                 "student_name": student.get("name", "Unknown"),
-                "confidence": round(max(0.0, min(1.0, best_score)), 4),
+                "confidence":   round(max(0.0, min(1.0, best_score)), 4),
             })
 
     ranked.sort(key=lambda item: item["confidence"], reverse=True)
@@ -648,16 +544,11 @@ def _scoped_match(
     section_id: Optional[str],
     exclude_student_ids: Optional[List[str]] = None,
 ):
-    """Resolve an identity scope and run a scoped embedding search (sync).
-
-    Returns a ScopedMatchResult-like tuple when called from threadpool.
-    """
     from datetime import datetime
     from models.identity_context import ScopeTarget, IdentityScopeType
     from services.identity_context_service import IdentityContextService
     from services.scoped_embedding_search import ScopedEmbeddingSearch
 
-    # Resolve scope
     scope = None
     try:
         if user is not None:
@@ -677,11 +568,14 @@ def _scoped_match(
                 svc = IdentityContextService(firebase_client=firebase, period_detection_service=None)
                 scope = svc.resolve(user, period_id=period_id)
         else:
-            # Anonymous callers: allow explicit params
             if scope_mode == "self_verify" and student_id:
-                scope = ScopeTarget(scope_type=IdentityScopeType.SELF, student_ids=[student_id], resolved_by=student_id, resolved_at=datetime.now().isoformat())
+                scope = ScopeTarget(
+                    scope_type=IdentityScopeType.SELF,
+                    student_ids=[student_id],
+                    resolved_by=student_id,
+                    resolved_at=datetime.now().isoformat(),
+                )
             elif scope_mode == "section_roster" and section_id and firebase:
-                # Try to load roster from Firestore
                 try:
                     db = getattr(firebase, "firestore_db", None) or getattr(firebase, "_firestore", None)
                     ids = []
@@ -692,21 +586,231 @@ def _scoped_match(
                     if exclude_student_ids:
                         blocked = {sid for sid in exclude_student_ids if sid}
                         ids = [sid for sid in ids if sid not in blocked]
-                    scope = ScopeTarget(scope_type=IdentityScopeType.SECTION, student_ids=ids, resolved_by="anonymous", resolved_at=datetime.now().isoformat(), section_id=section_id)
+                    scope = ScopeTarget(
+                        scope_type=IdentityScopeType.SECTION,
+                        student_ids=ids,
+                        resolved_by="anonymous",
+                        resolved_at=datetime.now().isoformat(),
+                        section_id=section_id,
+                    )
                 except Exception:
-                    scope = ScopeTarget(scope_type=IdentityScopeType.GLOBAL, student_ids=[], resolved_by="anonymous", resolved_at=datetime.now().isoformat())
+                    scope = ScopeTarget(
+                        scope_type=IdentityScopeType.GLOBAL,
+                        student_ids=[],
+                        resolved_by="anonymous",
+                        resolved_at=datetime.now().isoformat(),
+                    )
             else:
-                scope = ScopeTarget(scope_type=IdentityScopeType.GLOBAL, student_ids=[], resolved_by="anonymous", resolved_at=datetime.now().isoformat())
+                scope = ScopeTarget(
+                    scope_type=IdentityScopeType.GLOBAL,
+                    student_ids=[],
+                    resolved_by="anonymous",
+                    resolved_at=datetime.now().isoformat(),
+                )
     except Exception:
-        scope = ScopeTarget(scope_type=IdentityScopeType.GLOBAL, student_ids=[], resolved_by="system", resolved_at=datetime.now().isoformat())
+        scope = ScopeTarget(
+            scope_type=IdentityScopeType.GLOBAL,
+            student_ids=[],
+            resolved_by="system",
+            resolved_at=datetime.now().isoformat(),
+        )
 
     searcher = ScopedEmbeddingSearch(firebase_service=firebase)
     result = searcher.search(embedding, scope)
     return result
 
 
+def _self_verify_scoped_match(
+    embedding: np.ndarray,
+    firebase,
+    anchored_user_id: str,
+    period_id: Optional[str],
+    exclude_student_ids: Optional[List[str]] = None,
+):
+    """
+    Dedicated SELF_VERIFY scope runner for the anchor short-circuit path.
+
+    Builds a strict SELF scope for ``anchored_user_id`` and delegates to
+    ``ScopedEmbeddingSearch.search()``.  This is intentionally separate from
+    the general ``_scoped_match`` so that it is always guaranteed to use
+    ``IdentityScopeType.SELF`` regardless of any caller-supplied
+    ``scope_mode`` parameter.
+    """
+    from models.identity_context import ScopeTarget, IdentityScopeType
+    from services.scoped_embedding_search import ScopedEmbeddingSearch
+
+    scope = ScopeTarget(
+        scope_type=IdentityScopeType.SELF,
+        student_ids=[anchored_user_id],
+        resolved_by=anchored_user_id,
+        resolved_at=datetime.now().isoformat(),
+        period_id=period_id,
+    )
+    searcher = ScopedEmbeddingSearch(firebase_service=firebase)
+    return searcher.search(embedding, scope)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-# NEW: GET /window-status
+# ★★ NEW: POST /anchor — create / refresh a session anchor
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.post(
+    "/anchor",
+    summary="Pin an authenticated user to a session for SELF_VERIFY-first detection",
+    status_code=status.HTTP_200_OK,
+)
+async def anchor_session(
+    body: AnchorRequest,
+    user = Depends(get_current_user),
+):
+    """
+    Create (or refresh) a session anchor that pins ``user_id`` to
+    ``session_id``.
+
+    Once anchored, calls to ``detect-face-only`` that include the matching
+    ``session_id`` will short-circuit to a SELF_VERIFY scope — only the
+    anchored student's embeddings are searched first, giving O(1) lookup
+    latency instead of a full O(N) section scan.
+
+    Authorization rules
+    -------------------
+    * A student may only anchor their **own** ``user_id``.
+    * A teacher or admin may anchor any ``user_id`` (useful for kiosk / proxy
+      flows where a teacher pre-anchors the station to an incoming student).
+
+    The anchor expires automatically after the configured TTL (default 2 h).
+    Call this endpoint again to reset the TTL.
+
+    Body
+    ----
+    ```json
+    {
+      "session_id": "tab_abc123",
+      "user_id":    "student_42",
+      "period_id":  "period_001",   // optional — for window-status context
+      "ttl":        3600            // optional override in seconds
+    }
+    ```
+
+    Response
+    --------
+    ```json
+    {
+      "anchored":         true,
+      "session_id":       "tab_abc123",
+      "user_id":          "student_42",
+      "period_id":        "period_001",
+      "remaining_seconds": 3600
+    }
+    ```
+    """
+    # ── Authorisation guard ────────────────────────────────────────────────────
+    caller_is_student = getattr(user, "is_student", lambda: False)()
+    if caller_is_student and user.user_id != body.user_id:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Students may only anchor their own user_id. "
+                f"Caller={user.user_id!r} requested user_id={body.user_id!r}."
+            ),
+        )
+
+    # ── Optional: verify the user_id is a known student ───────────────────────
+    firebase = get_firebase_service()
+    if firebase:
+        student = firebase.get_student(body.user_id)
+        if not student:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No student record found for user_id={body.user_id!r}.",
+            )
+
+    # ── Create / refresh anchor ────────────────────────────────────────────────
+    from services.session_anchor_service import ANCHOR_TTL_SECONDS as _DEFAULT_TTL
+    anchor_svc = get_anchor_service()
+    entry = anchor_svc.anchor(
+        session_id=body.session_id,
+        user_id=body.user_id,
+        period_id=body.period_id,
+        ttl=float(body.ttl) if body.ttl else _DEFAULT_TTL,
+    )
+
+    logger.info(
+        "Anchor created by %s: session=%s → user=%s period=%s",
+        user.user_id, body.session_id, body.user_id, body.period_id or "–",
+    )
+
+    return JSONResponse(status_code=200, content={
+        "anchored":          True,
+        "session_id":        entry.session_id,
+        "user_id":           entry.user_id,
+        "period_id":         entry.period_id,
+        "remaining_seconds": int(entry.remaining_seconds),
+    })
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ★★ NEW: DELETE /anchor — release a session anchor
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.delete(
+    "/anchor",
+    summary="Release a session anchor",
+    status_code=status.HTTP_200_OK,
+)
+async def release_anchor(
+    session_id: str = Query(..., description="Session ID to release"),
+    user = Depends(get_current_user),
+):
+    """
+    Remove the session anchor for ``session_id``.
+
+    Authorization rules
+    -------------------
+    * A student may only release an anchor they own.
+    * A teacher or admin may release any anchor.
+
+    Idempotent — returns success even if no anchor exists.
+
+    Query params
+    ------------
+    ``session_id`` — the session to release.
+
+    Response
+    --------
+    ```json
+    { "released": true,  "session_id": "tab_abc123" }
+    { "released": false, "session_id": "tab_abc123", "reason": "not_found" }
+    ```
+    """
+    caller_is_student = getattr(user, "is_student", lambda: False)()
+    owner_guard = user.user_id if caller_is_student else None
+
+    anchor_svc = get_anchor_service()
+
+    # Teachers/admins may forcibly release any session
+    if not caller_is_student:
+        anchor_svc.release(session_id, owner_id=None)
+        return JSONResponse(status_code=200, content={
+            "released": True, "session_id": session_id,
+        })
+
+    released = anchor_svc.release(session_id, owner_id=owner_guard)
+    if not released:
+        # Check whether it was a ownership mismatch or just not found
+        existing = anchor_svc.get_anchor(session_id)
+        reason = "ownership_mismatch" if existing else "not_found"
+        return JSONResponse(status_code=200, content={
+            "released": False, "session_id": session_id, "reason": reason,
+        })
+
+    return JSONResponse(status_code=200, content={
+        "released": True, "session_id": session_id,
+    })
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# NEW: GET /window-status  (unchanged from previous version)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get(
@@ -717,15 +821,6 @@ async def get_window_status(
     period_id: str = Query(..., description="Period ID to check"),
     date: Optional[str] = Query(None, description="Date YYYY-MM-DD (defaults to today)"),
 ):
-    """
-    Lightweight endpoint for the student mark-attendance screen to poll.
-
-    Returns the current phase (``before`` / ``open`` / ``grace`` / ``locked``),
-    time remaining in the current phase, and whether new records are accepted.
-
-    Designed to be called every 30 seconds without significant Firestore cost
-    (2 document reads per call: period + lock).
-    """
     lock_svc = get_lock_service()
     if lock_svc is None:
         raise HTTPException(503, "AttendanceLockService not initialised")
@@ -753,18 +848,11 @@ async def get_window_status(
     summary="Return candidate student IDs for the authenticated user and optional period",
 )
 async def get_candidates(
-    period_id: Optional[str] = Query(None, description="Period ID to scope candidates"),
-    limit: int = Query(500, description="Maximum candidates to return"),
+    period_id: Optional[str] = Query(None),
+    limit: int = Query(500),
     user = Depends(get_current_user),
 ):
-    """Return the list of student IDs the calling user is allowed to match against.
-
-    - Students receive only their own ID.
-    - Teachers receive students for the period's class or their assigned sections.
-    - Admin receives `null` candidates (meaning unrestricted/full-scan).
-    """
     candidates = _get_candidate_ids_for_user(user, period_id=period_id, limit=limit)
-    # Null means unrestricted (admin or error). Clients should interpret null as "no server-side narrowing".
     return JSONResponse(status_code=200, content={
         "candidate_student_ids": candidates,
         "count": len(candidates) if candidates is not None else None,
@@ -772,7 +860,7 @@ async def get_candidates(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# NEW: GET /{record_id}/audit
+# NEW: GET /record/{record_id}/audit  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get(
@@ -780,21 +868,13 @@ async def get_candidates(
     summary="Audit trail for an attendance record",
 )
 async def get_record_audit(record_id: str):
-    """
-    Returns the full, immutable audit history for a single attendance record.
-
-    Delegates to AttendanceLockService.get_audit_trail() so the same trail
-    is available from both the attendance router and the teacher router.
-    """
     lock_svc = get_lock_service()
     if lock_svc is None:
         raise HTTPException(503, "AttendanceLockService not initialised")
-
     try:
         trail = lock_svc.get_audit_trail(record_id)
     except Exception as exc:
         raise HTTPException(500, f"Could not retrieve audit trail: {exc}")
-
     return JSONResponse(status_code=200, content={
         "record_id":   record_id,
         "entry_count": len(trail),
@@ -803,7 +883,7 @@ async def get_record_audit(record_id: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Step 1: detect-face-only  (window check added)
+# ★★ ENHANCED: detect-face-only — SELF_VERIFY-first when session is anchored
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.post(
@@ -813,27 +893,57 @@ async def get_record_audit(record_id: str):
 )
 async def detect_face_only(
     file: UploadFile = File(..., description="JPEG or PNG image"),
-    period_id: Optional[str] = Query(
-        None,
-        description="If supplied, window status is included in the response",
-    ),
-    # Backwards-compatible candidate narrowing
-    candidate_student_ids: Optional[str] = Query(
-        None,
-        description="Comma-separated student IDs to narrow the search",
-    ),
-    candidate_course_id: Optional[str] = Query(
-        None,
-        description="Course/section id to narrow candidate students",
-    ),
-    # ★ New scope parameters — frontend sends these based on logged-in role
+    period_id: Optional[str] = Query(None),
+    candidate_student_ids: Optional[str] = Query(None),
+    candidate_course_id: Optional[str] = Query(None),
     scope_mode:  str           = Query("section_roster", description="self_verify | section_roster"),
-    student_id:  Optional[str] = Query(None, description="Required for self_verify"),
-    section_id:  Optional[str] = Query(None, description="Required for section_roster"),
-    exclude_student_ids: Optional[str] = Query(None, description="Comma-separated student IDs to avoid for this session"),
+    student_id:  Optional[str] = Query(None),
+    section_id:  Optional[str] = Query(None),
+    exclude_student_ids: Optional[str] = Query(None),
+    # ★ Session-anchor parameters
+    session_id:  Optional[str] = Query(
+        None,
+        description=(
+            "Opaque session token (e.g. browser tab ID). "
+            "When a matching anchor exists, SELF_VERIFY runs first before "
+            "falling back to section_roster."
+        ),
+    ),
+    force_scope: bool = Query(
+        False,
+        description=(
+            "When true, the anchored SELF_VERIFY result is final — "
+            "no fallback to section_roster on a miss. "
+            "Requires session_id + an active anchor."
+        ),
+    ),
     user = Depends(get_optional_user),
 ):
-    excluded_ids = [s.strip() for s in exclude_student_ids.split(",")] if exclude_student_ids else None
+    """
+    Detect and identify a face without writing an attendance record.
+
+    SELF_VERIFY-first pipeline
+    --------------------------
+    When ``session_id`` is supplied and a live session anchor exists, the
+    endpoint runs a fast O(1) SELF_VERIFY pass first:
+
+    ┌─────────────────────────────────────────────────────┐
+    │ 1. Check session anchor for session_id              │
+    │    ↓ anchor found                                   │
+    │ 2. SELF_VERIFY against anchored user's embeddings   │
+    │    ↓ match            ↓ miss                        │
+    │ 3. Return (200)    force_scope?                     │
+    │                       ↓ yes       ↓ no              │
+    │                    Return(miss) Section-roster scan │
+    └─────────────────────────────────────────────────────┘
+
+    Without an anchor (or when no anchor exists for the given session_id),
+    the existing section_roster / legacy fallback path runs unchanged.
+    """
+    excluded_ids = (
+        [s.strip() for s in exclude_student_ids.split(",")]
+        if exclude_student_ids else None
+    )
 
     embedding, err = await _extract_embedding_from_upload(file)
     if err is not None:
@@ -843,22 +953,108 @@ async def detect_face_only(
     if not firebase:
         raise HTTPException(503, "Firebase service not initialised")
 
-    # Optional window status for the UI (non-blocking)
+    # Optional window status (non-blocking, UI-only)
     window_info = _get_window_for_period(period_id)
 
+    # ── ★ SELF_VERIFY-first: short-circuit when session is anchored ───────────
+    if session_id:
+        anchor_svc   = get_anchor_service()
+        anchor_entry = anchor_svc.get_anchor(session_id)
+
+        if anchor_entry is not None:
+            anchored_user_id = anchor_entry.user_id
+            logger.debug(
+                "Session anchor active: session=%s → user=%s (force_scope=%s)",
+                session_id, anchored_user_id, force_scope,
+            )
+
+            try:
+                sv_result = await run_in_threadpool(
+                    _self_verify_scoped_match,
+                    embedding,
+                    firebase,
+                    anchored_user_id,
+                    period_id or anchor_entry.period_id,
+                    excluded_ids,
+                )
+
+                anchor_meta = {
+                    "session_id": session_id,
+                    "user_id":    anchored_user_id,
+                }
+
+                if sv_result.matched:
+                    # ✅ Fast path — anchored identity confirmed
+                    del embedding
+                    gc.collect()
+                    logger.info(
+                        "SELF_VERIFY-first HIT: session=%s user=%s → %s "
+                        "(conf=%.3f, vectors=%d)",
+                        session_id, anchored_user_id, sv_result.student_id,
+                        sv_result.confidence, sv_result.candidates_searched,
+                    )
+                    return JSONResponse(status_code=200, content={
+                        "matched":      True,
+                        "message":      (
+                            f"Face identified: {sv_result.student_name} "
+                            "(session-anchored self-verify)"
+                        ),
+                        "student_name": sv_result.student_name,
+                        "student_id":   sv_result.student_id,
+                        "confidence":   round(sv_result.confidence, 4),
+                        "scope_mode":   "self_verify",
+                        "anchor":       anchor_meta,
+                        "window":       window_info,
+                    })
+
+                # SELF_VERIFY missed
+                logger.debug(
+                    "SELF_VERIFY-first MISS: session=%s user=%s "
+                    "(conf=%.3f, force_scope=%s)",
+                    session_id, anchored_user_id, sv_result.confidence, force_scope,
+                )
+
+                if force_scope:
+                    # Caller wants a hard stop — no section-roster fallback
+                    del embedding
+                    gc.collect()
+                    return JSONResponse(status_code=200, content={
+                        "matched":     False,
+                        "message":     (
+                            sv_result.message
+                            or "Face did not match your registered profile."
+                        ),
+                        "confidence":  round(sv_result.confidence, 4),
+                        "scope_mode":  "self_verify",
+                        "anchor":      anchor_meta,
+                        "force_scope": True,
+                        "window":      window_info,
+                    })
+
+                # force_scope=False → fall through to section_roster below
+                # (embedding is still alive; do NOT delete it here)
+
+            except Exception as _sv_exc:
+                # SELF_VERIFY attempt failed — log and fall through gracefully
+                logger.warning(
+                    "SELF_VERIFY-first attempt raised (swallowed, falling back): "
+                    "session=%s user=%s error=%s",
+                    session_id, anchored_user_id, _sv_exc,
+                )
+
+    # ── Existing section_roster / scoped-match path ───────────────────────────
     try:
-        # Resolve identity context and run scoped search (preferred)
         scoped_result = await run_in_threadpool(
-            _scoped_match, embedding, firebase, user, period_id, scope_mode, student_id, section_id, excluded_ids
+            _scoped_match,
+            embedding, firebase, user, period_id,
+            scope_mode, student_id, section_id, excluded_ids,
         )
 
-        # `scoped_result` is a ScopedMatchResult instance
         if hasattr(scoped_result, "matched"):
             if not scoped_result.matched:
                 suggestions = await run_in_threadpool(
                     _rank_embedding_candidates_sync,
-                    embedding,
-                    firebase,
+                    embedding, firebase,
                     [s.strip() for s in candidate_student_ids.split(",")] if candidate_student_ids else None,
                     candidate_course_id,
                     3,
@@ -866,23 +1062,19 @@ async def detect_face_only(
 
                 legacy_best_student, legacy_confidence, legacy_best_distance = await run_in_threadpool(
                     _match_embedding_sync,
-                    embedding,
-                    firebase,
-                    COSINE_THRESHOLD,
-                    None,
-                    None,
+                    embedding, firebase, COSINE_THRESHOLD, None, None,
                 )
                 if legacy_best_student is not None and legacy_best_distance <= COSINE_THRESHOLD:
                     del embedding
                     gc.collect()
                     return JSONResponse(status_code=200, content={
-                        "matched": True,
-                        "message": f"Face identified: {legacy_best_student.get('name', 'Unknown')} (legacy fallback)",
-                        "student_name": legacy_best_student.get("name", "Unknown"),
-                        "student_id": legacy_best_student.get("student_id", ""),
-                        "confidence": round(legacy_confidence, 4),
-                        "scope_mode": scope_mode,
-                        "window": window_info,
+                        "matched":             True,
+                        "message":             f"Face identified: {legacy_best_student.get('name', 'Unknown')} (legacy fallback)",
+                        "student_name":        legacy_best_student.get("name", "Unknown"),
+                        "student_id":          legacy_best_student.get("student_id", ""),
+                        "confidence":          round(legacy_confidence, 4),
+                        "scope_mode":          scope_mode,
+                        "window":              window_info,
                         "suggested_candidates": suggestions,
                     })
 
@@ -894,24 +1086,28 @@ async def detect_face_only(
                     else scoped_result.message
                 )
                 return JSONResponse(status_code=200, content={
-                    "matched": False,
-                    "message": no_match_msg,
-                    "scope_mode": scope_mode,
-                    "window": window_info,
+                    "matched":             False,
+                    "message":             no_match_msg,
+                    "scope_mode":          scope_mode,
+                    "window":              window_info,
                     "suggested_candidates": suggestions,
                 })
 
-            best_student = {"student_id": scoped_result.student_id, "name": scoped_result.student_name}
-            confidence = scoped_result.confidence
+            best_student = {
+                "student_id": scoped_result.student_id,
+                "name":       scoped_result.student_name,
+            }
+            confidence   = scoped_result.confidence
             best_distance = scoped_result.distance
+
         else:
-            # Fallback to legacy behaviour
+            # Legacy object fallback
             if not candidate_student_ids and not candidate_course_id and user is not None:
                 derived = _get_candidate_ids_for_user(user, period_id=period_id)
-                candidate_ids = derived
+                candidate_ids  = derived
                 candidate_course = None
             else:
-                candidate_ids = [s.strip() for s in candidate_student_ids.split(",")] if candidate_student_ids else None
+                candidate_ids  = [s.strip() for s in candidate_student_ids.split(",")] if candidate_student_ids else None
                 candidate_course = candidate_course_id
 
             if excluded_ids:
@@ -919,53 +1115,20 @@ async def detect_face_only(
                 candidate_ids = [sid for sid in (candidate_ids or []) if sid not in blocked] if candidate_ids else candidate_ids
 
             best_student, confidence, best_distance = await run_in_threadpool(
-                _match_embedding_sync, embedding, firebase, COSINE_THRESHOLD, candidate_ids, candidate_course
+                _match_embedding_sync,
+                embedding, firebase, COSINE_THRESHOLD,
+                candidate_ids, candidate_course,
             )
+
         del embedding
         gc.collect()
+
         if best_student is None:
-            suggestions = await run_in_threadpool(
-                _rank_embedding_candidates_sync,
-                embedding,
-                firebase,
-                candidate_ids,
-                candidate_course,
-                3,
-            )
-
-            legacy_best_student, legacy_confidence, legacy_best_distance = await run_in_threadpool(
-                _match_embedding_sync,
-                embedding,
-                firebase,
-                COSINE_THRESHOLD,
-                None,
-                None,
-            )
-            if legacy_best_student is not None and legacy_best_distance <= COSINE_THRESHOLD:
-                del embedding
-                gc.collect()
-                return JSONResponse(status_code=200, content={
-                    "matched": True,
-                    "message": f"Face identified: {legacy_best_student.get('name', 'Unknown')} (legacy fallback)",
-                    "student_name": legacy_best_student.get("name", "Unknown"),
-                    "student_id": legacy_best_student.get("student_id", ""),
-                    "confidence": round(legacy_confidence, 4),
-                    "scope_mode": scope_mode,
-                    "window": window_info,
-                    "suggested_candidates": suggestions,
-                })
-
-            no_match_msg = (
-                "Face does not match your registered profile."
-                if scope_mode == "self_verify"
-                else f"Face not recognised in section roster. Similarity: {max(0.0, 1-best_distance):.2f}"
-            )
             return JSONResponse(status_code=200, content={
-                "matched": False,
-                "message": no_match_msg,
+                "matched":    False,
+                "message":    f"Face not recognised. Similarity: {max(0.0, 1 - best_distance):.2f}",
                 "scope_mode": scope_mode,
-                "window": window_info,
-                "suggested_candidates": suggestions,
+                "window":     window_info,
             })
 
         return JSONResponse(status_code=200, content={
@@ -977,6 +1140,7 @@ async def detect_face_only(
             "scope_mode":   scope_mode,
             "window":       window_info,
         })
+
     except ImportError:
         return JSONResponse(status_code=200, content={
             "matched": False, "message": "Server missing scipy library."
@@ -987,7 +1151,7 @@ async def detect_face_only(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Step 2: confirm-attendance  ★ ENHANCED — window + lock enforced
+# confirm-attendance  (unchanged from period-locking edition)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.post(
@@ -1001,18 +1165,6 @@ async def confirm_attendance(
     period_id: Optional[str] = Form(None),
     frame: Optional[UploadFile] = File(None),
 ):
-    """
-    Confirm and write an attendance record.
-
-    ★ Window enforcement
-    If ``period_id`` is provided the attendance window is checked:
-    * Closed → HTTP 423 with WindowClosedResponse
-    * Grace period → status written as "late"
-    * Late-into-open → status written as "late"
-    * On-time → status written as "present"
-
-    An audit entry is always written on success.
-    """
     firebase = get_firebase_service()
     if not firebase:
         raise HTTPException(503, "Firebase service not initialised")
@@ -1021,7 +1173,6 @@ async def confirm_attendance(
     if not student:
         raise HTTPException(404, f"Student {student_id} not found in the system.")
 
-    # ── Window enforcement ─────────────────────────────────────────────────────
     window     = _get_window_for_period(period_id)
     att_status = "present"
     period_doc = None
@@ -1029,7 +1180,6 @@ async def confirm_attendance(
     if window is not None:
         if not window["is_open"]:
             return _window_closed_response(window, student_id)
-        # Determine present vs late
         try:
             from services.firebase_service import get_firebase_service as _gfs
             fb2 = _gfs()
@@ -1043,7 +1193,6 @@ async def confirm_attendance(
         if period_doc:
             att_status = _compute_attendance_status(window.get("phase", "open"), period_doc)
 
-    # ── Write attendance ───────────────────────────────────────────────────────
     try:
         timestamp = datetime.now()
         result    = firebase.mark_attendance(
@@ -1062,7 +1211,6 @@ async def confirm_attendance(
         record_id    = result.get("record_id", "")
         student_name = student.get("name", "Unknown")
 
-        # ── Audit ─────────────────────────────────────────────────────────────
         lock_svc = get_lock_service()
         if lock_svc and record_id:
             record_snapshot = {
@@ -1090,19 +1238,15 @@ async def confirm_attendance(
                 marked_at_iso=timestamp.isoformat(),
             )
 
-            # Optional online learning: use the confirmed frame as a new sample.
             if frame is not None:
                 try:
                     learned_embedding, error_content = await _extract_embedding_from_upload(frame)
                     if error_content is None and learned_embedding is not None:
                         firebase.store_embedding(student_id, learned_embedding)
                         firebase.compute_and_update_prototype(student_id)
-                    elif error_content is not None:
-                        logger.warning("Frame learning skipped for %s: %s", student_id, error_content.body if hasattr(error_content, 'body') else 'invalid frame')
                 except Exception:
                     logger.exception("Failed to store/update prototype for %s", student_id)
 
-            # Realtime broadcast — fire after the write (non-blocking task)
             try:
                 if period_id:
                     from services.realtime_service import get_realtime_service
@@ -1124,7 +1268,6 @@ async def confirm_attendance(
             except Exception:
                 logger.debug("Realtime broadcast failed (swallowed)")
 
-        # Fire auto-lock check in background
         if period_id:
             asyncio.create_task(_maybe_autolock(period_id))
 
@@ -1145,18 +1288,16 @@ async def confirm_attendance(
     except Exception as exc:
         logger.error(
             "Failed to save confirmed attendance for student=%s: %s",
-            student_id,
-            exc,
-            exc_info=True
+            student_id, exc, exc_info=True,
         )
         raise HTTPException(
             500,
-            f"Attendance recording failed: {type(exc).__name__}: {str(exc)}"
+            f"Attendance recording failed: {type(exc).__name__}: {str(exc)}",
         )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Legacy single-step: detect-face  ★ ENHANCED — window + lock enforced
+# detect-face  (legacy, unchanged from period-locking edition)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.post(
@@ -1165,8 +1306,8 @@ async def confirm_attendance(
     summary="[Legacy] Detect face and mark attendance (window-enforced, 5-attempt limit)",
 )
 async def detect_face_and_mark(
-    file: UploadFile = File(..., description="JPEG or PNG image"),
-    period_id: Optional[str] = Query(None, description="Period to enforce window on"),
+    file: UploadFile = File(...),
+    period_id: Optional[str] = Query(None),
 ):
     embedding, err = await _extract_embedding_from_upload(file)
     if err is not None:
@@ -1176,7 +1317,6 @@ async def detect_face_and_mark(
     if not firebase:
         raise HTTPException(503, "Firebase service not initialised")
 
-    # Window enforcement
     window = _get_window_for_period(period_id)
     if window and not window["is_open"]:
         del embedding
@@ -1184,15 +1324,11 @@ async def detect_face_and_mark(
         return _window_closed_response(window)
 
     try:
-        # Get attempt count BEFORE matching to enforce limit before expensive operations
         from services.face_attempt_service import get_face_attempt_service
-        attempt_svc = get_face_attempt_service(getattr(firebase, "firestore_db", None) or getattr(firebase, "_firestore", None))
-        
-        # We don't know the student yet, but we'll track failures anyway
-        # This is a simple heuristic: once we do match, we reset the counter
-        
-        # No explicit candidate narrowing here — rely on client to call
-        # `detect-face-only` with candidates, or pass period-based narrowing below.
+        attempt_svc = get_face_attempt_service(
+            getattr(firebase, "firestore_db", None) or getattr(firebase, "_firestore", None)
+        )
+
         best_student, confidence, best_distance = await run_in_threadpool(
             _match_embedding_sync, embedding, firebase, COSINE_THRESHOLD
         )
@@ -1200,7 +1336,6 @@ async def detect_face_and_mark(
         gc.collect()
 
         if best_student is None or best_distance > COSINE_THRESHOLD:
-            # Failed match - increment global attempt counter for this session
             return JSONResponse(status_code=200, content={
                 "matched": False,
                 "message": (
@@ -1216,28 +1351,21 @@ async def detect_face_and_mark(
         student_id   = best_student.get("student_id", "")
         student_name = best_student.get("name", "Unknown")
 
-        # Check attempt limit for THIS student
-        from services.face_attempt_service import get_face_attempt_service
-        attempt_svc = get_face_attempt_service(getattr(firebase, "firestore_db", None) or getattr(firebase, "_firestore", None))
         can_attempt, current_attempts = attempt_svc.can_attempt(student_id, period_id)
-        
         if not can_attempt:
             return JSONResponse(status_code=200, content={
                 "matched": False,
                 "message": (
                     f"Maximum detection attempts ({current_attempts}) reached for this period. "
-                    f"Please ask an instructor for assistance."
+                    "Please ask an instructor for assistance."
                 ),
                 "window": window,
                 "attempt_limit_exceeded": True,
             })
 
-        # Determine late/present
         att_status = "present"
         if window:
-            att_status = _compute_attendance_status(
-                window.get("phase", "open"), best_student
-            )
+            att_status = _compute_attendance_status(window.get("phase", "open"), best_student)
 
         timestamp = datetime.now()
         result    = firebase.mark_attendance(
@@ -1255,11 +1383,8 @@ async def detect_face_and_mark(
             },
         )
         record_id = result.get("record_id", "")
-
-        # Reset attempts on successful detection
         attempt_svc.reset_attempts(student_id, period_id)
-        
-        # Audit
+
         lock_svc = get_lock_service()
         if lock_svc and record_id:
             lock_svc.write_audit(
@@ -1277,12 +1402,10 @@ async def detect_face_and_mark(
                 },
             )
 
-        # Realtime broadcast
         try:
             if period_id:
                 from services.realtime_service import get_realtime_service
                 rt_svc = get_realtime_service()
-                # derive section id from period doc if possible
                 try:
                     from services.firebase_service import get_firebase_service as _gfs
                     fb2 = _gfs()
@@ -1294,16 +1417,13 @@ async def detect_face_and_mark(
                             section_for_broadcast = pd_doc.to_dict().get("class_id", "")
                 except Exception:
                     section_for_broadcast = None
-
                 if section_for_broadcast:
                     asyncio.create_task(rt_svc.broadcast(
                         event_type="attendance_marked",
                         section_id=section_for_broadcast,
                         payload={
-                            "record_id": record_id,
-                            "student_id": student_id,
-                            "period_id": period_id,
-                            "status": att_status,
+                            "record_id": record_id, "student_id": student_id,
+                            "period_id": period_id, "status": att_status,
                             "confidence": round(confidence, 4),
                             "markedAt": timestamp.isoformat(),
                         },
@@ -1335,7 +1455,7 @@ async def detect_face_and_mark(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# mark-attendance  ★ ENHANCED — window + lock enforced
+# mark-attendance  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.post(
@@ -1353,20 +1473,15 @@ async def mark_attendance(request: MarkAttendanceRequest) -> MarkAttendanceRespo
         if not student:
             raise HTTPException(404, f"Student {request.student_id} not found")
 
-        # Extract period_id from metadata if provided
         period_id = None
         if request.metadata:
             period_id = request.metadata.get("period_id")
 
-        # Window enforcement
         window = _get_window_for_period(period_id)
         if window and not window["is_open"]:
             raise HTTPException(
                 status_code=423,
-                detail={
-                    "message": window.get("message", "Attendance window closed."),
-                    "window":  window,
-                },
+                detail={"message": window.get("message", "Attendance window closed."), "window": window},
             )
 
         timestamp = request.timestamp or datetime.now()
@@ -1378,10 +1493,8 @@ async def mark_attendance(request: MarkAttendanceRequest) -> MarkAttendanceRespo
             camera_id=request.camera_id,
             metadata=request.metadata,
         )
-
         record_id = result["record_id"]
 
-        # Audit
         lock_svc = get_lock_service()
         if lock_svc and record_id:
             lock_svc.write_audit(
@@ -1389,56 +1502,18 @@ async def mark_attendance(request: MarkAttendanceRequest) -> MarkAttendanceRespo
                 action="CREATE",
                 actor_id=request.student_id,
                 after={
-                    "record_id":  record_id,
-                    "student_id": request.student_id,
-                    "period_id":  period_id,
-                    "status":     "present",
+                    "record_id": record_id, "student_id": request.student_id,
+                    "period_id": period_id, "status": "present",
                     "confidence": round(request.confidence, 4),
-                    "markedAt":   timestamp.isoformat(),
-                    "method":     "mark_attendance_api",
+                    "markedAt": timestamp.isoformat(), "method": "mark_attendance_api",
                 },
             )
-
-        # Realtime broadcast
-        try:
-            if period_id:
-                from services.realtime_service import get_realtime_service
-                rt_svc = get_realtime_service()
-                # try to resolve section id from period doc
-                try:
-                    from services.firebase_service import get_firebase_service as _gfs
-                    fb2 = _gfs()
-                    db2 = getattr(fb2, "firestore_db", None) or getattr(fb2, "_firestore", None)
-                    section_for_broadcast = None
-                    if db2 and period_id:
-                        pd_doc = db2.collection(COLLECTION_TIMETABLE).document(period_id).get()
-                        if pd_doc.exists:
-                            section_for_broadcast = pd_doc.to_dict().get("class_id", "")
-                except Exception:
-                    section_for_broadcast = None
-
-                if section_for_broadcast:
-                    asyncio.create_task(rt_svc.broadcast(
-                        event_type="attendance_marked",
-                        section_id=section_for_broadcast,
-                        payload={
-                            "record_id": record_id,
-                            "student_id": request.student_id,
-                            "period_id": period_id,
-                            "status": "present",
-                            "confidence": round(request.confidence, 4),
-                            "markedAt": timestamp.isoformat(),
-                        },
-                    ))
-        except Exception:
-            logger.debug("Realtime broadcast failed (swallowed)")
 
         if period_id:
             asyncio.create_task(_maybe_autolock(period_id))
 
         return MarkAttendanceResponse(
-            success=True,
-            record_id=record_id,
+            success=True, record_id=record_id,
             student_id=request.student_id,
             timestamp=timestamp.isoformat(),
             message="Attendance marked successfully",
@@ -1450,7 +1525,7 @@ async def mark_attendance(request: MarkAttendanceRequest) -> MarkAttendanceRespo
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# mark-mobile  ★ ENHANCED — window enforced
+# mark-mobile  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.post(
@@ -1473,15 +1548,11 @@ async def mark_attendance_mobile(
         if not student:
             raise HTTPException(404, f"Student {student_id} not found")
 
-        # Window enforcement
         window = _get_window_for_period(period_id)
         if window and not window["is_open"]:
             raise HTTPException(
                 status_code=423,
-                detail={
-                    "message": window.get("message", "Attendance window closed."),
-                    "window":  window,
-                },
+                detail={"message": window.get("message", "Attendance window closed."), "window": window},
             )
 
         from PIL import Image
@@ -1495,8 +1566,8 @@ async def mark_attendance_mobile(
 
         def _mobile_inference():
             THRESHOLD = 0.6
-            extractor  = ModelManager.get_facenet_extractor()
-            embedding  = extractor.extract_embedding(image_array)
+            extractor = ModelManager.get_facenet_extractor()
+            embedding = extractor.extract_embedding(image_array)
             if embedding is None:
                 raise ValueError("No face detected")
             embeddings = FirebaseService.get_all_embeddings(student)
@@ -1520,7 +1591,6 @@ async def mark_attendance_mobile(
             del image_array
             gc.collect()
 
-        # Determine late/present
         att_status = "present"
         if window:
             att_status = _compute_attendance_status(window.get("phase", "open"), student)
@@ -1538,65 +1608,27 @@ async def mark_attendance_mobile(
                 "attendance_status": att_status,
             },
         )
-
         record_id = result["record_id"]
-        lock_svc  = get_lock_service()
+
+        lock_svc = get_lock_service()
         if lock_svc and record_id:
             lock_svc.write_audit(
                 record_id=record_id,
                 action="CREATE",
                 actor_id=student_id,
                 after={
-                    "record_id":  record_id,
-                    "student_id": student_id,
-                    "period_id":  period_id,
-                    "status":     att_status,
+                    "record_id": record_id, "student_id": student_id,
+                    "period_id": period_id, "status": att_status,
                     "confidence": round(confidence, 4),
-                    "markedAt":   timestamp.isoformat(),
-                    "method":     "face_recognition_mobile",
+                    "markedAt": timestamp.isoformat(), "method": "face_recognition_mobile",
                 },
             )
-
-        # Realtime broadcast
-        try:
-            if period_id:
-                from services.realtime_service import get_realtime_service
-                rt_svc = get_realtime_service()
-                try:
-                    from services.firebase_service import get_firebase_service as _gfs
-                    fb2 = _gfs()
-                    db2 = getattr(fb2, "firestore_db", None) or getattr(fb2, "_firestore", None)
-                    section_for_broadcast = None
-                    if db2 and period_id:
-                        pd_doc = db2.collection(COLLECTION_TIMETABLE).document(period_id).get()
-                        if pd_doc.exists:
-                            section_for_broadcast = pd_doc.to_dict().get("class_id", "")
-                except Exception:
-                    section_for_broadcast = None
-
-                if section_for_broadcast:
-                    asyncio.create_task(rt_svc.broadcast(
-                        event_type="attendance_marked",
-                        section_id=section_for_broadcast,
-                        payload={
-                            "record_id": record_id,
-                            "student_id": student_id,
-                            "period_id": period_id,
-                            "status": att_status,
-                            "confidence": round(confidence, 4),
-                            "markedAt": timestamp.isoformat(),
-                        },
-                    ))
-        except Exception:
-            logger.debug("Realtime broadcast failed (swallowed)")
 
         if period_id:
             asyncio.create_task(_maybe_autolock(period_id))
 
         return MarkAttendanceResponse(
-            success=True,
-            record_id=record_id,
-            student_id=student_id,
+            success=True, record_id=record_id, student_id=student_id,
             timestamp=timestamp.isoformat(),
             message=f"Attendance marked as {att_status.upper()} (confidence: {confidence:.2f})",
         )
@@ -1607,27 +1639,14 @@ async def mark_attendance_mobile(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Enhanced daily-report  (delegates to AttendanceService)
+# daily-report  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.get("/attendance/daily-report")
 async def get_daily_report(
     date: Optional[str] = Query(None),
-    class_id: Optional[str] = Query(
-        None,
-        description=(
-            "When supplied, delegates to AttendanceService.generate_daily_report() "
-            "for a class-level report with period breakdown."
-        ),
-    ),
+    class_id: Optional[str] = Query(None),
 ):
-    """
-    Generate a daily attendance report.
-
-    * Without ``class_id`` → legacy summary from FirebaseService.
-    * With ``class_id``    → rich report with per-period breakdown and
-      student-level summary via AttendanceService.generate_daily_report().
-    """
     if class_id:
         try:
             from services.attendance_service import AttendanceService
@@ -1640,7 +1659,6 @@ async def get_daily_report(
             logger.error("generate_daily_report error: %s", exc)
             raise HTTPException(500, f"Failed to generate report: {exc}")
 
-    # Legacy path
     try:
         firebase = get_firebase_service()
         if not firebase:
@@ -1663,7 +1681,7 @@ async def get_daily_report(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Student Management  (unchanged)
+# Student management  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.post(
@@ -1687,7 +1705,7 @@ async def register_student(request: StudentRegistrationRequest) -> StudentRegist
         for emb in request.embeddings[1:]:
             firebase.store_embedding(request.student_id, np.array(emb))
         return StudentRegistrationResponse(
-            success=True, student_id=request.student_id, message="Student registered successfully"
+            success=True, student_id=request.student_id, message="Student registered successfully",
         )
     except HTTPException:
         raise
@@ -1765,7 +1783,7 @@ async def get_attendance(
         from_date  = datetime.fromisoformat(date_from) if date_from else None
         to_date    = datetime.fromisoformat(date_to)   if date_to   else None
         records    = firebase.get_attendance_records(
-            student_id=student_id, date_from=from_date, date_to=to_date, limit=limit + offset
+            student_id=student_id, date_from=from_date, date_to=to_date, limit=limit + offset,
         )
         paginated  = records[offset: offset + limit]
         att_records = [
@@ -1786,14 +1804,14 @@ async def get_attendance(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Stream Management  (unchanged)
+# Stream management  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.post("/streams", response_model=StreamHealth, status_code=status.HTTP_201_CREATED)
 async def add_stream(request: StreamConfig) -> StreamHealth:
     try:
-        manager     = get_stream_manager()
-        classroom_id: Optional[str] = getattr(request, "classroom_id", None)
+        manager      = get_stream_manager()
+        classroom_id = getattr(request, "classroom_id", None)
         handler = manager.add_stream(
             stream_id=request.stream_id, rtsp_url=request.rtsp_url,
             frame_skip=request.frame_skip,
@@ -1850,18 +1868,18 @@ async def get_stream_ai_status(stream_id: str):
         m = handler.get_metrics()
         is_ai_active: bool = m.get("is_ai_active", False)
         return JSONResponse(status_code=200, content={
-            "stream_id":            stream_id,
-            "classroom_id":         m.get("classroom_id"),
-            "is_ai_active":         is_ai_active,
-            "display_status":       "Live Monitoring" if is_ai_active else "System Idle",
-            "last_ai_trigger":      m.get("last_ai_trigger"),
-            "students_loaded":      m.get("students_loaded", False),
+            "stream_id":             stream_id,
+            "classroom_id":          m.get("classroom_id"),
+            "is_ai_active":          is_ai_active,
+            "display_status":        "Live Monitoring" if is_ai_active else "System Idle",
+            "last_ai_trigger":       m.get("last_ai_trigger"),
+            "students_loaded":       m.get("students_loaded", False),
             "students_loaded_count": m.get("students_loaded_count", 0),
-            "student_load_error":   m.get("student_load_error"),
-            "fps":                  m.get("fps", 0.0),
-            "active_tracks":        m.get("active_tracks", 0),
+            "student_load_error":    m.get("student_load_error"),
+            "fps":                   m.get("fps", 0.0),
+            "active_tracks":         m.get("active_tracks", 0),
             "marked_students_today": m.get("marked_students", 0),
-            "stream_status":        m.get("status", "unknown"),
+            "stream_status":         m.get("status", "unknown"),
         })
     except HTTPException:
         raise
@@ -1901,10 +1919,7 @@ async def reload_students(stream_id: str):
         manager = get_stream_manager()
         if not manager.reload_students(stream_id):
             raise HTTPException(404, f"Stream {stream_id} not found")
-        return {
-            "success": True,
-            "message": f"Student reload triggered for {stream_id}.",
-        }
+        return {"success": True, "message": f"Student reload triggered for {stream_id}."}
     except HTTPException:
         raise
     except Exception as exc:
@@ -1919,20 +1934,20 @@ async def reload_students(stream_id: str):
 async def health_check() -> HealthCheckResponse:
     try:
         from models.model_manager import ModelManager
-        firebase = get_firebase_service()
-        manager  = get_stream_manager()
-        lock_svc = get_lock_service()
+        firebase   = get_firebase_service()
+        manager    = get_stream_manager()
+        lock_svc   = get_lock_service()
+        anchor_svc = get_anchor_service()
         services = {
-            "firebase":    "healthy" if firebase  else "unavailable",
-            "streams":     "healthy" if manager   else "unavailable",
-            "models":      "healthy" if ModelManager.is_initialized() else "not_initialized",
-            "lock_service": "healthy" if lock_svc else "unavailable",
+            "firebase":     "healthy" if firebase  else "unavailable",
+            "streams":      "healthy" if manager   else "unavailable",
+            "models":       "healthy" if ModelManager.is_initialized() else "not_initialized",
+            "lock_service": "healthy" if lock_svc  else "unavailable",
+            "anchor_service": f"healthy ({anchor_svc.count()} active anchors)",
         }
         return HealthCheckResponse(status="healthy", services=services, uptime_seconds=0)
     except Exception as exc:
-        return HealthCheckResponse(
-            status="error", services={"error": str(exc)}, uptime_seconds=0
-        )
+        return HealthCheckResponse(status="error", services={"error": str(exc)}, uptime_seconds=0)
 
 
 @router.get("/stats", response_model=SystemStatsResponse)

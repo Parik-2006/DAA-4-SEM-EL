@@ -28,6 +28,7 @@ from pydantic import BaseModel, EmailStr, Field
 from decorators.auth_decorators import get_current_user
 from services.audit_services import get_audit_service
 from services.auth_service import ROLE_PERMISSIONS, UserContext, get_auth_service
+from services.session_anchor_service import get_anchor_service
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,12 @@ class MeResponse(BaseModel):
     assigned_sections: List[str]
     issued_at: int
     expires_at: int
+
+
+class LogoutResponse(BaseModel):
+    success: bool
+    user_id: str
+    released_anchors: int
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -251,4 +258,32 @@ async def get_me(user: UserContext = Depends(get_current_user)):
         assigned_sections=user.assigned_sections,
         issued_at=user.issued_at,
         expires_at=user.expires_at,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/v1/auth/logout
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.post(
+    "/logout",
+    response_model=LogoutResponse,
+    summary="Logout current user and release any anchored sessions",
+)
+async def logout_user(user: UserContext = Depends(get_current_user)):
+    """
+    Stateless logout.
+
+    The JWT itself is not blacklisted here, but any session anchors created for
+    the user are released immediately so the next camera session starts clean.
+    """
+    anchor_service = get_anchor_service()
+    released = anchor_service.release_all_for_user(user.user_id)
+
+    logger.info("Logout: user=%s released_anchors=%d", user.user_id, released)
+
+    return LogoutResponse(
+        success=True,
+        user_id=user.user_id,
+        released_anchors=released,
     )

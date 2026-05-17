@@ -1,52 +1,50 @@
 """
 api/user.py
 ─────────────────────────────────────────────────────────────────────────────
-User registration and profile endpoints.
+User registration, profile, and enrollment endpoints.
 
 Changes from original (backward-compatible)
 -------------------------------------------
-• POST /user/register   — now persists ``assigned_sections`` and validates
-                          role against VALID_ROLES.
-• POST /user/login      — now returns a JWT access+refresh token pair.
-                          The ``token`` field carries the access token so
-                          existing clients that only read ``token`` keep working.
-• GET  /user/profile/{user_id}   — now includes permissions and sections.
+• POST /user/register   — persists ``assigned_sections``; validates role.
+• POST /user/login      — returns JWT access+refresh token pair.
+• GET  /user/profile/{user_id}   — includes permissions and sections.
 • GET  /user/users/by-role/{role} — unchanged.
 • POST /user/forgot-password     — unchanged.
 • POST /user/reset-password      — unchanged.
-• NEW  PATCH /user/profile/{user_id}  — self-service profile update (name).
+• PATCH /user/profile/{user_id}  — self-service name update.
 
-Hardening (2024-05 pass)
-------------------------
-reset_password (line ~296 in original)
-    The full users tree is fetched from RTDB as a single `.get()` call.
-    Previously the result was assumed to be a dict; RTDB returns None when the
-    "users" node is entirely absent (fresh/empty deployment).  The ``or {}``
-    guard was present but the subsequent iteration over `.items()` would then
-    silently succeed with an empty dict — correct.  However the outer
-    ``except Exception`` block re-raised as HTTP 400 ("Password reset failed")
-    which obscures real errors (e.g. Firebase network timeouts).
+New (multi-photo enrollment)
+----------------------------
+• POST /user/enroll/{user_id}
+    Accept 5–10 face images (multipart/form-data), extract embeddings,
+    compute centroid + per-dimension variance, persist to Firestore, and
+    update the in-process FAISS index.
 
-    Changes:
-    1. Explicit ``isinstance(users_data, dict)`` check — if RTDB returns None
-       or a non-dict value, log a warning and raise 400 with the specific
-       "Invalid or expired reset token." message (same user-visible behaviour,
-       better internal observability).
-    2. Each user record ``isinstance(udata, dict)`` guard retained.
-    3. ``except FirebaseError`` logged at ERROR before the outer handler sees it,
-       so Firebase-side failures are distinguishable from logic failures in logs.
+• GET  /user/enroll/{user_id}/stats
+    Return stored enrollment statistics (sample_count, centroid_dim,
+    enrolled_at, etc.) without exposing the raw vectors.
+
+Hardening (reset-password, 2024-05 pass)
+-----------------------------------------
+See original docstring for details.
 """
 from __future__ import annotations
 
+import base64
+import io
 import logging
 import os
 import uuid
 from datetime import datetime, timedelta
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import cv2
+import numpy as np
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
 from database.user_repository import UserRepository
 from middleware.auth_middleware import get_current_user, require_own_resource_or_admin, TokenPayload
+from schemas.enrollment_schemas import EnrollmentResponse, EnrollmentStatsResponse
 from schemas.user_schemas import (
     UserLoginRequest,
     UserLoginResponse,
@@ -57,6 +55,8 @@ from schemas.user_schemas import (
 )
 from services.auth_service import AuthService
 from services.email_service import EmailService
+from services.face_recognition_service import FaceRecognitionService
+from services.firebase_service import get_firebase_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/user", tags=["user"])
@@ -64,8 +64,12 @@ router = APIRouter(prefix="/user", tags=["user"])
 _user_repo  = UserRepository()
 _auth_svc   = AuthService()
 _email_svc  = EmailService()
+_face_svc   = FaceRecognitionService()   # shared instance; FAISS index lives here
 
 _JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
+
+# Maximum size accepted for a single uploaded image (10 MB)
+_MAX_IMAGE_BYTES: int = 10 * 1024 * 1024
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -374,3 +378,204 @@ def reset_password(token: str, new_password: str):
     except Exception as exc:
         logger.error("Reset-password error: %s", exc)
         raise HTTPException(status_code=400, detail="Password reset failed.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-photo enrollment
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _decode_upload(upload: UploadFile) -> np.ndarray:
+    """
+    Read an UploadFile and decode it to a BGR numpy array (via OpenCV).
+
+    Raises:
+        HTTPException 400 if the file exceeds ``_MAX_IMAGE_BYTES``, cannot be
+        read, or cannot be decoded as an image.
+    """
+    raw = upload.file.read()
+    if len(raw) > _MAX_IMAGE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Image '{upload.filename}' exceeds the 10 MB size limit.",
+        )
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not decode '{upload.filename}' as an image. "
+                   "Supported formats: JPEG, PNG, BMP, WEBP.",
+        )
+    return img
+
+
+@router.post(
+    "/enroll/{user_id}",
+    response_model=EnrollmentResponse,
+    status_code=201,
+    summary="Multi-photo face enrollment",
+    description=(
+        "Accept 5–10 face images for the user, extract embeddings, "
+        "compute a normalised centroid and per-dimension variance, "
+        "persist the stats to Firestore, and update the in-process FAISS index. "
+        "Callers may only enroll their own user_id unless they are admin."
+    ),
+)
+async def enroll_user(
+    user_id: str,
+    files: List[UploadFile] = File(
+        ...,
+        description="5–10 face images (JPEG / PNG / BMP / WEBP). "
+                    "Each file must be ≤ 10 MB.",
+    ),
+    device_id: Optional[str] = Form(None, description="Device that captured the images."),
+    location:  Optional[str] = Form(None, description="Physical capture location label."),
+    caller:    TokenPayload  = Depends(require_own_resource_or_admin("user_id")),
+):
+    """
+    Multi-photo face enrollment endpoint.
+
+    Pipeline
+    --------
+    1. Verify the user exists in the user repository.
+    2. Validate image count (5 ≤ N ≤ 10).
+    3. Decode each uploaded file to a numpy BGR image.
+    4. Delegate to ``FaceRecognitionService.enroll_student_multi()``
+       which handles extraction, normalisation, centroid/variance computation,
+       and FAISS index update.
+    5. Persist centroid + variance + capped raw embeddings to Firestore via
+       ``FirebaseService.store_enrollment()``.
+
+    Auth
+    ----
+    A user may enroll themselves.  An admin may enroll any user.
+
+    Request (multipart/form-data)
+    -----------------------------
+    files     – 5–10 image files
+    device_id – optional string
+    location  – optional string
+
+    Response (201)
+    --------------
+    EnrollmentResponse with success, user_id, sample_count, centroid_dim,
+    and a human-readable message.
+    """
+    # ── 0. user must exist ────────────────────────────────────────────────────
+    if not _user_repo.get_user(user_id):
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    min_img = FaceRecognitionService.MIN_ENROLLMENT_IMAGES
+    max_img = FaceRecognitionService.MAX_ENROLLMENT_IMAGES
+
+    # ── 1. file-count pre-check (fast-fail before decoding) ──────────────────
+    n_files = len(files)
+    if n_files < min_img:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Please upload at least {min_img} images (received {n_files}).",
+        )
+    if n_files > max_img:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Please upload at most {max_img} images (received {n_files}).",
+        )
+
+    # ── 2. decode images ──────────────────────────────────────────────────────
+    face_images: List[np.ndarray] = []
+    for upload in files:
+        face_images.append(_decode_upload(upload))
+
+    # ── 3. extract embeddings + build stats + update FAISS ───────────────────
+    try:
+        result = _face_svc.enroll_student_multi(
+            student_id=user_id,
+            face_images=face_images,
+            student_info={"user_id": user_id},
+        )
+    except ValueError as exc:
+        # Covers too-few-successful-embeddings case
+        raise HTTPException(status_code=422, detail=str(exc))
+    except RuntimeError as exc:
+        logger.error("enroll_user: model error for %s: %s", user_id, exc)
+        raise HTTPException(status_code=503, detail="Face recognition model unavailable.")
+
+    # ── 4. persist to Firestore ───────────────────────────────────────────────
+    fb = get_firebase_service()
+    if fb is not None:
+        meta = {"device_id": device_id, "location": location}
+        stored = fb.store_enrollment(
+            student_id=user_id,
+            normalized_embeddings=result["normalized_embeddings"],
+            metadata=meta,
+        )
+        if not stored:
+            # Non-fatal: FAISS is already updated; log and continue.
+            logger.warning(
+                "enroll_user: Firestore write failed for %s — FAISS index updated "
+                "but stats not persisted.",
+                user_id,
+            )
+    else:
+        logger.warning(
+            "enroll_user: Firebase service unavailable; enrollment stats not persisted for %s.",
+            user_id,
+        )
+
+    centroid_dim = int(result["centroid"].shape[0])
+    logger.info(
+        "Enrollment complete: user=%s sample_count=%d centroid_dim=%d",
+        user_id, result["sample_count"], centroid_dim,
+    )
+
+    return EnrollmentResponse(
+        success=True,
+        user_id=user_id,
+        sample_count=result["sample_count"],
+        centroid_dim=centroid_dim,
+        message=result["message"],
+    )
+
+
+@router.get(
+    "/enroll/{user_id}/stats",
+    response_model=EnrollmentStatsResponse,
+    summary="Enrollment statistics",
+    description=(
+        "Return stored enrollment metadata for the user: sample count, "
+        "centroid dimensionality, timestamp, and capture context.  "
+        "Raw vectors are NOT returned. "
+        "Callers may only view their own stats unless they are admin."
+    ),
+)
+def get_enrollment_stats(
+    user_id: str,
+    caller: TokenPayload = Depends(require_own_resource_or_admin("user_id")),
+):
+    """
+    Return stored enrollment statistics (no raw vectors).
+
+    Raises 404 if the user has not been enrolled yet.
+    """
+    fb = get_firebase_service()
+    if fb is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Firebase service unavailable.",
+        )
+
+    stats = fb.get_enrollment_stats(user_id)
+    if stats is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Enrollment stats not found. The user may not have been enrolled yet.",
+        )
+
+    return EnrollmentStatsResponse(
+        user_id=user_id,
+        sample_count=stats.get("sample_count", 0),
+        centroid_dim=len(stats.get("centroid", [])),
+        enrolled_at=stats.get("enrolled_at"),
+        device_id=stats.get("device_id"),
+        location=stats.get("location"),
+    )

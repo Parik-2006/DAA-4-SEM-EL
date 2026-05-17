@@ -399,12 +399,6 @@ class FirebaseService:
             logger.error(f"Failed to compute/update prototype for {student_id}: {e}")
             return None
 
-        except Exception as e:
-            logger.error(f"Failed to store embedding for {student_id}: {e}")
-            return False
-
-        return False
-
     def get_embeddings(self, student_id: str) -> List[np.ndarray]:
         try:
             student = self.get_student(student_id)
@@ -414,6 +408,129 @@ class FirebaseService:
         except Exception as e:
             logger.error(f"Failed to retrieve embeddings for {student_id}: {e}")
             return []
+
+    # ── Multi-photo Enrollment Stats ──────────────────────────────────────────
+    #
+    # Firestore schema written to students/{student_id}:
+    #
+    #   enrollment_stats: {
+    #     centroid:      List[float]   # L2-normalised mean of unit-normed embeddings
+    #     variance:      List[float]   # per-dimension variance of unit-normed embeddings
+    #     sample_count:  int           # number of images that produced valid embeddings
+    #     enrolled_at:   str           # ISO-8601 timestamp
+    #     device_id:     str | null
+    #     location:      str | null
+    #   }
+    #
+    #   embeddings:  List[{vector: List[float]}]   # raw samples, ≤ MAX_STORED_SAMPLES
+    #   embedding:   List[float]                   # centroid (backward-compat field)
+    #
+    # The ``embeddings`` list is capped at MAX_STORED_SAMPLES (10) to keep
+    # Firestore document size predictable (~128 floats × 4 bytes × 10 = ~5 KB raw).
+
+    _MAX_STORED_SAMPLES: int = 10
+
+    def store_enrollment(
+        self,
+        student_id: str,
+        normalized_embeddings: np.ndarray,   # shape (N, D), already unit-normed
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """
+        Compute and persist centroid, per-dimension variance, and a capped set of
+        raw embeddings for *student_id*.
+
+        Args:
+            student_id:            User/student identifier.
+            normalized_embeddings: Float32 array of shape (N, D) where every row
+                                   has already been L2-normalised to unit length.
+                                   Callers must guarantee N >= 1.
+            metadata:              Optional dict with 'device_id', 'location', etc.
+
+        Returns:
+            True on success, False on any storage error.
+
+        Storage layout (written as a single atomic update):
+            centroid      – re-normalised mean of the input rows  (D floats)
+            variance      – per-dimension variance                (D floats)
+            sample_count  – N
+            enrolled_at   – current UTC timestamp
+            device_id / location – from metadata if present
+        """
+        self._ensure_ready()
+        meta = metadata or {}
+
+        # ── compute stats ────────────────────────────────────────────────
+        # centroid: mean of already-normalised rows, then re-normalise so that
+        # cosine distance comparisons stay meaningful even when N is small.
+        mean_vec  = normalized_embeddings.mean(axis=0).astype(np.float32)
+        norm_val  = np.linalg.norm(mean_vec) + 1e-10
+        centroid  = (mean_vec / norm_val).astype(np.float32)
+
+        # per-dimension variance of the unit-normed rows
+        variance  = normalized_embeddings.var(axis=0).astype(np.float32)
+
+        sample_count = int(normalized_embeddings.shape[0])
+
+        # cap raw storage – keep the most recent MAX_STORED_SAMPLES rows
+        keep      = normalized_embeddings[-self._MAX_STORED_SAMPLES:]
+        raw_list  = [{"vector": row.tolist()} for row in keep]
+
+        enrollment_stats = {
+            "centroid":     centroid.tolist(),
+            "variance":     variance.tolist(),
+            "sample_count": sample_count,
+            "enrolled_at":  datetime.utcnow().isoformat(),
+            "device_id":    meta.get("device_id"),
+            "location":     meta.get("location"),
+        }
+
+        update_payload = {
+            # structured stats block
+            "enrollment_stats": enrollment_stats,
+            # raw samples (capped) for index rebuilds
+            "embeddings": raw_list,
+            # backward-compatible single-vector field = centroid
+            "embedding": centroid.tolist(),
+        }
+
+        try:
+            if self.db:
+                self.db.collection("students").document(student_id).update(update_payload)
+            elif self.firebase_db:
+                self.firebase_db.child("students").child(student_id).update(update_payload)
+            else:
+                logger.error("store_enrollment: no DB backend available")
+                return False
+
+            logger.info(
+                "Enrollment stats stored for %s: sample_count=%d centroid_dim=%d "
+                "mean_variance=%.5f",
+                student_id, sample_count, centroid.shape[0], float(variance.mean()),
+            )
+            return True
+
+        except Exception as exc:
+            logger.error("store_enrollment: write failed for %s: %s", student_id, exc)
+            return False
+
+    def get_enrollment_stats(self, student_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve the enrollment stats block for *student_id*.
+
+        Returns the ``enrollment_stats`` dict (keys: centroid, variance,
+        sample_count, enrolled_at, device_id, location) or None if the
+        student document does not exist or has no enrollment stats.
+        """
+        try:
+            self._ensure_ready()
+            student = self.get_student(student_id)
+            if not student:
+                return None
+            return student.get("enrollment_stats") or None
+        except Exception as exc:
+            logger.error("get_enrollment_stats: error for %s: %s", student_id, exc)
+            return None
 
 
 # Singleton instance
