@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 
 import { Layout } from '../components';
-import { DashboardPage } from './DashboardPage';
+import StudentDashboardPage from './StudentDashboardPage';
 import { TeacherDashboard, type TeacherPeriod } from './TeacherDashboard';
 import { attendanceAPI } from '../services/api';
+import { useRoleSummary } from '../hooks/useAttendanceMatrix';
 import { getStoredRole } from '../utils/roles';
 
 function toStringValue(value: unknown, fallback = ''): string {
@@ -65,6 +66,7 @@ export const RoleLandingPage: React.FC = () => {
   const role = getStoredRole();
   const userId = sessionStorage.getItem('user_id') ?? '';
   const userEmail = sessionStorage.getItem('user_email') ?? '';
+  const roleSummary = useRoleSummary(role === 'admin');
 
   const [teacherData, setTeacherData] = useState<Record<string, unknown> | null>(null);
   const [loadingTeacher, setLoadingTeacher] = useState(false);
@@ -112,7 +114,96 @@ export const RoleLandingPage: React.FC = () => {
   }
 
   if (role === 'admin') {
-    return <DashboardPage />;
+    if (roleSummary.isLoading && !roleSummary.data) {
+      return <LoadingState label="Loading admin summary..." />;
+    }
+
+    if (roleSummary.error) {
+      return <ErrorState message={roleSummary.error} />;
+    }
+
+    const summary = roleSummary.data;
+
+    return (
+      <Layout>
+        <div className="space-y-6 pb-8">
+          <div className="rounded-[2rem] border border-slate-200 bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 px-6 py-6 text-white shadow-xl">
+            <p className="text-xs uppercase tracking-[0.24em] text-slate-300">Admin summary</p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight">Live role overview</h1>
+            <p className="mt-2 max-w-2xl text-sm text-slate-300">
+              A compact view of today’s attendance, the current active period, and the sections that need attention.
+            </p>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Students</p>
+              <div className="mt-3 text-3xl font-semibold text-slate-900">{summary?.student_count ?? 0}</div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Classes</p>
+              <div className="mt-3 text-3xl font-semibold text-slate-900">{summary?.class_count ?? 0}</div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Attendance rate</p>
+              <div className="mt-3 text-3xl font-semibold text-slate-900">{summary?.today_breakdown.attendance_rate ?? 0}%</div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Marked</p>
+              <div className="mt-3 text-3xl font-semibold text-slate-900">{summary?.today_breakdown.marked ?? 0}</div>
+            </div>
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-[1.4fr_0.9fr]">
+            <div className="rounded-[1.75rem] border border-slate-200 bg-white p-4 shadow-sm">
+              <h2 className="text-lg font-semibold text-slate-900">Active period</h2>
+              {summary?.active_period ? (
+                <div className="mt-4 rounded-2xl bg-slate-50 p-4">
+                  <p className="text-sm font-semibold text-slate-900">
+                    {String((summary.active_period as Record<string, unknown>).course_code ?? 'Unknown course')}
+                  </p>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {String((summary.active_period as Record<string, unknown>).class_id ?? '')}
+                    {String((summary.active_period as Record<string, unknown>).room ?? '') ? ` · Room ${String((summary.active_period as Record<string, unknown>).room)}` : ''}
+                  </p>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-4 text-sm">
+                    <div className="rounded-xl bg-white p-3 shadow-sm">Present {String(((summary.active_period as Record<string, unknown>).attendance_stats as Record<string, unknown> | undefined)?.present ?? 0)}</div>
+                    <div className="rounded-xl bg-white p-3 shadow-sm">Late {String(((summary.active_period as Record<string, unknown>).attendance_stats as Record<string, unknown> | undefined)?.late ?? 0)}</div>
+                    <div className="rounded-xl bg-white p-3 shadow-sm">Pending {String(((summary.active_period as Record<string, unknown>).attendance_stats as Record<string, unknown> | undefined)?.pending ?? 0)}</div>
+                    <div className="rounded-xl bg-white p-3 shadow-sm">Rate {String(((summary.active_period as Record<string, unknown>).attendance_stats as Record<string, unknown> | undefined)?.attendance_rate ?? 0)}%</div>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-4 text-sm text-slate-500">No active period is currently reported by the timetable service.</p>
+              )}
+            </div>
+
+            <div className="rounded-[1.75rem] border border-slate-200 bg-white p-4 shadow-sm">
+              <h2 className="text-lg font-semibold text-slate-900">At-risk sections</h2>
+              <div className="mt-4 space-y-3">
+                {(summary?.at_risk_sections ?? []).length === 0 ? (
+                  <p className="text-sm text-slate-500">No low-attendance sections were flagged today.</p>
+                ) : (
+                  summary?.at_risk_sections.map((section) => (
+                    <div key={section.class_id} className="rounded-2xl bg-slate-50 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">{section.class_name || section.class_id}</p>
+                          <p className="text-xs text-slate-500">{section.total_students} students · {section.marked} marked</p>
+                        </div>
+                        <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
+                          {section.attendance_rate}%
+                        </span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </Layout>
+    );
   }
 
   if (role === 'teacher') {
@@ -156,11 +247,7 @@ export const RoleLandingPage: React.FC = () => {
       return <ErrorState message="Student session is missing an ID. Please sign in again." />;
     }
 
-    return (
-      <Layout>
-        <DashboardPage />
-      </Layout>
-    );
+    return <StudentDashboardPage />;
   }
 
   return <ErrorState message="Your account role is not recognized." />;

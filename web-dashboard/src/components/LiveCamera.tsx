@@ -3,7 +3,7 @@ import {
   Play, StopCircle, Loader, AlertCircle, Camera,
   Check, X, ShieldCheck, User, RefreshCw, AlertTriangle,
 } from 'lucide-react';
-import { attendanceAPI, DetectFaceResponse, ConfirmAttendanceResponse } from '@/services/api';
+import { attendanceAPI, DetectFaceResponse, ConfirmAttendanceResponse, AttendanceWindowInfo, CandidateSuggestion } from '@/services/api';
 import { Card } from './UI';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -21,6 +21,8 @@ interface LiveCameraProps {
   autoStart?: boolean;
   /** Optional student id to hint the detection flow (passed as query param) */
   targetStudentId?: string | null;
+  /** Optional timetable period id to scope detection/confirmation */
+  periodId?: string | null;
 }
 
 // ── Confirmation Modal ─────────────────────────────────────────────────────────
@@ -29,6 +31,13 @@ interface ConfirmationModalProps {
   detection: DetectFaceResponse;
   onConfirm: () => void;
   onDeny: () => void;
+  isSaving: boolean;
+}
+
+interface CandidatePromptModalProps {
+  suggestions: CandidateSuggestion[];
+  onSelect: (candidate: CandidateSuggestion) => void;
+  onDismiss: () => void;
   isSaving: boolean;
 }
 
@@ -191,6 +200,73 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
     </div>
   );
 };
+
+const CandidatePromptModal: React.FC<CandidatePromptModalProps> = ({
+  suggestions,
+  onSelect,
+  onDismiss,
+  isSaving,
+}) => (
+  <div
+    className="fixed inset-0 z-50 flex items-center justify-center p-4"
+    style={{ backgroundColor: 'rgba(18,24,38,0.62)', backdropFilter: 'blur(5px)' }}
+  >
+    <div
+      className="relative w-full max-w-md rounded-2xl shadow-2xl overflow-hidden"
+      style={{
+        background: 'linear-gradient(160deg, #ffffff 0%, #f8fbff 60%, #eff6ff 100%)',
+        border: '1.5px solid #bfdbfe',
+      }}
+    >
+      <div style={{ height: 4, background: 'linear-gradient(90deg, #2563eb, #60a5fa, #2563eb)' }} />
+      <div className="p-6">
+        <h2 className="text-center font-bold mb-2" style={{ fontSize: 20, color: '#12315a' }}>
+          Who is this?
+        </h2>
+        <p className="text-center mb-4" style={{ color: '#334155', fontSize: 14 }}>
+          I found a few likely matches. Pick the correct person to mark attendance.
+        </p>
+        <div className="flex flex-col gap-3">
+          {suggestions.map((candidate) => {
+            const pct = Math.round(candidate.confidence * 100);
+            return (
+              <button
+                key={candidate.student_id}
+                disabled={isSaving}
+                onClick={() => onSelect(candidate)}
+                className="rounded-xl px-4 py-3 text-left transition-all active:scale-[0.99]"
+                style={{
+                  background: '#ffffff',
+                  border: '1px solid #dbeafe',
+                  boxShadow: '0 6px 18px rgba(37,99,235,0.06)',
+                  cursor: isSaving ? 'not-allowed' : 'pointer',
+                  opacity: isSaving ? 0.7 : 1,
+                }}
+              >
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p style={{ fontWeight: 700, color: '#0f172a' }}>{candidate.student_name}</p>
+                    <p style={{ fontSize: 12, color: '#64748b' }}>ID: {candidate.student_id}</p>
+                  </div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#2563eb' }}>{pct}%</div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        <div className="mt-4 flex gap-3">
+          <button
+            onClick={onDismiss}
+            className="flex-1 rounded-xl py-3 font-semibold"
+            style={{ background: '#e2e8f0', color: '#334155', border: 'none' }}
+          >
+            None of these
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+);
 
 // ── Hard Stop Modal ────────────────────────────────────────────────────────────
 
@@ -400,6 +476,7 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
   onConsecutiveFailures,
   autoStart,
   targetStudentId,
+  periodId,
 }) => {
   const videoRef    = useRef<HTMLVideoElement>(null);
   const canvasRef   = useRef<HTMLCanvasElement>(null);
@@ -434,6 +511,11 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
 
   // Success flash
   const [successName, setSuccessName] = useState<string | null>(null);
+  const [candidateCount, setCandidateCount] = useState<number | null>(null);
+  const [candidateIds, setCandidateIds] = useState<string[] | null>(null);
+  const [candidateSuggestions, setCandidateSuggestions] = useState<CandidateSuggestion[] | null>(null);
+  const [rejectedCandidateIds, setRejectedCandidateIds] = useState<string[]>([]);
+  const [windowInfo, setWindowInfo] = useState<AttendanceWindowInfo | null>(null);
 
   // ── Keep ref in sync; notify parent ───────────────────────────────────────
 
@@ -445,6 +527,23 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
   // ── Cleanup on unmount ────────────────────────────────────────────────────
 
   useEffect(() => () => stopCamera(), []);
+
+  useEffect(() => {
+    let alive = true;
+
+    const loadCandidateScope = async () => {
+      const info = await attendanceAPI.getAttendanceCandidates(periodId ?? undefined);
+      if (!alive) return;
+      setCandidateCount(info?.count ?? null);
+      setCandidateIds(info?.candidate_student_ids ?? null);
+    };
+
+    void loadCandidateScope();
+
+    return () => {
+      alive = false;
+    };
+  }, [periodId]);
 
   // ── Stop camera ───────────────────────────────────────────────────────────
 
@@ -461,6 +560,7 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
     setCameraState('idle');
     setFrameCount(0);
     setLastFeedback(null);
+    setWindowInfo(null);
     // Preserved from existing: always zero the streak on camera stop so a
     // manual stop doesn't carry stale failures into the next session.
     consecutiveFailuresRef.current = 0;
@@ -617,7 +717,28 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
         formData.append('file', blob, 'frame.jpg');
 
         // Step 1: identify only — does NOT write to the DB
-        const result: DetectFaceResponse = await attendanceAPI.detectFaceOnly(formData);
+        const result: DetectFaceResponse = await attendanceAPI.detectFaceOnly(
+          formData,
+          targetStudentId
+            ? {
+                scope_mode: 'self_verify',
+                student_id: targetStudentId,
+                period_id: periodId ?? undefined,
+                candidate_student_ids: candidateIds ?? undefined,
+                exclude_student_ids: rejectedCandidateIds.length > 0 ? rejectedCandidateIds : undefined,
+              }
+            : {
+                scope_mode: 'section_roster',
+                period_id: periodId ?? undefined,
+                candidate_student_ids: candidateIds ?? undefined,
+                exclude_student_ids: rejectedCandidateIds.length > 0 ? rejectedCandidateIds : undefined,
+              },
+        );
+        if (result.window) {
+          setWindowInfo(result.window);
+        }
+
+        setCandidateSuggestions(result.suggested_candidates ?? null);
 
         if (result.matched) {
           // ── SUCCESS: reset counter, pause loop, show confirmation ──────
@@ -626,6 +747,7 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
           pausedForConfirmRef.current = true;
           setLastFeedback(null);
           setPendingDetection(result);
+          setCandidateSuggestions(null);
         } else {
           // ── FAILURE: classify message, update feedback ─────────────────
           const msg = result.message || 'No matching face found.';
@@ -651,6 +773,19 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
             setLastFeedback(`🔍 ${msg}`);
           }
 
+          if (result.window?.is_locked || result.window?.phase === 'locked') {
+            setLastFeedback(result.window.message ?? 'Attendance window is locked.');
+            stopCamera();
+            return;
+          }
+
+          if (result.suggested_candidates?.length) {
+            setCandidateSuggestions(result.suggested_candidates);
+            pausedForConfirmRef.current = true;
+            setLastFeedback('🤔 Not certain. Please pick who this is.');
+            return;
+          }
+
           // All failure subtypes count toward the hard-stop threshold
           recordFailure(msg);
         }
@@ -671,12 +806,16 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
   const handleConfirm = async () => {
     if (!pendingDetection) return;
     setIsSaving(true);
-    try {
+      try {
+      const learningFrame = await captureFrame();
+
       // Step 2: persist to database
       const confirmation: ConfirmAttendanceResponse =
         await attendanceAPI.confirmAttendance(
           pendingDetection.student_id!,
           pendingDetection.confidence ?? 0,
+          periodId ?? undefined,
+          learningFrame ?? undefined,
         );
 
       setPendingDetection(null);
@@ -698,12 +837,22 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
       stopCamera();
       setTimeout(() => setSuccessName(null), 2400);
     } catch (err: any) {
-      const msg =
-        err?.response?.data?.detail ?? err?.message ?? 'Failed to save attendance.';
-      setPendingDetection(null);
-      pausedForConfirmRef.current = false;
-      setFeedbackType('error');
-      setLastFeedback(`❌ Save failed: ${msg}`);
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.detail ?? err?.message ?? 'Failed to save attendance.';
+      // 423 Locked — attendance window closed or not allowed
+      if (status === 423) {
+        setPendingDetection(null);
+        pausedForConfirmRef.current = false;
+        setFeedbackType('error');
+        setLastFeedback(`⛔ Attendance window closed: ${detail}`);
+        stopCamera();
+      } else {
+        const msg = detail;
+        setPendingDetection(null);
+        pausedForConfirmRef.current = false;
+        setFeedbackType('error');
+        setLastFeedback(`❌ Save failed: ${msg}`);
+      }
     } finally {
       setIsSaving(false);
     }
@@ -711,8 +860,13 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
 
   // ── Confirmation: user says "No, not me" ──────────────────────────────────
 
-  const handleDeny = () => {
+  const handleDeny = (studentIdToBlock?: string, extraBlocks?: string[]) => {
+    const blocked = [studentIdToBlock, ...(extraBlocks ?? [])].filter(Boolean) as string[];
+    if (blocked.length > 0) {
+      setRejectedCandidateIds((prev) => Array.from(new Set([...prev, ...blocked])));
+    }
     setPendingDetection(null);
+    setCandidateSuggestions(null);
     pausedForConfirmRef.current = false;
     setFeedbackType('info');
     setLastFeedback('🔄 Scanning resumed — please look at the camera.');
@@ -720,6 +874,38 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
     // failure — the system found the right person. Reset rather than increment.
     consecutiveFailuresRef.current = 0;
     setConsecutiveFailures(0);
+  };
+
+  const handleCandidateSelect = async (candidate: CandidateSuggestion) => {
+    if (!candidate) return;
+    setIsSaving(true);
+    try {
+      const confirmation = await attendanceAPI.confirmAttendance(
+        candidate.student_id,
+        candidate.confidence,
+        periodId ?? undefined,
+        await captureFrame() ?? undefined,
+      );
+
+      setCandidateSuggestions(null);
+      setSuccessName(confirmation.student_name);
+      consecutiveFailuresRef.current = 0;
+      setConsecutiveFailures(0);
+
+      onAttendanceMarked({
+        status: 'success',
+        message: confirmation.message,
+        student_name: confirmation.student_name,
+        student_id: confirmation.student_id,
+        confidence: confirmation.confidence,
+        record_id: confirmation.record_id,
+      });
+
+      stopCamera();
+      setTimeout(() => setSuccessName(null), 2400);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   // ── Derived render flags ───────────────────────────────────────────────────
@@ -738,7 +924,16 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
         <ConfirmationModal
           detection={pendingDetection}
           onConfirm={handleConfirm}
-          onDeny={handleDeny}
+          onDeny={() => handleDeny(pendingDetection.student_id)}
+          isSaving={isSaving}
+        />
+      )}
+
+      {!pendingDetection && candidateSuggestions && candidateSuggestions.length > 0 && (
+        <CandidatePromptModal
+          suggestions={candidateSuggestions}
+          onSelect={handleCandidateSelect}
+          onDismiss={() => handleDeny(undefined, candidateSuggestions.map((c) => c.student_id))}
           isSaving={isSaving}
         />
       )}
@@ -876,7 +1071,7 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
           {/* Preserved from existing: shown whenever active + feedback exists,
               but hidden during confirmation dialog or the warning strip so the
               UI doesn't double-up on red messages. */}
-          {isActive && lastFeedback && !pendingDetection && !nearLimit && (
+          {isActive && (lastFeedback || windowInfo?.message) && !pendingDetection && !nearLimit && (
             <div
               className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium"
               style={{
@@ -895,12 +1090,19 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
                       : '#7a5c3e',
               }}
             >
-              <span className="flex-1">{lastFeedback}</span>
+              <span className="flex-1">{lastFeedback ?? windowInfo?.message}</span>
               {frameCount > 0 && (
                 <span className="text-xs opacity-50 ml-2 flex-shrink-0">
                   frame {frameCount}
                 </span>
               )}
+            </div>
+          )}
+
+          {candidateCount !== null && (
+            <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-500 shadow-sm">
+              <span className="h-2 w-2 rounded-full bg-emerald-500" />
+              Candidate pool: {candidateCount}
             </div>
           )}
 

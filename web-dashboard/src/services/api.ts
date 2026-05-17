@@ -3,7 +3,7 @@
 import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig } from 'axios';
 import { withRetry, isRetryableError, RetryConfig } from '../utils/retry-handler';
 import { getAuthToken, clearSession, SESSION_TOKEN_KEY } from './firebase/auth.service';
-import { resolveUserRole } from '../utils/roles';
+import { resolveUserRole, getStoredRole } from '../utils/roles';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Axios Client
@@ -177,6 +177,14 @@ export interface DetectFaceResponse {
   confidence?: number;
   record_id?: string;
   timestamp?: string;
+  window?: AttendanceWindowInfo | null;
+  suggested_candidates?: CandidateSuggestion[];
+}
+
+export interface CandidateSuggestion {
+  student_id: string;
+  student_name: string;
+  confidence: number;
 }
 
 /** Response from confirm-attendance endpoint (Step 2). Record persisted. */
@@ -256,6 +264,37 @@ export interface PeriodInfo {
   course_name: string;
   class_id: string;
   day_of_week?: string;
+  faculty_name?: string;
+  room?: string;
+  is_lab_class?: boolean;
+  course_color?: string;
+}
+
+export interface AttendanceWindowInfo {
+  period_id?: string;
+  phase?: string;
+  message?: string;
+  start_time?: string;
+  end_time?: string;
+  grace_minutes_left?: number;
+  remaining_minutes?: number;
+  is_open?: boolean;
+  is_locked?: boolean;
+}
+
+/** Scope parameters sent with every face-detection request. Derived from auth context. */
+export interface FaceDetectScopeParams {
+  scope_mode: 'self_verify' | 'section_roster';
+  student_id?: string;
+  section_id?: string;
+  period_id?: string;
+  candidate_student_ids?: string[];
+  exclude_student_ids?: string[];
+}
+
+export interface AttendanceCandidatesResponse {
+  candidate_student_ids: string[] | null;
+  count: number | null;
 }
 
 export interface AdminHistoryFilters {
@@ -604,20 +643,40 @@ class AttendanceAPI {
 
     sessionStorage.setItem('user_email', email);
     sessionStorage.setItem('user_role', resolution.role);
+    sessionStorage.setItem('assigned_sections', JSON.stringify(Array.isArray(data?.assigned_sections) ? data.assigned_sections : []));
 
     return resolution.role;
   }
 
   // ── Two-Step Attendance Flow ────────────────────────────────────────────────
 
-  async detectFaceOnly(formData: FormData): Promise<DetectFaceResponse> {
+  async detectFaceOnly(
+    formData: FormData,
+    scope: FaceDetectScopeParams
+  ): Promise<DetectFaceResponse> {
+    // Build query string from scope params — backend reads them as Query params
+    const params = new URLSearchParams();
+    params.set('scope_mode', scope.scope_mode);
+    if (scope.student_id) params.set('student_id', scope.student_id);
+    if (scope.section_id) params.set('section_id', scope.section_id);
+    if (scope.period_id)  params.set('period_id',  scope.period_id);
+    if (scope.candidate_student_ids?.length) {
+      params.set('candidate_student_ids', scope.candidate_student_ids.join(','));
+    }
+    if (scope.exclude_student_ids?.length) {
+      params.set('exclude_student_ids', scope.exclude_student_ids.join(','));
+    }
+
     try {
       return await withRetry(
         async () => {
           const response = await apiClient.post<DetectFaceResponse>(
-            '/api/v1/attendance/detect-face-only',
+            `/api/v1/attendance/detect-face-only?${params.toString()}`,
             formData,
-            { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 25_000 }
+            {
+              headers: { 'Content-Type': 'multipart/form-data' },
+              timeout: 25_000,
+            }
           );
           return response.data;
         },
@@ -631,14 +690,24 @@ class AttendanceAPI {
 
   async confirmAttendance(
     studentId: string,
-    confidence: number
+    confidence: number,
+    periodId?: string,
+    frame?: Blob | File | null,
   ): Promise<ConfirmAttendanceResponse> {
     const response = await withRetry(
       async () => {
+        const body = new FormData();
+        body.append('student_id', studentId);
+        body.append('confidence', String(confidence));
+        if (periodId) body.append('period_id', periodId);
+        if (frame) {
+          const fileName = frame instanceof File ? frame.name : 'confirmed_frame.jpg';
+          body.append('frame', frame, fileName);
+        }
         const response = await apiClient.post<ConfirmAttendanceResponse>(
           '/api/v1/attendance/confirm-attendance',
-          { student_id: studentId, confidence },
-          { timeout: 15_000 }
+          body,
+          { timeout: 25_000, headers: { 'Content-Type': 'multipart/form-data' } }
         );
         return response.data;
       },
@@ -646,6 +715,41 @@ class AttendanceAPI {
     );
     publishAttendanceUpdated();
     return response;
+  }
+
+  async getAttendanceCandidates(periodId?: string): Promise<AttendanceCandidatesResponse | null> {
+    try {
+      return await withRetry(async () => {
+        const response = await apiClient.get('/api/v1/attendance/candidates', {
+          params: { ...(periodId ? { period_id: periodId } : {}) },
+        });
+        const data = response.data as Record<string, unknown>;
+        const candidatesRaw = data.candidate_student_ids;
+        return {
+          candidate_student_ids: Array.isArray(candidatesRaw)
+            ? candidatesRaw.map((value) => String(value))
+            : null,
+          count: data.count != null ? Number(data.count) : null,
+        };
+      }, this.retryConfig);
+    } catch (err) {
+      console.error('[getAttendanceCandidates] Error:', err);
+      return null;
+    }
+  }
+
+  async getWindowStatus(periodId: string): Promise<AttendanceWindowInfo | null> {
+    try {
+      return await withRetry(async () => {
+        const response = await apiClient.get('/api/v1/attendance/window-status', {
+          params: { period_id: periodId },
+        });
+        return response.data as AttendanceWindowInfo;
+      }, this.retryConfig);
+    } catch (err) {
+      console.warn('[getWindowStatus] Error:', err);
+      return null;
+    }
   }
 
   /** @deprecated Use detectFaceOnly + confirmAttendance for the two-step flow. */
@@ -1177,16 +1281,52 @@ class AttendanceAPI {
   /**
    * Paginated, filterable attendance history for admin and teacher roles.
    * Supports filtering by class, period, date (single or range), status, and
-   * free-text search. Falls back to live attendance on error.
+   * free-text search.
    */
   async getAdminHistory(filters: AdminHistoryFilters): Promise<PaginatedAdminHistory> {
     const {
       classId, periodId, date, startDate, endDate,
       status, search, page = 1, limit = 50,
     } = filters;
+    const role = getStoredRole();
 
     try {
       return await withRetry(async () => {
+        if (role === 'teacher') {
+          // Teachers must always query the scoped teacher endpoint.
+          if (!classId) {
+            return {
+              records: [],
+              total: 0,
+              page,
+              total_pages: 1,
+            };
+          }
+
+          const teacherResponse = await apiClient.get('/api/v1/teacher/attendance/history', {
+            params: {
+              class_id: classId,
+              ...(date ? { start_date: date, end_date: date } : {}),
+              ...(startDate ? { start_date: startDate } : {}),
+              ...(endDate ? { end_date: endDate } : {}),
+              page,
+              page_size: limit,
+            },
+          });
+
+          const td = teacherResponse.data as Record<string, unknown>;
+          const teacherRecords = toArray<Record<string, unknown>>(
+            (td.records ?? td.data ?? td) as unknown
+          );
+
+          return {
+            records: teacherRecords.map(normaliseAdminRecord),
+            total: Number(td.total ?? teacherRecords.length),
+            page: Number(td.page ?? page),
+            total_pages: Number(td.total_pages ?? (Math.ceil(teacherRecords.length / limit) || 1)),
+          };
+        }
+
         const response = await apiClient.get('/api/v1/admin/attendance/history', {
           params: {
             ...(classId   ? { class_id:   classId   } : {}),
@@ -1225,25 +1365,40 @@ class AttendanceAPI {
         };
       }, this.retryConfig);
     } catch (err) {
-      console.error('[getAdminHistory] Error — attempting live-attendance fallback:', err);
-      try {
-        const live = await this.getLiveAttendance(undefined, limit);
-        const shaped: AdminAttendanceRecord[] = live.map((r) => ({
-          record_id: r.id,
-          student_id: r.student_id,
-          student_name: r.student_name,
-          course_name: r.course_name,
-          date: r.marked_at.slice(0, 10),
-          time: r.marked_at.slice(11, 16),
-          status: r.status as AdminAttendanceRecord['status'],
-          confidence: r.confidence,
-        }));
-        return { records: shaped, total: shaped.length, page: 1, total_pages: 1 };
-      } catch {
-        return { records: [], total: 0, page: 1, total_pages: 0 };
-      }
+          console.error('[getAdminHistory] Scoped history fetch failed:', err);
+          return { records: [], total: 0, page: 1, total_pages: 1 };
     }
   }
+
+      async getTeacherAvailablePeriods(date?: string): Promise<PeriodInfo[]> {
+        try {
+          return await withRetry(async () => {
+            const response = await apiClient.get('/api/v1/teacher/available-periods', {
+              params: {
+                ...(date ? { date } : {}),
+              },
+            });
+            const payload = response.data as Record<string, unknown>;
+            const rows = toArray<Record<string, unknown>>(payload.available_periods ?? payload.periods ?? []);
+            return rows.map((p) => ({
+              period_id: String(p.period_id ?? p.id ?? ''),
+              start_time: String(p.start_time ?? ''),
+              end_time: String(p.end_time ?? ''),
+              course_code: String(p.course_code ?? ''),
+              course_name: String(p.course_name ?? ''),
+              class_id: String(p.class_id ?? p.section_id ?? ''),
+              day_of_week: p.day_of_week ? String(p.day_of_week) : undefined,
+              faculty_name: p.faculty_name ? String(p.faculty_name) : undefined,
+              room: p.room ? String(p.room) : undefined,
+              is_lab_class: Boolean(p.is_lab_class ?? false),
+              course_color: p.course_color ? String(p.course_color) : undefined,
+            }));
+          }, this.retryConfig);
+        } catch (err) {
+          console.error('[getTeacherAvailablePeriods] Error:', err);
+          return [];
+        }
+      }
 
   /**
    * Returns the list of classes/sections visible to the current user.
@@ -1707,4 +1862,10 @@ class AttendanceAPI {
 }
 
 export const attendanceAPI = new AttendanceAPI();
+export const timetableAPI = {
+  async getTodayPeriods(classId: string): Promise<PeriodInfo[]> {
+    const periods = await attendanceAPI.getTeacherAvailablePeriods(new Date().toISOString().slice(0, 10));
+    return periods.filter((p) => p.class_id === classId);
+  },
+};
 export default apiClient;

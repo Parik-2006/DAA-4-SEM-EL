@@ -46,7 +46,7 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import Optional, List
 
-from fastapi import APIRouter, HTTPException, Query, Body, File, UploadFile, status
+from fastapi import APIRouter, HTTPException, Query, Body, File, Form, UploadFile, status, Depends, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -66,6 +66,9 @@ from schemas.teacher_schemas import WindowClosedResponse, WindowAwareMarkRespons
 import numpy as np
 from scipy.spatial.distance import cosine
 from services.firebase_service import get_firebase_service, FirebaseService
+from decorators.auth_decorators import get_optional_user, get_current_user
+from database.student_repository import StudentRepository
+from config.constants import DB_FIELD_STUDENT_ID, COLLECTION_TIMETABLE
 from services.rtsp_stream_handler import get_stream_manager
 from services.attendance_lock_service import get_lock_service
 from config.constants import (
@@ -73,6 +76,8 @@ from config.constants import (
     LATE_THRESHOLD_MINUTES,
     TIME_FORMAT_HM,
 )
+from services.embedding_scope_service import get_scope_service
+from models.scoped_matcher import match_against_scope
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +205,233 @@ async def _maybe_autolock(period_id: str) -> None:
         logger.debug("_maybe_autolock swallowed: %s", exc)
 
 
+def _resolve_scope(
+    scope_mode: str,
+    student_id: Optional[str],
+    section_id: Optional[str],
+):
+    """
+    Build the EmbeddingScope the caller is allowed to search.
+
+    self_verify   → only the authenticated student's own embeddings.
+    section_roster→ all enrolled students in the active section (teacher).
+    """
+    scope_svc = get_scope_service()
+    if scope_svc is None:
+        # Fallback: full database scan (original behaviour)
+        return None
+
+    if scope_mode == "self_verify" and student_id:
+        return scope_svc.resolve_student_scope(student_id)
+
+    if scope_mode == "section_roster" and section_id:
+        return scope_svc.resolve_section_scope(section_id)
+
+    return None
+
+
+def _get_candidate_ids_for_user(user, period_id: Optional[str] = None, limit: int = 500):
+    """Return list of candidate student IDs appropriate for the authenticated user.
+
+    - Students -> their active class/period roster when possible, otherwise themselves
+    - Teachers -> students in the period's class_id (if provided) else students in assigned sections
+    - Admins -> None (meaning unrestricted)
+    """
+    try:
+        fb = get_firebase_service()
+        if fb is None:
+            return None
+
+        # Students -> prefer the active period roster so attendance can match
+        # against the same enrolled peers the teacher expects for that slot.
+        if user.is_student():
+            if period_id:
+                try:
+                    db = getattr(fb, "firestore_db", None) or getattr(fb, "_firestore", None)
+                    class_id = None
+                    if db:
+                        pd_doc = db.collection(COLLECTION_TIMETABLE).document(period_id).get()
+                        if pd_doc.exists:
+                            class_id = pd_doc.to_dict().get("class_id") or pd_doc.to_dict().get("section_id")
+                    if class_id:
+                        repo = StudentRepository()
+                        students = repo.list_students(course_id=class_id)
+                        candidate_ids = [s.get(DB_FIELD_STUDENT_ID) or s.get("student_id") for s in students if s]
+
+                        seen = set()
+                        out = []
+                        for sid in candidate_ids:
+                            if not sid or sid in seen:
+                                continue
+                            seen.add(sid)
+                            out.append(sid)
+                            if len(out) >= limit:
+                                break
+                        if out:
+                            return out
+                except Exception:
+                    pass
+
+            return [user.user_id]
+
+        # Determine class/section from period if available
+        class_id = None
+        if period_id:
+            try:
+                db = getattr(fb, "firestore_db", None) or getattr(fb, "_firestore", None)
+                if db:
+                    pd_doc = db.collection(COLLECTION_TIMETABLE).document(period_id).get()
+                    if pd_doc.exists:
+                        class_id = pd_doc.to_dict().get("class_id") or pd_doc.to_dict().get("section_id")
+            except Exception:
+                class_id = None
+
+        repo = StudentRepository()
+        candidate_ids = []
+
+        if user.is_teacher():
+            if class_id:
+                students = repo.list_students(course_id=class_id)
+                candidate_ids = [s.get(DB_FIELD_STUDENT_ID) or s.get("student_id") for s in students if s]
+            else:
+                # fallback to assigned_sections
+                for sec in (user.assigned_sections or []):
+                    students = repo.list_students(course_id=sec)
+                    candidate_ids.extend([s.get(DB_FIELD_STUDENT_ID) or s.get("student_id") for s in students if s])
+        else:
+            # Admin or other roles -> no narrowing
+            return None
+
+        # Deduplicate and limit
+        seen = set()
+        out = []
+        for sid in candidate_ids:
+            if not sid:
+                continue
+            if sid in seen:
+                continue
+            seen.add(sid)
+            out.append(sid)
+            if len(out) >= limit:
+                break
+        return out
+    except Exception:
+        return None
+
+
+def _queue_verified_outcome(
+    record_id: str,
+    student_id: str,
+    period_id: Optional[str],
+    confidence: float,
+    marked_at_iso: str,
+) -> None:
+    """
+    Persist a verified outcome for downstream learning jobs.
+
+    Only explicit confirmation flows should enqueue records here.
+    Any future learning/index refresh pipeline must source from this
+    collection rather than raw detection attempts.
+    
+    Errors are logged but do not block the main attendance flow.
+    This is a fire-and-forget operation with best-effort persistence.
+    """
+    try:
+        # Use direct Firestore import to ensure DB access
+        from services.firebase_service import get_firebase_service
+        
+        fb = get_firebase_service()
+        if fb is None:
+            logger.warning(
+                "Firebase service unavailable; cannot queue verified outcome. "
+                "record_id=%s student=%s",
+                record_id,
+                student_id
+            )
+            return
+        
+        # Try multiple attribute names for Firestore DB (handles various init patterns)
+        db = (
+            getattr(fb, "firestore_db", None) or
+            getattr(fb, "_firestore", None) or
+            getattr(fb, "db", None)
+        )
+        
+        if db is None:
+            logger.warning(
+                "Firestore DB not available in Firebase service (tried: firestore_db, _firestore, db). "
+                "Cannot queue verified outcome for record_id=%s",
+                record_id
+            )
+            return
+
+        # Validate inputs
+        if not record_id or not student_id:
+            logger.error(
+                "Cannot queue verified outcome: invalid inputs. "
+                "record_id=%s student_id=%s",
+                record_id,
+                student_id
+            )
+            return
+
+        payload = {
+            "record_id": record_id,
+            "student_id": student_id,
+            "period_id": period_id or None,
+            "confidence": round(float(confidence), 4),
+            "verified": True,
+            "verified_at": marked_at_iso,
+            "source": "confirm_attendance",
+            "queued_at": datetime.now().isoformat(),
+        }
+        
+        # Write to Firestore with explicit error handling
+        try:
+            doc_ref = db.collection("verified_face_outcomes").document(record_id)
+            result = doc_ref.set(payload, merge=True)
+            logger.info(
+                "✓ Verified outcome queued: record_id=%s student=%s confidence=%.2f source=confirm_attendance",
+                record_id,
+                student_id,
+                confidence
+            )
+        except AttributeError as ae:
+            logger.error(
+                "Database object missing expected methods. "
+                "record_id=%s error=%s",
+                record_id,
+                ae,
+                exc_info=True
+            )
+            raise
+        except TypeError as te:
+            logger.error(
+                "Invalid database object or payload. "
+                "record_id=%s error=%s payload_keys=%s",
+                record_id,
+                te,
+                list(payload.keys()),
+                exc_info=True
+            )
+            raise
+        
+    except Exception as exc:
+        # Log the error with full context but do not raise
+        # This preserves the original attendance record even if verified outcome fails
+        logger.error(
+            "Failed to queue verified outcome (non-fatal): "
+            "record_id=%s student=%s period=%s error_type=%s error=%s",
+            record_id,
+            student_id,
+            period_id,
+            type(exc).__name__,
+            str(exc),
+            exc_info=True
+        )
+        # Do not raise - allow attendance record to succeed even if outcome persistence fails
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Inference helpers  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -288,21 +520,189 @@ async def _extract_embedding_from_upload(file: UploadFile):
     return embedding, None
 
 
-def _match_embedding_sync(embedding: np.ndarray, firebase, threshold: float = COSINE_THRESHOLD):
-    all_students = firebase.get_all_students()
+def _match_embedding_sync(
+    embedding: np.ndarray,
+    firebase,
+    threshold: float = COSINE_THRESHOLD,
+    candidate_student_ids: Optional[List[str]] = None,
+    candidate_course_id: Optional[str] = None,
+):
+    """
+    Match embedding against a bounded candidate set when provided.
+
+    - If `candidate_student_ids` is provided, only those students are checked.
+    - Else if `candidate_course_id` is provided, students returned by
+      `StudentRepository.list_students(course_id)` are checked.
+    - Otherwise all students are searched (legacy behaviour).
+    """
+    from database.student_repository import StudentRepository
+
     best_distance = float("inf")
-    best_student  = None
-    for student in all_students:
+    best_student = None
+
+    # Build candidate list
+    candidates: List[dict] = []
+    try:
+        if candidate_student_ids:
+            for sid in candidate_student_ids:
+                st = firebase.get_student(sid)
+                if st:
+                    candidates.append(st)
+        elif candidate_course_id:
+            repo = StudentRepository()
+            students = repo.list_students(course_id=candidate_course_id)
+            candidates.extend(students)
+        else:
+            candidates = firebase.get_all_students()
+    except Exception:
+        # Fallback to full scan on any error
+        candidates = firebase.get_all_students()
+
+    for student in candidates:
         stored_embs = FirebaseService.get_all_embeddings(student)
         for arr in stored_embs:
-            if arr.shape != embedding.shape:
+            try:
+                if arr.shape != embedding.shape:
+                    continue
+            except Exception:
+                # skip malformed arrays
                 continue
             dist = float(cosine(embedding, arr))
             if dist < best_distance:
                 best_distance = dist
-                best_student  = student
+                best_student = student
+
     confidence = float(1.0 - min(best_distance, 1.0)) if best_student else 0.0
     return best_student, confidence, best_distance
+
+
+def _rank_embedding_candidates_sync(
+    embedding: np.ndarray,
+    firebase,
+    candidate_student_ids: Optional[List[str]] = None,
+    candidate_course_id: Optional[str] = None,
+    limit: int = 3,
+) -> List[dict]:
+    """Return the top-N candidate identities ordered by similarity.
+
+    Used when the matcher is uncertain so the UI can prompt the user with
+    likely identities instead of simply failing silently.
+    """
+    from database.student_repository import StudentRepository
+
+    candidates: List[dict] = []
+    try:
+        if candidate_student_ids:
+            for sid in candidate_student_ids:
+                st = firebase.get_student(sid)
+                if st:
+                    candidates.append(st)
+        elif candidate_course_id:
+            repo = StudentRepository()
+            students = repo.list_students(course_id=candidate_course_id)
+            candidates.extend(students)
+        else:
+            candidates = firebase.get_all_students()
+    except Exception:
+        candidates = firebase.get_all_students()
+
+    try:
+        q = embedding.astype(np.float32)
+        q = q / (np.linalg.norm(q) + 1e-10)
+    except Exception:
+        q = embedding
+
+    ranked: List[dict] = []
+    for student in candidates:
+        best_score = -1.0
+        for arr in FirebaseService.get_all_embeddings(student):
+            try:
+                if arr.shape != embedding.shape:
+                    continue
+                e = arr.astype(np.float32)
+                e = e / (np.linalg.norm(e) + 1e-10)
+                score = float(np.dot(q, e))
+                if score > best_score:
+                    best_score = score
+            except Exception:
+                continue
+
+        if best_score >= 0.0:
+            ranked.append({
+                "student_id": student.get("student_id", ""),
+                "student_name": student.get("name", "Unknown"),
+                "confidence": round(max(0.0, min(1.0, best_score)), 4),
+            })
+
+    ranked.sort(key=lambda item: item["confidence"], reverse=True)
+    return ranked[:limit]
+
+
+def _scoped_match(
+    embedding: np.ndarray,
+    firebase,
+    user,
+    period_id: Optional[str],
+    scope_mode: str,
+    student_id: Optional[str],
+    section_id: Optional[str],
+    exclude_student_ids: Optional[List[str]] = None,
+):
+    """Resolve an identity scope and run a scoped embedding search (sync).
+
+    Returns a ScopedMatchResult-like tuple when called from threadpool.
+    """
+    from datetime import datetime
+    from models.identity_context import ScopeTarget, IdentityScopeType
+    from services.identity_context_service import IdentityContextService
+    from services.scoped_embedding_search import ScopedEmbeddingSearch
+
+    # Resolve scope
+    scope = None
+    try:
+        if user is not None:
+            if user.is_student() and scope_mode == "section_roster":
+                roster_ids = _get_candidate_ids_for_user(user, period_id=period_id) or [user.user_id]
+                if exclude_student_ids:
+                    blocked = {sid for sid in exclude_student_ids if sid}
+                    roster_ids = [sid for sid in roster_ids if sid not in blocked]
+                scope = ScopeTarget(
+                    scope_type=IdentityScopeType.SECTION,
+                    student_ids=roster_ids,
+                    resolved_by=user.user_id,
+                    resolved_at=datetime.now().isoformat(),
+                    period_id=period_id,
+                )
+            else:
+                svc = IdentityContextService(firebase_client=firebase, period_detection_service=None)
+                scope = svc.resolve(user, period_id=period_id)
+        else:
+            # Anonymous callers: allow explicit params
+            if scope_mode == "self_verify" and student_id:
+                scope = ScopeTarget(scope_type=IdentityScopeType.SELF, student_ids=[student_id], resolved_by=student_id, resolved_at=datetime.now().isoformat())
+            elif scope_mode == "section_roster" and section_id and firebase:
+                # Try to load roster from Firestore
+                try:
+                    db = getattr(firebase, "firestore_db", None) or getattr(firebase, "_firestore", None)
+                    ids = []
+                    if db:
+                        docs = db.collection("enrollments").where("section_id", "==", section_id).stream()
+                        ids = [d.to_dict().get("student_id") for d in docs]
+                        ids = [i for i in ids if i]
+                    if exclude_student_ids:
+                        blocked = {sid for sid in exclude_student_ids if sid}
+                        ids = [sid for sid in ids if sid not in blocked]
+                    scope = ScopeTarget(scope_type=IdentityScopeType.SECTION, student_ids=ids, resolved_by="anonymous", resolved_at=datetime.now().isoformat(), section_id=section_id)
+                except Exception:
+                    scope = ScopeTarget(scope_type=IdentityScopeType.GLOBAL, student_ids=[], resolved_by="anonymous", resolved_at=datetime.now().isoformat())
+            else:
+                scope = ScopeTarget(scope_type=IdentityScopeType.GLOBAL, student_ids=[], resolved_by="anonymous", resolved_at=datetime.now().isoformat())
+    except Exception:
+        scope = ScopeTarget(scope_type=IdentityScopeType.GLOBAL, student_ids=[], resolved_by="system", resolved_at=datetime.now().isoformat())
+
+    searcher = ScopedEmbeddingSearch(firebase_service=firebase)
+    result = searcher.search(embedding, scope)
+    return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -346,6 +746,29 @@ async def get_window_status(
         raise HTTPException(500, f"Window status check failed: {exc}")
 
     return JSONResponse(status_code=200, content=window)
+
+
+@router.get(
+    "/candidates",
+    summary="Return candidate student IDs for the authenticated user and optional period",
+)
+async def get_candidates(
+    period_id: Optional[str] = Query(None, description="Period ID to scope candidates"),
+    limit: int = Query(500, description="Maximum candidates to return"),
+    user = Depends(get_current_user),
+):
+    """Return the list of student IDs the calling user is allowed to match against.
+
+    - Students receive only their own ID.
+    - Teachers receive students for the period's class or their assigned sections.
+    - Admin receives `null` candidates (meaning unrestricted/full-scan).
+    """
+    candidates = _get_candidate_ids_for_user(user, period_id=period_id, limit=limit)
+    # Null means unrestricted (admin or error). Clients should interpret null as "no server-side narrowing".
+    return JSONResponse(status_code=200, content={
+        "candidate_student_ids": candidates,
+        "count": len(candidates) if candidates is not None else None,
+    })
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -394,7 +817,24 @@ async def detect_face_only(
         None,
         description="If supplied, window status is included in the response",
     ),
+    # Backwards-compatible candidate narrowing
+    candidate_student_ids: Optional[str] = Query(
+        None,
+        description="Comma-separated student IDs to narrow the search",
+    ),
+    candidate_course_id: Optional[str] = Query(
+        None,
+        description="Course/section id to narrow candidate students",
+    ),
+    # ★ New scope parameters — frontend sends these based on logged-in role
+    scope_mode:  str           = Query("section_roster", description="self_verify | section_roster"),
+    student_id:  Optional[str] = Query(None, description="Required for self_verify"),
+    section_id:  Optional[str] = Query(None, description="Required for section_roster"),
+    exclude_student_ids: Optional[str] = Query(None, description="Comma-separated student IDs to avoid for this session"),
+    user = Depends(get_optional_user),
 ):
+    excluded_ids = [s.strip() for s in exclude_student_ids.split(",")] if exclude_student_ids else None
+
     embedding, err = await _extract_embedding_from_upload(file)
     if err is not None:
         return err
@@ -407,38 +847,134 @@ async def detect_face_only(
     window_info = _get_window_for_period(period_id)
 
     try:
-        best_student, confidence, best_distance = await run_in_threadpool(
-            _match_embedding_sync, embedding, firebase, COSINE_THRESHOLD
+        # Resolve identity context and run scoped search (preferred)
+        scoped_result = await run_in_threadpool(
+            _scoped_match, embedding, firebase, user, period_id, scope_mode, student_id, section_id, excluded_ids
         )
+
+        # `scoped_result` is a ScopedMatchResult instance
+        if hasattr(scoped_result, "matched"):
+            if not scoped_result.matched:
+                suggestions = await run_in_threadpool(
+                    _rank_embedding_candidates_sync,
+                    embedding,
+                    firebase,
+                    [s.strip() for s in candidate_student_ids.split(",")] if candidate_student_ids else None,
+                    candidate_course_id,
+                    3,
+                )
+
+                legacy_best_student, legacy_confidence, legacy_best_distance = await run_in_threadpool(
+                    _match_embedding_sync,
+                    embedding,
+                    firebase,
+                    COSINE_THRESHOLD,
+                    None,
+                    None,
+                )
+                if legacy_best_student is not None and legacy_best_distance <= COSINE_THRESHOLD:
+                    del embedding
+                    gc.collect()
+                    return JSONResponse(status_code=200, content={
+                        "matched": True,
+                        "message": f"Face identified: {legacy_best_student.get('name', 'Unknown')} (legacy fallback)",
+                        "student_name": legacy_best_student.get("name", "Unknown"),
+                        "student_id": legacy_best_student.get("student_id", ""),
+                        "confidence": round(legacy_confidence, 4),
+                        "scope_mode": scope_mode,
+                        "window": window_info,
+                        "suggested_candidates": suggestions,
+                    })
+
+                del embedding
+                gc.collect()
+                no_match_msg = (
+                    "Face does not match your registered profile."
+                    if scope_mode == "self_verify"
+                    else scoped_result.message
+                )
+                return JSONResponse(status_code=200, content={
+                    "matched": False,
+                    "message": no_match_msg,
+                    "scope_mode": scope_mode,
+                    "window": window_info,
+                    "suggested_candidates": suggestions,
+                })
+
+            best_student = {"student_id": scoped_result.student_id, "name": scoped_result.student_name}
+            confidence = scoped_result.confidence
+            best_distance = scoped_result.distance
+        else:
+            # Fallback to legacy behaviour
+            if not candidate_student_ids and not candidate_course_id and user is not None:
+                derived = _get_candidate_ids_for_user(user, period_id=period_id)
+                candidate_ids = derived
+                candidate_course = None
+            else:
+                candidate_ids = [s.strip() for s in candidate_student_ids.split(",")] if candidate_student_ids else None
+                candidate_course = candidate_course_id
+
+            if excluded_ids:
+                blocked = {sid for sid in excluded_ids if sid}
+                candidate_ids = [sid for sid in (candidate_ids or []) if sid not in blocked] if candidate_ids else candidate_ids
+
+            best_student, confidence, best_distance = await run_in_threadpool(
+                _match_embedding_sync, embedding, firebase, COSINE_THRESHOLD, candidate_ids, candidate_course
+            )
         del embedding
         gc.collect()
+        if best_student is None:
+            suggestions = await run_in_threadpool(
+                _rank_embedding_candidates_sync,
+                embedding,
+                firebase,
+                candidate_ids,
+                candidate_course,
+                3,
+            )
 
-        if best_student is None or best_distance > COSINE_THRESHOLD:
+            legacy_best_student, legacy_confidence, legacy_best_distance = await run_in_threadpool(
+                _match_embedding_sync,
+                embedding,
+                firebase,
+                COSINE_THRESHOLD,
+                None,
+                None,
+            )
+            if legacy_best_student is not None and legacy_best_distance <= COSINE_THRESHOLD:
+                del embedding
+                gc.collect()
+                return JSONResponse(status_code=200, content={
+                    "matched": True,
+                    "message": f"Face identified: {legacy_best_student.get('name', 'Unknown')} (legacy fallback)",
+                    "student_name": legacy_best_student.get("name", "Unknown"),
+                    "student_id": legacy_best_student.get("student_id", ""),
+                    "confidence": round(legacy_confidence, 4),
+                    "scope_mode": scope_mode,
+                    "window": window_info,
+                    "suggested_candidates": suggestions,
+                })
+
+            no_match_msg = (
+                "Face does not match your registered profile."
+                if scope_mode == "self_verify"
+                else f"Face not recognised in section roster. Similarity: {max(0.0, 1-best_distance):.2f}"
+            )
             return JSONResponse(status_code=200, content={
                 "matched": False,
-                "message": (
-                    f"Face not recognised. "
-                    f"Best similarity: {max(0.0, 1 - best_distance):.2f} "
-                    f"(threshold: {1 - COSINE_THRESHOLD:.2f}). "
-                    "Ensure your face is clearly visible and well-lit, "
-                    "or ask admin to register your face profile."
-                ),
+                "message": no_match_msg,
+                "scope_mode": scope_mode,
                 "window": window_info,
+                "suggested_candidates": suggestions,
             })
-
-        student_id   = best_student.get("student_id", "")
-        student_name = best_student.get("name", "Unknown")
-        logger.info(
-            "Face identified (NOT recorded): %s (%s) conf=%.2f",
-            student_id, student_name, confidence,
-        )
 
         return JSONResponse(status_code=200, content={
             "matched":      True,
-            "message":      f"Face identified: {student_name}",
-            "student_name": student_name,
-            "student_id":   student_id,
+            "message":      f"Face identified: {best_student.get('name', 'Unknown')}",
+            "student_name": best_student.get("name", "Unknown"),
+            "student_id":   best_student.get("student_id", ""),
             "confidence":   round(confidence, 4),
+            "scope_mode":   scope_mode,
             "window":       window_info,
         })
     except ImportError:
@@ -460,9 +996,10 @@ async def detect_face_only(
     summary="Confirm and persist attendance after user approval (window-enforced)",
 )
 async def confirm_attendance(
-    student_id: str  = Body(..., embed=True),
-    confidence: float = Body(0.0, embed=True),
-    period_id: Optional[str] = Body(None, embed=True),
+    student_id: str = Form(...),
+    confidence: float = Form(0.0),
+    period_id: Optional[str] = Form(None),
+    frame: Optional[UploadFile] = File(None),
 ):
     """
     Confirm and write an attendance record.
@@ -544,6 +1081,49 @@ async def confirm_attendance(
                 after=record_snapshot,
             )
 
+        if record_id:
+            _queue_verified_outcome(
+                record_id=record_id,
+                student_id=student_id,
+                period_id=period_id,
+                confidence=confidence,
+                marked_at_iso=timestamp.isoformat(),
+            )
+
+            # Optional online learning: use the confirmed frame as a new sample.
+            if frame is not None:
+                try:
+                    learned_embedding, error_content = await _extract_embedding_from_upload(frame)
+                    if error_content is None and learned_embedding is not None:
+                        firebase.store_embedding(student_id, learned_embedding)
+                        firebase.compute_and_update_prototype(student_id)
+                    elif error_content is not None:
+                        logger.warning("Frame learning skipped for %s: %s", student_id, error_content.body if hasattr(error_content, 'body') else 'invalid frame')
+                except Exception:
+                    logger.exception("Failed to store/update prototype for %s", student_id)
+
+            # Realtime broadcast — fire after the write (non-blocking task)
+            try:
+                if period_id:
+                    from services.realtime_service import get_realtime_service
+                    rt_svc = get_realtime_service()
+                    section_id_for_broadcast = (period_doc or {}).get("class_id", "")
+                    if section_id_for_broadcast:
+                        asyncio.create_task(rt_svc.broadcast(
+                            event_type="attendance_marked",
+                            section_id=section_id_for_broadcast,
+                            payload={
+                                "record_id":  record_id,
+                                "student_id": student_id,
+                                "period_id":  period_id,
+                                "status":     att_status,
+                                "confidence": round(confidence, 4),
+                                "markedAt":   timestamp.isoformat(),
+                            },
+                        ))
+            except Exception:
+                logger.debug("Realtime broadcast failed (swallowed)")
+
         # Fire auto-lock check in background
         if period_id:
             asyncio.create_task(_maybe_autolock(period_id))
@@ -563,8 +1143,16 @@ async def confirm_attendance(
             ),
         })
     except Exception as exc:
-        logger.error("Failed to save confirmed attendance: %s", exc)
-        raise HTTPException(500, f"Attendance recording failed: {exc}")
+        logger.error(
+            "Failed to save confirmed attendance for student=%s: %s",
+            student_id,
+            exc,
+            exc_info=True
+        )
+        raise HTTPException(
+            500,
+            f"Attendance recording failed: {type(exc).__name__}: {str(exc)}"
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -574,7 +1162,7 @@ async def confirm_attendance(
 @router.post(
     "/detect-face",
     status_code=status.HTTP_200_OK,
-    summary="[Legacy] Detect face and mark attendance (window-enforced)",
+    summary="[Legacy] Detect face and mark attendance (window-enforced, 5-attempt limit)",
 )
 async def detect_face_and_mark(
     file: UploadFile = File(..., description="JPEG or PNG image"),
@@ -596,6 +1184,15 @@ async def detect_face_and_mark(
         return _window_closed_response(window)
 
     try:
+        # Get attempt count BEFORE matching to enforce limit before expensive operations
+        from services.face_attempt_service import get_face_attempt_service
+        attempt_svc = get_face_attempt_service(getattr(firebase, "firestore_db", None) or getattr(firebase, "_firestore", None))
+        
+        # We don't know the student yet, but we'll track failures anyway
+        # This is a simple heuristic: once we do match, we reset the counter
+        
+        # No explicit candidate narrowing here — rely on client to call
+        # `detect-face-only` with candidates, or pass period-based narrowing below.
         best_student, confidence, best_distance = await run_in_threadpool(
             _match_embedding_sync, embedding, firebase, COSINE_THRESHOLD
         )
@@ -603,6 +1200,7 @@ async def detect_face_and_mark(
         gc.collect()
 
         if best_student is None or best_distance > COSINE_THRESHOLD:
+            # Failed match - increment global attempt counter for this session
             return JSONResponse(status_code=200, content={
                 "matched": False,
                 "message": (
@@ -617,6 +1215,22 @@ async def detect_face_and_mark(
 
         student_id   = best_student.get("student_id", "")
         student_name = best_student.get("name", "Unknown")
+
+        # Check attempt limit for THIS student
+        from services.face_attempt_service import get_face_attempt_service
+        attempt_svc = get_face_attempt_service(getattr(firebase, "firestore_db", None) or getattr(firebase, "_firestore", None))
+        can_attempt, current_attempts = attempt_svc.can_attempt(student_id, period_id)
+        
+        if not can_attempt:
+            return JSONResponse(status_code=200, content={
+                "matched": False,
+                "message": (
+                    f"Maximum detection attempts ({current_attempts}) reached for this period. "
+                    f"Please ask an instructor for assistance."
+                ),
+                "window": window,
+                "attempt_limit_exceeded": True,
+            })
 
         # Determine late/present
         att_status = "present"
@@ -642,6 +1256,9 @@ async def detect_face_and_mark(
         )
         record_id = result.get("record_id", "")
 
+        # Reset attempts on successful detection
+        attempt_svc.reset_attempts(student_id, period_id)
+        
         # Audit
         lock_svc = get_lock_service()
         if lock_svc and record_id:
@@ -659,6 +1276,40 @@ async def detect_face_and_mark(
                     "method":     "face_recognition_upload",
                 },
             )
+
+        # Realtime broadcast
+        try:
+            if period_id:
+                from services.realtime_service import get_realtime_service
+                rt_svc = get_realtime_service()
+                # derive section id from period doc if possible
+                try:
+                    from services.firebase_service import get_firebase_service as _gfs
+                    fb2 = _gfs()
+                    db2 = getattr(fb2, "firestore_db", None) or getattr(fb2, "_firestore", None)
+                    section_for_broadcast = None
+                    if db2 and period_id:
+                        pd_doc = db2.collection(COLLECTION_TIMETABLE).document(period_id).get()
+                        if pd_doc.exists:
+                            section_for_broadcast = pd_doc.to_dict().get("class_id", "")
+                except Exception:
+                    section_for_broadcast = None
+
+                if section_for_broadcast:
+                    asyncio.create_task(rt_svc.broadcast(
+                        event_type="attendance_marked",
+                        section_id=section_for_broadcast,
+                        payload={
+                            "record_id": record_id,
+                            "student_id": student_id,
+                            "period_id": period_id,
+                            "status": att_status,
+                            "confidence": round(confidence, 4),
+                            "markedAt": timestamp.isoformat(),
+                        },
+                    ))
+        except Exception:
+            logger.debug("Realtime broadcast failed (swallowed)")
 
         if period_id:
             asyncio.create_task(_maybe_autolock(period_id))
@@ -747,6 +1398,40 @@ async def mark_attendance(request: MarkAttendanceRequest) -> MarkAttendanceRespo
                     "method":     "mark_attendance_api",
                 },
             )
+
+        # Realtime broadcast
+        try:
+            if period_id:
+                from services.realtime_service import get_realtime_service
+                rt_svc = get_realtime_service()
+                # try to resolve section id from period doc
+                try:
+                    from services.firebase_service import get_firebase_service as _gfs
+                    fb2 = _gfs()
+                    db2 = getattr(fb2, "firestore_db", None) or getattr(fb2, "_firestore", None)
+                    section_for_broadcast = None
+                    if db2 and period_id:
+                        pd_doc = db2.collection(COLLECTION_TIMETABLE).document(period_id).get()
+                        if pd_doc.exists:
+                            section_for_broadcast = pd_doc.to_dict().get("class_id", "")
+                except Exception:
+                    section_for_broadcast = None
+
+                if section_for_broadcast:
+                    asyncio.create_task(rt_svc.broadcast(
+                        event_type="attendance_marked",
+                        section_id=section_for_broadcast,
+                        payload={
+                            "record_id": record_id,
+                            "student_id": request.student_id,
+                            "period_id": period_id,
+                            "status": "present",
+                            "confidence": round(request.confidence, 4),
+                            "markedAt": timestamp.isoformat(),
+                        },
+                    ))
+        except Exception:
+            logger.debug("Realtime broadcast failed (swallowed)")
 
         if period_id:
             asyncio.create_task(_maybe_autolock(period_id))
@@ -871,6 +1556,39 @@ async def mark_attendance_mobile(
                     "method":     "face_recognition_mobile",
                 },
             )
+
+        # Realtime broadcast
+        try:
+            if period_id:
+                from services.realtime_service import get_realtime_service
+                rt_svc = get_realtime_service()
+                try:
+                    from services.firebase_service import get_firebase_service as _gfs
+                    fb2 = _gfs()
+                    db2 = getattr(fb2, "firestore_db", None) or getattr(fb2, "_firestore", None)
+                    section_for_broadcast = None
+                    if db2 and period_id:
+                        pd_doc = db2.collection(COLLECTION_TIMETABLE).document(period_id).get()
+                        if pd_doc.exists:
+                            section_for_broadcast = pd_doc.to_dict().get("class_id", "")
+                except Exception:
+                    section_for_broadcast = None
+
+                if section_for_broadcast:
+                    asyncio.create_task(rt_svc.broadcast(
+                        event_type="attendance_marked",
+                        section_id=section_for_broadcast,
+                        payload={
+                            "record_id": record_id,
+                            "student_id": student_id,
+                            "period_id": period_id,
+                            "status": att_status,
+                            "confidence": round(confidence, 4),
+                            "markedAt": timestamp.isoformat(),
+                        },
+                    ))
+        except Exception:
+            logger.debug("Realtime broadcast failed (swallowed)")
 
         if period_id:
             asyncio.create_task(_maybe_autolock(period_id))

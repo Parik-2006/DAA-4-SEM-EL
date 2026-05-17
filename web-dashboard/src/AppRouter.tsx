@@ -45,7 +45,7 @@ import AdminTimetablePage          from './pages/AdminTimetablePage';
 import StudentDashboardPage       from './pages/StudentDashboardPage';
 
 // ★ Replaced AdminAnalyticsPage with the new real-time analytics page
-import AttendanceAnalyticsPage from './pages/AttendanceAnalyticsPage.tsx';
+import AttendanceAnalyticsPage from './pages/AttendanceAnalyticsPage';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -130,8 +130,7 @@ const RoleDashboard: React.FC = () => <RoleLandingPage />;
 const RoleAttendancePage: React.FC = () => <AttendancePage />;
 
 const RoleAnalyticsPage: React.FC = () => {
-  const role = getStoredRole();
-  return role === 'student' ? <StudentDashboardPage /> : <AttendanceAnalyticsPage />;
+  return <AttendanceAnalyticsPage />;
 };
 
 // ── Auth Gate ─────────────────────────────────────────────────────────────────

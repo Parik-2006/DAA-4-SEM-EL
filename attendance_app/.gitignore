@@ -62,3 +62,4 @@ Thumbs.db
 
 # Temporary files
 *.tmp
+tmp_jwt.txt

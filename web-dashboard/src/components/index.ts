@@ -6,6 +6,7 @@ export { StatsCard }         from './StatsCard';
 // ── Teacher components ────────────────────────────────────────────────────────
 export { AttendanceSheet }   from './AttendanceSheet';
 export type { TeacherPeriod, AttendanceEntry, AttendanceStatus } from './AttendanceSheet';
+export { TimetableBar }      from './TimetableBar';
 
 // ── Admin components ──────────────────────────────────────────────────────────
 export {

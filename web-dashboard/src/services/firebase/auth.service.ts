@@ -35,8 +35,16 @@ const TOKEN_EXPIRY_KEY        = 'auth_token_expiry';
 const USER_ID_KEY             = 'user_id';
 const USER_EMAIL_KEY          = 'user_email';
 const USER_ROLE_KEY           = 'user_role';
+const USER_ASSIGNED_SECTIONS_KEY = 'assigned_sections';
 
-const ALL_SESSION_KEYS = [AUTH_TOKEN_KEY, TOKEN_EXPIRY_KEY, USER_ID_KEY, USER_EMAIL_KEY, USER_ROLE_KEY] as const;
+const ALL_SESSION_KEYS = [
+  AUTH_TOKEN_KEY,
+  TOKEN_EXPIRY_KEY,
+  USER_ID_KEY,
+  USER_EMAIL_KEY,
+  USER_ROLE_KEY,
+  USER_ASSIGNED_SECTIONS_KEY,
+] as const;
 const REFRESH_WINDOW_MS = 5 * 60 * 1000;
 
 // ── Firebase setup ────────────────────────────────────────────────────────────
@@ -56,6 +64,7 @@ function persistSession(data: {
   userId?: string;
   email: string;
   role: string;
+  assignedSections?: string[];
   expiresIn?: number; // seconds
 }): void {
   const expiresAt = Date.now() + (data.expiresIn ?? 8 * 3600) * 1000;
@@ -64,6 +73,7 @@ function persistSession(data: {
   sessionStorage.setItem(TOKEN_EXPIRY_KEY, String(expiresAt));
   sessionStorage.setItem(USER_EMAIL_KEY,   data.email);
   sessionStorage.setItem(USER_ROLE_KEY,    data.role);
+  sessionStorage.setItem(USER_ASSIGNED_SECTIONS_KEY, JSON.stringify(data.assignedSections ?? []));
 }
 
 /**
@@ -93,6 +103,17 @@ export function getValidToken(): string | null {
   }
 
   return token;
+}
+
+export function getStoredAssignedSections(): string[] {
+  try {
+    const raw = sessionStorage.getItem(USER_ASSIGNED_SECTIONS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((value) => typeof value === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 /**

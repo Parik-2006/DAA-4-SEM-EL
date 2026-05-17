@@ -52,10 +52,11 @@ System Config (from v1 + v2):
 from __future__ import annotations
 
 import base64
+import calendar
 import logging
 import uuid
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -65,12 +66,14 @@ except Exception:
     FieldFilter = None
 from pydantic import BaseModel, Field
 
+from database.attendance_repository import AttendanceRepository
 from database.firebase_client import FirebaseClient
 from database.student_repository import StudentRepository
 from database.user_repository import UserRepository
 from middleware.auth_middleware import require_role, TokenPayload
 from services.admin_service import AdminService
 from services.auth_service import ROLE_PERMISSIONS
+from services.period_detection_service import get_period_detection_service
 from utils.csv_parser import parse_roster_csv, parse_timetable_csv
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
@@ -155,6 +158,195 @@ def _now_iso() -> str:
 
 def _new_id() -> str:
     return str(uuid.uuid4())
+
+
+WEEKDAY_ORDER = [0, 1, 2, 3, 4, 5]
+WEEKDAY_LABELS = {index: calendar.day_abbr[index] for index in range(7)}
+
+
+def _parse_date_string(value: Optional[str]) -> date:
+    if value:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    return datetime.now().date()
+
+
+def _week_start(value: Optional[str]) -> date:
+    day = _parse_date_string(value)
+    return day - timedelta(days=day.weekday())
+
+
+def _safe_int(value: Any, fallback: int = 0) -> int:
+    try:
+        if value is None:
+            return fallback
+        return int(value)
+    except Exception:
+        return fallback
+
+
+def _load_classes_map(fb: FirebaseClient) -> Dict[str, Dict[str, Any]]:
+    try:
+        raw_classes = fb.get_reference("classes").get() or {}
+    except Exception:
+        raw_classes = {}
+
+    if not isinstance(raw_classes, dict):
+        return {}
+
+    return {
+        key: value
+        for key, value in raw_classes.items()
+        if isinstance(value, dict) and not value.get("deleted", False)
+    }
+
+
+def _load_class_periods(fb: FirebaseClient, class_id: str) -> List[Dict[str, Any]]:
+    periods: List[Dict[str, Any]] = []
+
+    if fb.fs:
+        try:
+            for doc in fb.fs.collection("periods").where("class_id", "==", class_id).stream():
+                record = doc.to_dict() or {}
+                if isinstance(record, dict) and not record.get("deleted", False):
+                    periods.append({**record, "period_id": record.get("period_id") or doc.id})
+        except Exception as exc:
+            logger.warning("load_class_periods Firestore fallback for %s: %s", class_id, exc)
+
+    if periods:
+        periods.sort(key=lambda item: (int(item.get("day_of_week", 0) or 0), str(item.get("start_time", "00:00"))))
+        return periods
+
+    try:
+        raw_periods = fb.get_reference("periods").get() or {}
+    except Exception:
+        raw_periods = {}
+
+    if isinstance(raw_periods, dict):
+        for period_id, period in raw_periods.items():
+            if not isinstance(period, dict):
+                continue
+            if period.get("deleted", False):
+                continue
+            if period.get("class_id") != class_id:
+                continue
+            periods.append({**period, "period_id": period.get("period_id") or period_id})
+
+    periods.sort(key=lambda item: (int(item.get("day_of_week", 0) or 0), str(item.get("start_time", "00:00"))))
+    return periods
+
+
+def _load_attendance_index(fb: FirebaseClient, date_str: str) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    index: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
+
+    try:
+        day_records = fb.get_reference(f"attendance/{date_str}").get() or {}
+        if isinstance(day_records, dict):
+            for record_id, record in day_records.items():
+                if not isinstance(record, dict):
+                    continue
+                period_id = str(
+                    record.get("period_id")
+                    or record.get("periodId")
+                    or record.get("metadata", {}).get("period_id")
+                    or ""
+                )
+                student_id = str(
+                    record.get("student_id")
+                    or record.get("studentId")
+                    or record.get("metadata", {}).get("student_id")
+                    or record_id
+                )
+                if period_id:
+                    index[period_id][student_id] = record
+    except Exception:
+        pass
+
+    if index:
+        return index
+
+    if fb.fs:
+        try:
+            docs = fb.fs.collection("attendance").where("date", "==", date_str).stream()
+            for doc in docs:
+                record = doc.to_dict() or {}
+                if not isinstance(record, dict):
+                    continue
+                period_id = str(
+                    record.get("period_id")
+                    or record.get("periodId")
+                    or record.get("metadata", {}).get("period_id")
+                    or ""
+                )
+                student_id = str(record.get("student_id") or record.get("studentId") or doc.id)
+                if period_id:
+                    index[period_id][student_id] = record
+        except Exception as exc:
+            logger.warning("load_attendance_index Firestore fallback: %s", exc)
+
+    return index
+
+
+def _period_status_for_date(period: Dict[str, Any], target_date: date) -> str:
+    now = datetime.now()
+    today = now.date()
+    if target_date < today:
+        return "complete"
+    if target_date > today:
+        return "upcoming"
+
+    try:
+        start_hour, start_minute = map(int, str(period.get("start_time", "00:00")).split(":"))
+        end_hour, end_minute = map(int, str(period.get("end_time", "00:00")).split(":"))
+    except Exception:
+        return "upcoming"
+
+    current_minutes = now.hour * 60 + now.minute
+    start_minutes = start_hour * 60 + start_minute
+    end_minutes = end_hour * 60 + end_minute
+
+    if current_minutes < start_minutes:
+        return "upcoming"
+    if start_minutes <= current_minutes <= end_minutes + 60:
+        return "in_progress"
+    return "complete"
+
+
+def _attendance_counts_for_period(
+    attendance_index: Dict[str, Dict[str, Dict[str, Any]]],
+    period_id: str,
+    enrolled_count: int,
+) -> Dict[str, Any]:
+    records = attendance_index.get(period_id, {})
+    status_counts = {"present": 0, "late": 0, "absent": 0}
+
+    for record in records.values():
+        status = str(record.get("status") or record.get("metadata", {}).get("attendance_status") or "present").lower()
+        if status in status_counts:
+            status_counts[status] += 1
+
+    marked = sum(status_counts.values())
+    pending = max(0, enrolled_count - marked)
+    attendance_rate = round(((status_counts["present"] + status_counts["late"]) / enrolled_count) * 100, 1) if enrolled_count else 0.0
+
+    return {
+        **status_counts,
+        "marked": marked,
+        "pending": pending,
+        "total": enrolled_count,
+        "attendance_rate": attendance_rate,
+        "records": list(records.values()),
+    }
+
+
+def _build_week_days(start_date: date) -> List[Dict[str, Any]]:
+    return [
+        {
+            "day_index": day_index,
+            "day_name": WEEKDAY_LABELS[day_index],
+            "date": (start_date + timedelta(days=day_index)).strftime("%Y-%m-%d"),
+        }
+        for day_index in WEEKDAY_ORDER
+    ]
 
 
 def _strip_sensitive(user: dict) -> dict:
@@ -647,6 +839,490 @@ async def admin_attendance_trends(
         "total_students": total_students,
         "trend":          trend,
         "generated_at":   _now_iso(),
+    }
+
+
+@router.get("/analytics/student/{student_id}")
+async def admin_student_analytics(
+    student_id: str,
+    start_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    _: TokenPayload = _admin,
+):
+    """
+    Admin-only: full analytics drill-down for any single student.
+
+    Scope is immutable — only an admin role can call this endpoint, and
+    the student_id is a path parameter (not a query param), preventing any
+    privilege-escalation attack on the endpoint itself.
+
+    This endpoint intentionally does NOT exist on the student API — a student's
+    analytics are returned only by /api/v1/student/analytics, which is
+    identity-locked.
+
+    **Response**
+    ```json
+    {
+      "student_id": "1RV23CS001",
+      "student_name": "Alice",
+      "class_id": "CSE-4C",
+      "date_range": { "start": "2026-04-01", "end": "2026-05-14" },
+      "overall": {
+        "present": 32,
+        "late": 1,
+        "absent": 5,
+        "total": 38,
+        "rate": 86.8,
+        "band": "safe"
+      },
+      "course_breakdown": [
+        { "course_id": "CS401", "rate": 92.5, "present": 12, "late": 0, "absent": 1 }
+      ]
+    }
+    ```
+    """
+    fb = _fb()
+
+    # Verify student exists and has role == "student"
+    user = user_repo.get_user(student_id)
+    if not user:
+        raise HTTPException(404, f"Student '{student_id}' not found.")
+    if user.get("role") != "student":
+        raise HTTPException(400, "Requested user is not a student.")
+
+    try:
+        sd = _parse_date_string(start_date)
+        ed = _parse_date_string(end_date)
+    except HTTPException:
+        raise
+    except Exception:
+        sd = None
+        ed = None
+
+    repo = AttendanceRepository()
+    records = repo.get_student_attendance(student_id, start_date=sd, end_date=ed)
+
+    present = sum(1 for r in records if r.get("status") == "present")
+    late = sum(1 for r in records if r.get("status") == "late")
+    absent = sum(1 for r in records if r.get("status") == "absent")
+    total = len(records)
+    rate = round((present + late) / total * 100, 1) if total else 0.0
+
+    by_course: Dict[str, Dict[str, int]] = defaultdict(lambda: {"present": 0, "late": 0, "absent": 0})
+    for r in records:
+        cid = r.get("course_id", "_unknown")
+        s = r.get("status", "")
+        if s in ("present", "late", "absent"):
+            by_course[cid][s] += 1
+
+    logger.info(
+        "admin_student_analytics | admin=%s | student_id=%s | rate=%f%%",
+        _.user_id, student_id, rate,
+    )
+
+    return {
+        "student_id": student_id,
+        "student_name": user.get("name", ""),
+        "class_id": user.get("class_id", ""),
+        "date_range": {"start": start_date, "end": end_date},
+        "overall": {
+            "present": present,
+            "late": late,
+            "absent": absent,
+            "total": total,
+            "rate": rate,
+            "band": _attendance_band(rate),
+        },
+        "course_breakdown": [
+            {
+                "course_id": cid,
+                "rate": round(
+                    (v["present"] + v["late"]) / max(1, sum(v.values())) * 100, 1
+                ),
+                **v,
+            }
+            for cid, v in by_course.items()
+        ],
+        "generated_at": _now_iso(),
+    }
+
+
+@router.get("/analytics/section/{class_id}/students")
+async def admin_section_student_breakdown(
+    class_id: str,
+    date: Optional[str] = Query(None, description="YYYY-MM-DD (defaults to today)"),
+    sort_by: str = Query(
+        "rate_asc",
+        pattern="^(rate_asc|rate_desc|name_asc)$",
+        description="Sort order",
+    ),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    _: TokenPayload = _admin,
+):
+    """
+    Admin-only: per-student attendance breakdown for a section on a specific date.
+
+    Used for admin section drill-down tables.  Sorts by attendance today
+    (ascending: at-risk first) or alphabetically by name.
+
+    **Response**
+    ```json
+    {
+      "class_id": "CSE-4C",
+      "date": "2026-05-14",
+      "total_students": 45,
+      "data": [
+        { "student_id": "1RV23CS001", "name": "Alice", "roll_number": "001", "status_today": "present" }
+      ],
+      "page": 1,
+      "limit": 20,
+      "total_pages": 3
+    }
+    ```
+    """
+    fb = _fb()
+    target_date = date or datetime.now().strftime("%Y-%m-%d")
+
+    cls = fb.get_reference(f"classes/{class_id}").get()
+    if not cls or cls.get("deleted"):
+        raise HTTPException(404, f"Section '{class_id}' not found.")
+
+    student_ids: List[str] = cls.get("student_ids", [])
+
+    repo = AttendanceRepository()
+    section_records = repo.get_section_attendance(class_id, target_date)
+
+    by_student: Dict[str, str] = {
+        r.get("student_id", ""): r.get("status", "absent")
+        for r in section_records
+        if isinstance(r, dict) and r.get("student_id")
+    }
+
+    rows = []
+    for sid in student_ids:
+        user = user_repo.get_user(sid) or {}
+        status = by_student.get(sid, "not_marked")
+        rows.append({
+            "student_id": sid,
+            "name": user.get("name", ""),
+            "roll_number": user.get("roll_number", ""),
+            "status_today": status,
+        })
+
+    if sort_by == "rate_asc":
+        present_statuses = {"present", "late"}
+        rows.sort(key=lambda r: r["status_today"] not in present_statuses)
+    elif sort_by == "rate_desc":
+        rows.sort(key=lambda r: r["status_today"] in {"present", "late"}, reverse=True)
+    elif sort_by == "name_asc":
+        rows.sort(key=lambda r: r["name"].lower())
+
+    logger.info(
+        "admin_section_student_breakdown | admin=%s | class_id=%s | date=%s",
+        _.user_id, class_id, target_date,
+    )
+
+    start = (page - 1) * limit
+    return {
+        "class_id": class_id,
+        "date": target_date,
+        "total_students": len(rows),
+        "data": rows[start : start + limit],
+        "page": page,
+        "limit": limit,
+        "total_pages": max(1, (len(rows) + limit - 1) // limit),
+    }
+
+
+def _attendance_band(rate: float) -> str:
+    """Classify attendance rate into safety band."""
+    if rate >= 85:
+        return "safe"
+    if rate >= 75:
+        return "warning"
+    return "danger"
+
+
+def _parse_date_string(value: Optional[str]) -> Optional[date]:
+    """Parse YYYY-MM-DD string to date object, or return None if invalid."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(422, f"Invalid date '{value}'. Use YYYY-MM-DD.")
+
+
+@router.get("/analytics/matrix")
+async def admin_attendance_matrix(
+    class_id: Optional[str] = Query(None, description="Class/section identifier"),
+    week_start: Optional[str] = Query(None, description="Week start date in YYYY-MM-DD format"),
+    _: TokenPayload = _admin,
+):
+    """
+    Week-by-week day × period attendance matrix for a single class.
+
+    Returns canonical slot metadata plus a row for each day in the teaching
+    week so the dashboard can render a stable grid.
+    """
+    fb = _fb()
+    classes_map = _load_classes_map(fb)
+
+    if not classes_map:
+        raise HTTPException(status_code=404, detail="No active classes found.")
+
+    selected_class_id = class_id or next(iter(classes_map.keys()))
+    class_doc = classes_map.get(selected_class_id)
+    if not class_doc:
+        raise HTTPException(status_code=404, detail=f"Class '{selected_class_id}' not found.")
+
+    periods = _load_class_periods(fb, selected_class_id)
+    if not periods:
+        return {
+            "class_id": selected_class_id,
+            "class_name": class_doc.get("name", ""),
+            "week_start": _week_start(week_start).strftime("%Y-%m-%d"),
+            "days": _build_week_days(_week_start(week_start)),
+            "period_slots": [],
+            "rows": [],
+            "summary": {
+                "total_students": len(class_doc.get("student_ids", [])),
+                "total_periods": 0,
+                "marked": 0,
+                "pending": 0,
+                "attendance_rate": 0.0,
+            },
+            "generated_at": _now_iso(),
+        }
+
+    start_date = _week_start(week_start)
+    days = _build_week_days(start_date)
+    period_slots: List[Dict[str, Any]] = []
+    slot_lookup: Dict[str, Dict[str, Any]] = {}
+
+    for period in periods:
+        slot_key = f"{period.get('start_time', '00:00')}|{period.get('end_time', '00:00')}"
+        if slot_key not in slot_lookup:
+            slot_lookup[slot_key] = {
+                "slot_key": slot_key,
+                "start_time": period.get("start_time", "00:00"),
+                "end_time": period.get("end_time", "00:00"),
+                "label": f"{period.get('start_time', '00:00')} - {period.get('end_time', '00:00')}",
+            }
+            period_slots.append(slot_lookup[slot_key])
+
+    period_slots.sort(key=lambda slot: slot.get("start_time", "00:00"))
+    total_students = len(class_doc.get("student_ids", []))
+    total_periods = len(periods)
+    overall_marked = 0
+    overall_pending = 0
+    overall_present = 0
+    overall_late = 0
+    overall_absent = 0
+    rows: List[Dict[str, Any]] = []
+
+    for day in days:
+        day_date = _parse_date_string(day["date"])
+        attendance_index = _load_attendance_index(fb, day["date"])
+        day_periods = [
+            period for period in periods
+            if int(period.get("day_of_week", 0) or 0) == int(day["day_index"])
+        ]
+        cell_map = {
+            f"{period.get('start_time', '00:00')}|{period.get('end_time', '00:00')}": period
+            for period in day_periods
+        }
+
+        day_marked = 0
+        day_pending = 0
+        day_present = 0
+        day_late = 0
+        day_absent = 0
+        cells: List[Dict[str, Any]] = []
+
+        for slot in period_slots:
+            period = cell_map.get(slot["slot_key"])
+            if not period:
+                cells.append({
+                    "slot_key": slot["slot_key"],
+                    "period": None,
+                    "status": "no_class",
+                    "total": 0,
+                    "marked": 0,
+                    "pending": 0,
+                    "present": 0,
+                    "late": 0,
+                    "absent": 0,
+                    "attendance_rate": 0.0,
+                    "window_locked": True,
+                    "is_live": False,
+                })
+                continue
+
+            stats = _attendance_counts_for_period(attendance_index, str(period.get("period_id", "")), total_students)
+            status = _period_status_for_date(period, day_date)
+            day_marked += stats["marked"]
+            day_pending += stats["pending"]
+            day_present += stats["present"]
+            day_late += stats["late"]
+            day_absent += stats["absent"]
+
+            cells.append({
+                "slot_key": slot["slot_key"],
+                "period": {
+                    "period_id": period.get("period_id", ""),
+                    "course_code": period.get("course_code", period.get("course_id", "")),
+                    "course_name": period.get("course_name", period.get("course_code", "")),
+                    "faculty_id": period.get("faculty_id", ""),
+                    "faculty_name": period.get("faculty_name", ""),
+                    "room": period.get("room", ""),
+                    "is_lab_class": bool(period.get("is_lab_class", False)),
+                },
+                "status": status,
+                "total": stats["total"],
+                "marked": stats["marked"],
+                "pending": stats["pending"],
+                "present": stats["present"],
+                "late": stats["late"],
+                "absent": stats["absent"],
+                "attendance_rate": stats["attendance_rate"],
+                "window_locked": status == "complete",
+                "is_live": status == "in_progress",
+            })
+
+        overall_marked += day_marked
+        overall_pending += day_pending
+        overall_present += day_present
+        overall_late += day_late
+        overall_absent += day_absent
+
+        rows.append({
+            **day,
+            "cells": cells,
+            "totals": {
+                "present": day_present,
+                "late": day_late,
+                "absent": day_absent,
+                "marked": day_marked,
+                "pending": day_pending,
+                "total": total_students,
+                "attendance_rate": round(((day_present + day_late) / total_students) * 100, 1) if total_students else 0.0,
+            },
+        })
+
+    return {
+        "class_id": selected_class_id,
+        "class_name": class_doc.get("name", ""),
+        "section_label": class_doc.get("section", ""),
+        "semester": class_doc.get("semester", ""),
+        "week_start": start_date.strftime("%Y-%m-%d"),
+        "days": days,
+        "period_slots": period_slots,
+        "rows": rows,
+        "summary": {
+            "total_students": total_students,
+            "total_periods": total_periods,
+            "marked": overall_marked,
+            "pending": overall_pending,
+            "present": overall_present,
+            "late": overall_late,
+            "absent": overall_absent,
+            "attendance_rate": round(((overall_present + overall_late) / (total_students * total_periods)) * 100, 1) if total_students and total_periods else 0.0,
+        },
+        "generated_at": _now_iso(),
+    }
+
+
+@router.get("/analytics/role-summary")
+async def admin_role_summary(_: TokenPayload = _admin):
+    """Thin landing-page summary for the authenticated admin role."""
+    fb = _fb()
+    classes_map = _load_classes_map(fb)
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_index = datetime.now().weekday()
+    attendance_index = _load_attendance_index(fb, today_str)
+
+    total_students = 0
+    for class_doc in classes_map.values():
+        total_students += len(class_doc.get("student_ids", []))
+
+    today_present = today_late = today_absent = 0
+    active_sections: List[Dict[str, Any]] = []
+
+    for class_id, class_doc in classes_map.items():
+        periods = [
+            period for period in _load_class_periods(fb, class_id)
+            if int(period.get("day_of_week", 0) or 0) == today_index
+        ]
+        if not periods:
+            continue
+
+        class_students = len(class_doc.get("student_ids", []))
+        class_present = class_late = class_absent = 0
+        class_marked = 0
+
+        for period in periods:
+            stats = _attendance_counts_for_period(attendance_index, str(period.get("period_id", "")), class_students)
+            class_present += stats["present"]
+            class_late += stats["late"]
+            class_absent += stats["absent"]
+            class_marked += stats["marked"]
+
+        total_periods = len(periods)
+        class_rate = round(((class_present + class_late) / (class_students * total_periods)) * 100, 1) if class_students and total_periods else 0.0
+        if class_rate < 75:
+            active_sections.append({
+                "class_id": class_id,
+                "class_name": class_doc.get("name", ""),
+                "attendance_rate": class_rate,
+                "marked": class_marked,
+                "total_students": class_students,
+            })
+
+        today_present += class_present
+        today_late += class_late
+        today_absent += class_absent
+
+    active_sections.sort(key=lambda item: item.get("attendance_rate", 0.0))
+
+    detector = get_period_detection_service()
+    active_payload = detector.get_active_period() if detector else None
+    active_period = None
+    if active_payload:
+        active_period = active_payload.get("primary_period") or (active_payload.get("active_periods") or [None])[0]
+
+    if isinstance(active_period, dict) and active_period.get("period_id"):
+        period_class_id = str(active_period.get("class_id", ""))
+        period_students = len(classes_map.get(period_class_id, {}).get("student_ids", []))
+        if period_students:
+            stats = _attendance_counts_for_period(attendance_index, str(active_period.get("period_id", "")), period_students)
+            active_period = {
+                **active_period,
+                "attendance_stats": {
+                    "present": stats["present"],
+                    "late": stats["late"],
+                    "absent": stats["absent"],
+                    "pending": stats["pending"],
+                    "attendance_rate": stats["attendance_rate"],
+                },
+            }
+
+    total_marked = today_present + today_late + today_absent
+    return {
+        "role": "admin",
+        "student_count": total_students,
+        "class_count": len(classes_map),
+        "today_breakdown": {
+            "present": today_present,
+            "late": today_late,
+            "absent": today_absent,
+            "marked": total_marked,
+            "attendance_rate": round((today_present + today_late) / total_students * 100, 1) if total_students else 0.0,
+        },
+        "active_period": active_period,
+        "at_risk_sections": active_sections[:5],
+        "generated_at": _now_iso(),
     }
 
 

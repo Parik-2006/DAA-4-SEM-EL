@@ -237,8 +237,12 @@ class PeriodDetectionService:
             )
             self._last_period_id   = new_period_id
             self._last_period_type = primary.get("period_type") if primary else None
-
             await loop.run_in_executor(None, self._emit_to_firestore, payload)
+            # Pre-warm teacher scope cache for the new primary period (non-blocking)
+            try:
+                await loop.run_in_executor(None, self._prewarm_teacher_scope, primary)
+            except Exception as exc:
+                logger.debug("Prewarm teacher scope failed: %s", exc)
 
     # ── Matching logic ─────────────────────────────────────────────────────────
 
@@ -464,6 +468,36 @@ class PeriodDetectionService:
             )
         except Exception as exc:
             logger.error("Failed to emit period state to Firestore: %s", exc)
+
+    def _prewarm_teacher_scope(self, period: Optional[Dict[str, Any]]) -> None:
+        """
+        Resolve and cache the ScopeTarget for the period's faculty so the first
+        face-recognition request for a new period is instant.
+        """
+        try:
+            if not period:
+                return
+            faculty_id = period.get("faculty_id")
+            if not faculty_id:
+                return
+
+            from services.realtime_service import get_realtime_service
+            from services.identity_context_service import IdentityContextService
+
+            # Build a minimal UserContext-like object for resolution
+            class _Ctx:
+                def __init__(self, user_id: str):
+                    self.user_id = user_id
+                    self.role = "teacher"
+                    self.assigned_sections = [period.get("class_id")] if period.get("class_id") else []
+
+            ctx = _Ctx(faculty_id)
+            svc = IdentityContextService(firebase_client=self._db, period_detection_service=self)
+            scope = svc.resolve(ctx, period_id=period.get("period_id"))
+            get_realtime_service().set_section_scope(faculty_id, scope)
+            logger.info("Pre-warmed scope for teacher %s: %d students", faculty_id, len(scope.student_ids))
+        except Exception as exc:
+            logger.warning("Scope pre-warm failed: %s", exc)
 
     # ── Public read interface ──────────────────────────────────────────────────
 

@@ -119,7 +119,7 @@ const BAND_META = {
 const BASE = (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '');
 
 async function fetchJSON<T>(url: string, params?: Record<string, string>): Promise<T> {
-  const token = typeof localStorage !== 'undefined' ? localStorage.getItem('auth_token') : null;
+  const token = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('auth_token') : null;
   const full = params
     ? `${BASE}${url}?${new URLSearchParams(params)}`
     : `${BASE}${url}`;
@@ -138,7 +138,8 @@ async function fetchJSON<T>(url: string, params?: Record<string, string>): Promi
 
 async function fetchTodayPeriods(studentId: string): Promise<Period[]> {
   try {
-    return await fetchJSON<Period[]>('/api/v1/student/attendance/today', { student_id: studentId });
+    // Don't pass student_id - endpoint defaults to authenticated user
+    return await fetchJSON<Period[]>('/api/v1/student/attendance/today');
   } catch {
     return [
       { period_id: 'p1', course_code: 'CS401', course_name: 'Machine Learning',  start_time: '09:00', end_time: '10:00', faculty_name: 'Dr. Sharma',  room: 'A201',  is_lab_class: false, course_color: '#6366F1', status: 'present' },
@@ -151,7 +152,8 @@ async function fetchTodayPeriods(studentId: string): Promise<Period[]> {
 
 async function fetchOverallStats(studentId: string): Promise<OverallStats> {
   try {
-    return await fetchJSON<OverallStats>('/api/v1/student/attendance-summary', { student_id: studentId });
+    // Don't pass student_id - endpoint defaults to authenticated user
+    return await fetchJSON<OverallStats>('/api/v1/student/attendance-summary');
   } catch {
     return { total_classes: 4, present: 2, late: 1, absent: 1, pending: 0, attendance_pct: 75.0, band: 'warning' };
   }

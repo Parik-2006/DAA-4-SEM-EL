@@ -61,11 +61,13 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from datetime import datetime
+from collections import defaultdict
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
+from database.attendance_repository import AttendanceRepository
 from database.firebase_client import FirebaseClient
 from middleware.auth_middleware import require_role, TokenPayload
 from services.student_service import StudentService
@@ -201,8 +203,48 @@ def _assert_own_record(authenticated_student_id: str, queried_student_id: str) -
         )
 
 
+def _attendance_band_student(rate: float) -> str:
+    """Classify attendance rate into safety band."""
+    if rate >= 85:
+        return "safe"
+    if rate >= 75:
+        return "warning"
+    return "danger"
+
+
+_BAND_COLORS_STUDENT = {
+    "safe": "#22C55E",
+    "warning": "#F59E0B",
+    "danger": "#EF4444",
+}
+
+
 def _service() -> StudentService:
     return _svc
+
+
+_STUDENT_ALLOWED_FIELDS = {
+    "record_id",
+    "course_id",
+    "attendance_date",
+    "attendance_time",
+    "status",
+    "period_id",
+    "markedAt",
+}
+
+
+def _student_safe_record(record: dict) -> dict:
+    return {key: value for key, value in record.items() if key in _STUDENT_ALLOWED_FIELDS}
+
+
+def _parse_date_safe(value: Optional[str]):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid date format: {value}. Use YYYY-MM-DD.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -280,14 +322,19 @@ async def get_attendance_history(
     _assert_own_record(user.user_id, student_id)
 
     try:
-        return _service().get_attendance_history(
+        repo = AttendanceRepository()
+        result = repo.get_student_attendance_paginated(
             student_id=student_id,
             page=page,
             page_size=page_size,
             course_id=course_id,
-            start_date=start_date,
-            end_date=end_date,
+            start_date=_parse_date_safe(start_date),
+            end_date=_parse_date_safe(end_date),
         )
+        if page > result["total_pages"] and result["total"] > 0:
+            raise HTTPException(status_code=404, detail=f"Page {page} does not exist. Max page: {result['total_pages']}.")
+        result["records"] = [_student_safe_record(record) for record in result["records"]]
+        return result
     except Exception as exc:
         logger.error("get_attendance_history | student_id=%s | exc=%s", student_id, exc)
         raise HTTPException(status_code=500, detail=str(exc))
@@ -465,6 +512,151 @@ async def get_warnings(
         return _service().get_warnings(student_id)
     except Exception as exc:
         logger.error("get_warnings | student_id=%s | exc=%s", student_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Analytics — personal trend + summary + streaks  (Prompt 5)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get(
+    "/analytics",
+    summary="Personal analytics — trend, summary, and streak (own data only)",
+    response_description="Attendance trend, overall percentage, and current/longest streak",
+)
+async def get_student_analytics(
+    student_id: str = Query(..., description="Must match your authenticated identity"),
+    days: int = Query(30, ge=7, le=180, description="Trend window in days"),
+    user: TokenPayload = Depends(_require_student),
+):
+    """
+    Return personal analytics for the authenticated student only.
+
+    The student_id parameter must match the authenticated token — no
+    cross-student access is possible regardless of client input.
+
+    The ``days`` parameter controls the trend window (7–180 days).
+
+    **Band thresholds**
+
+    | band      | condition | colour  |
+    |-----------|-----------|---------|
+    | safe      | ≥ 85 %    | #22C55E |
+    | warning   | 75–85 %   | #F59E0B |
+    | danger    | < 75 %    | #EF4444 |
+
+    **Response shape**
+    ```json
+    {
+      "student_id": "1RV23CS001",
+      "days": 30,
+      "trend": [
+        { "date": "2026-04-14", "present": 3, "late": 0, "absent": 1, "rate": 75.0 }
+      ],
+      "overall": {
+        "percentage": 78.4,
+        "present": 45,
+        "late": 2,
+        "absent": 12,
+        "total": 59,
+        "band": "warning",
+        "color": "#F59E0B"
+      },
+      "streak": {
+        "current_present_streak": 5,
+        "longest_streak": 12
+      },
+      "generated_at": "2026-05-14T10:30:00Z"
+    }
+    ```
+    """
+    _assert_own_record(user.user_id, student_id)
+
+    try:
+        repo = AttendanceRepository()
+        today = datetime.now().date()
+        start = today - timedelta(days=days)
+
+        records = repo.get_student_attendance(student_id, start_date=start, end_date=today)
+
+        by_date: Dict[str, Dict[str, int]] = defaultdict(
+            lambda: {"present": 0, "late": 0, "absent": 0}
+        )
+        for r in records:
+            d = r.get("attendance_date", "") or r.get("date", "")
+            s = r.get("status", "")
+            if d and s in ("present", "late", "absent"):
+                by_date[d][s] += 1
+
+        trend = []
+        for offset in range(days - 1, -1, -1):
+            d_str = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
+            day = by_date.get(d_str, {"present": 0, "late": 0, "absent": 0})
+            total_day = day["present"] + day["late"] + day["absent"]
+            if total_day == 0:
+                trend.append({
+                    "date": d_str,
+                    "present": 0,
+                    "late": 0,
+                    "absent": 0,
+                    "rate": None,
+                })
+            else:
+                trend.append({
+                    "date": d_str,
+                    "present": day["present"],
+                    "late": day["late"],
+                    "absent": day["absent"],
+                    "rate": round((day["present"] + day["late"]) / total_day * 100, 1),
+                })
+
+        total_r = len(records)
+        present_r = sum(1 for r in records if r.get("status") == "present")
+        late_r = sum(1 for r in records if r.get("status") == "late")
+        absent_r = sum(1 for r in records if r.get("status") == "absent")
+        rate = round((present_r + late_r) / total_r * 100, 1) if total_r else 0.0
+        band = _attendance_band_student(rate)
+
+        current_streak = 0
+        longest_streak = 0
+        for entry in reversed(trend):
+            if entry["rate"] is None or entry["rate"] == 0.0:
+                current_streak = 0
+            else:
+                current_streak += 1
+                longest_streak = max(longest_streak, current_streak)
+
+        logger.info(
+            "get_student_analytics | student_id=%s | days=%d | rate=%f%%",
+            student_id, days, rate,
+        )
+
+        return {
+            "student_id": student_id,
+            "days": days,
+            "trend": trend,
+            "overall": {
+                "percentage": rate,
+                "present": present_r,
+                "late": late_r,
+                "absent": absent_r,
+                "total": total_r,
+                "band": band,
+                "color": _BAND_COLORS_STUDENT.get(band, "#94A3B8"),
+            },
+            "streak": {
+                "current_present_streak": current_streak,
+                "longest_streak": longest_streak,
+            },
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "get_student_analytics | student_id=%s | exc=%s",
+            student_id, exc,
+        )
         raise HTTPException(status_code=500, detail=str(exc))
 
 

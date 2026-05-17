@@ -315,9 +315,15 @@ export const UploadPhoto: React.FC<UploadPhotoProps> = ({
         setSuccessName(null);
       }, 2400);
     } catch (err: any) {
-      const msg = err?.response?.data?.detail ?? err?.message ?? 'Failed to save attendance.';
-      setPendingDetection(null);
-      setError(`Save failed: ${msg}`);
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.detail ?? err?.message ?? 'Failed to save attendance.';
+      if (status === 423) {
+        setPendingDetection(null);
+        setError(`⛔ Attendance window closed: ${detail}`);
+      } else {
+        setPendingDetection(null);
+        setError(`Save failed: ${detail}`);
+      }
     } finally {
       setIsSaving(false);
     }

@@ -161,31 +161,33 @@ The implementation should proceed in this order:
 5. Add verified-sample learning instead of blind retraining.
 6. Keep realtime as a notification layer, not as the source of truth.
 
-## 10 Claude prompts
+## 10 Desktop prompts
+
+The original prompts targeted the Flutter mobile client. Replace those with desktop-focused prompts (Electron/React or other desktop client). Use the backend and web-dashboard files as-is; for the desktop client, target a `desktop-client/` codebase (Electron + React or similar).
 
 ### Prompt 1
 
-Audit the current Flutter, web dashboard, and FastAPI architecture in the listed files above. Produce a concrete system design that makes timetable, history, analytics, and live camera all derive from the same attendance model. Focus on tiering the solution into presentation, application, domain, persistence, realtime, and security layers, and explain which layer owns which rule.
+Audit the current desktop client (assumed `desktop-client/`), web dashboard, and FastAPI backend. Produce a concrete system design that makes timetable, history, analytics, and live camera all derive from the same attendance model. Focus on tiering the solution into presentation, application, domain, persistence, realtime, and security layers, and explain which layer owns which rule.
 
 ### Prompt 2
 
-Design the timetable-aware live camera flow. The app should know the logged-in user, fetch that user’s section scope, load the current day’s timetable, and only allow period choices that are valid for the current time window. Show how this should work in `attendance_app/lib/screens/attendance/live_camera_screen.dart`, `attendance_app/lib/screens/attendance/attendance_screen.dart`, `web-dashboard/src/components/LiveCamera.tsx`, `web-dashboard/src/pages/AttendancePage.tsx`, `attendance_backend/api/attendance.py`, and `attendance_backend/api/timetable.py`.
+Design the timetable-aware live camera flow for a desktop client. The client should know the logged-in user, fetch that user’s section scope, load the current day’s timetable, and only allow period choices that are valid for the current time window. Explain how this should work in `desktop-client/src/components/LiveCamera` (or equivalent), `web-dashboard/src/components/LiveCamera.tsx`, `web-dashboard/src/pages/AttendancePage.tsx`, `attendance_backend/api/attendance.py`, and `attendance_backend/api/timetable.py`.
 
 ### Prompt 3
 
-Design the dashboard so it maps attendance by day and by period instead of showing generic totals. Explain the data model needed for `attendance_app/lib/providers/dashboard_provider.dart`, `attendance_app/lib/services/dashboard_service.dart`, `web-dashboard/src/pages/AttendanceAnalyticsPage.tsx`, `web-dashboard/src/pages/RoleLandingPage.tsx`, `web-dashboard/src/hooks/useAttendanceAnalytics.ts`, and `attendance_backend/api/admin.py`.
+Design the desktop dashboard so it maps attendance by day and by period instead of showing generic totals. Explain the data model needed for `desktop-client/src/providers/dashboard`, `desktop-client/src/services/dashboardService`, `web-dashboard/src/pages/AttendanceAnalyticsPage.tsx`, `web-dashboard/src/pages/RoleLandingPage.tsx`, `web-dashboard/src/hooks/useAttendanceAnalytics.ts`, and `attendance_backend/api/admin.py`.
 
 ### Prompt 4
 
-Redesign the history experience to be self-only for students and scope-limited for teachers. The response should explain how `attendance_app/lib/screens/history/history_screen.dart`, `attendance_app/lib/screens/history/enhanced_history_screen.dart`, `web-dashboard/src/pages/HistoryPage.tsx`, `attendance_backend/api/student.py`, `attendance_backend/api/teacher.py`, and `attendance_backend/database/attendance_repository.py` must enforce privacy and pagination.
+Redesign the history experience to be self-only for students and scope-limited for teachers in the desktop client and web dashboard. The response should explain how desktop client history views, `web-dashboard/src/pages/HistoryPage.tsx`, `attendance_backend/api/student.py`, `attendance_backend/api/teacher.py`, and `attendance_backend/database/attendance_repository.py` must enforce privacy and pagination.
 
 ### Prompt 5
 
-Design privacy-aware analytics. Student analytics should show only personal data, teacher analytics only assigned sections, and admin analytics system-wide data. Use `web-dashboard/src/pages/AttendanceAnalyticsPage.tsx`, `web-dashboard/src/hooks/useAttendanceAnalytics.ts`, `attendance_app/lib/screens/student/student_dashboard_screen.dart`, `attendance_app/lib/screens/admin/admin_dashboard_screen.dart`, `attendance_backend/api/admin.py`, and `attendance_backend/api/student.py` as the target files.
+Design privacy-aware analytics for desktop and web. Student analytics should show only personal data, teacher analytics only assigned sections, and admin analytics system-wide data. Use `web-dashboard/src/pages/AttendanceAnalyticsPage.tsx`, `web-dashboard/src/hooks/useAttendanceAnalytics.ts`, desktop client dashboard screens, `attendance_backend/api/admin.py`, and `attendance_backend/api/student.py` as target areas.
 
 ### Prompt 6
 
-Redesign face recognition so the search space is narrowed by identity context. If the logged-in user is a student, the system should match only that user’s registered embeddings in self-verification mode; if the user is a teacher, the system should match only the enrolled students in the active section. Explain how this should be implemented in `attendance_backend/services/realtime_service.py`, `attendance_backend/models/`, `attendance_backend/api/attendance.py`, `attendance_app/lib/services/api_service.dart`, `web-dashboard/src/services/api.ts`, and the live camera UIs.
+Redesign face recognition so the search space is narrowed by identity context for desktop clients. If the logged-in user is a student, the system should match only that user’s registered embeddings in self-verification mode; if the user is a teacher, the system should match only the enrolled students in the active section. Explain how this should be implemented in `attendance_backend/services/realtime_service.py`, `attendance_backend/models/`, `attendance_backend/api/attendance.py`, desktop client camera service, `web-dashboard/src/services/api.ts`, and the live camera UIs.
 
 ### Prompt 7
 
@@ -193,15 +195,15 @@ Design a safe learning loop where the system improves from verified detections o
 
 ### Prompt 8
 
-Define the backend authorization contract. Explain how login should return role, section scope, and dashboard target; how JWT or session context should be validated; and how every attendance/history/analytics request should be rejected if it breaks scope. Use `attendance_backend/api/auth.py`, `attendance_backend/decorators/auth_decorators.py`, `attendance_backend/services/auth_service.py`, `attendance_backend/config/constants.py`, `web-dashboard/src/utils/roles.ts`, and `attendance_app/lib/providers/auth_provider.dart`.
+Define the backend authorization contract. Explain how login should return role, section scope, and dashboard target; how JWT or session context should be validated; and how every attendance/history/analytics request should be rejected if it breaks scope. Use `attendance_backend/api/auth.py`, `attendance_backend/decorators/auth_decorators.py`, `attendance_backend/services/auth_service.py`, `attendance_backend/config/constants.py`, `web-dashboard/src/utils/roles.ts`, and desktop client auth providers as references.
 
 ### Prompt 9
 
-Design the realtime update model. The backend should broadcast scoped events only, and the frontend should fall back to polling when realtime is unavailable. Explain the contract for `attendance_backend/api/websocket.py`, `attendance_backend/services/realtime_service.py`, `attendance_backend/api/attendance.py`, `web-dashboard/src/hooks/useAttendanceHooks.ts`, `web-dashboard/src/pages/HistoryPage.tsx`, and `web-dashboard/src/pages/AttendancePage.tsx`.
+Design the realtime update model. The backend should broadcast scoped events only, and the clients should fall back to polling when realtime is unavailable. Explain the contract for `attendance_backend/api/websocket.py`, `attendance_backend/services/realtime_service.py`, `attendance_backend/api/attendance.py`, `web-dashboard/src/hooks/useAttendanceHooks.ts`, `web-dashboard/src/pages/HistoryPage.tsx`, and desktop-client realtime hooks.
 
 ### Prompt 10
 
-Produce an implementation roadmap with phases, acceptance criteria, and file-by-file change order. The roadmap should separate quick wins from structural changes, and it should state exactly which files are edited first in `attendance_backend/`, `attendance_app/lib/`, and `web-dashboard/src/`. Make the roadmap safe for incremental rollout so the current system keeps working while the new architecture is introduced.
+Produce an implementation roadmap with phases, acceptance criteria, and file-by-file change order. The roadmap should separate quick wins from structural changes, and it should state exactly which files are edited first in `attendance_backend/`, `desktop-client/`, and `web-dashboard/src/`. Make the roadmap safe for incremental rollout so the current system keeps working while the new architecture is introduced.
 
 ## Suggested rollout order
 
@@ -214,12 +216,46 @@ Produce an implementation roadmap with phases, acceptance criteria, and file-by-
 
 ## Acceptance criteria
 
-- A student can only see their own attendance history and personal analytics.
-- A teacher can only act on assigned sections and valid timetable periods.
-- Live camera only offers periods that are valid for the current session and time.
-- The face search candidate set is narrowed before recognition.
-- Learning only happens from verified outcomes.
-- Dashboard, history, and analytics all read from the same scope rules.
+### Status (as of May 15, 2026)
+
+- ✅ **A student can only see their own attendance history and personal analytics.**
+  - Already enforced via `_assert_own_record` guards in `attendance_backend/api/student.py`
+  - Frontend history (StudentHistoryView) reads student_id from session scope
+  - No changes needed; working as designed
+
+- ✅ **A teacher can only act on assigned sections and valid timetable periods.**
+  - Backend enforcement via `_assert_section_access` and `_enforce_period_access` in `attendance_backend/api/teacher.py` (exists)
+  - **PATCH APPLIED** (May 15): Frontend now uses assigned_sections from session scope
+    - Removed hardcoded CLASS_OPTIONS in AttendancePage
+    - Teacher history now routes to `/api/v1/teacher/attendance/history` instead of admin history
+    - Teacher analytics uses `getStoredAssignedSections()` instead of hardcoded sections
+  - AdminHistoryPage enforces required class_id filter for teacher mode
+
+- ✅ **Live camera only offers periods that are valid for the current session and time.**
+  - Backend window enforcement via `_get_window_for_period()` in `attendance_backend/api/attendance.py`
+  - **PATCH APPLIED** (May 15): Added `getTeacherAvailablePeriods()` API endpoint + method
+  - Frontend AttendancePage now filters periods from backend valid-periods endpoint
+  - Period selection is time-gated at server side via window status checks
+
+- ✅ **The face search candidate set is narrowed before recognition.**
+  - Implemented via `identity_context_service.py` and `scoped_embedding_search.py`
+  - Automatically narrows candidates by student (SELF scope) or section (SECTION scope)
+  - Global fallback exists as safety net; production should seed all users to section/self scope
+  - No changes needed; working as designed
+
+- ⏳ **Learning only happens from verified outcomes.**
+  - **PATCH APPLIED** (May 15): Added `_queue_verified_outcome()` writer to confirm-attendance flow
+  - Records persisted to Firestore `verified_face_outcomes` collection
+  - Requires debugging: silent write failure; data not appearing in collection despite code execution
+  - Future learning pipeline must source from `verified_face_outcomes`, not raw detections
+  - Status: **Code integrated; needs runtime debugging & data validation**
+
+- ✅ **Dashboard, history, and analytics all read from the same scope rules.**
+  - **PATCH APPLIED** (May 15): All staff views now derive scopes from `getStoredAssignedSections()`
+  - AttendancePage, HistoryPage, and AttendanceAnalyticsPage all use session-scoped section list
+  - Admin views (superuser mode) still have unrestricted access
+  - Scope rules are centralized in auth session (SESSION_TOKEN_KEY, USER_ASSIGNED_SECTIONS_KEY)
+  - Status: **Unified scope enforcement; ready for testing with real teacher assignments**
 
 ## Notes for Claude
 
@@ -290,3 +326,49 @@ Do not propose changes that rely on frontend-only hiding. Every privacy and scop
 - All attendance changes are audited.
 - Realtime updates work for everyone viewing the same section.
 - The frontend remains unchanged because filtering is enforced on the backend.
+
+## Desktop Audit & System Design (Prompt 1 Implementation)
+
+Summary
+
+Produce a concrete system design so `desktop-client/` (Electron/React), `web-dashboard/`, and `attendance_backend/` share one attendance model. The design enforces timetable-driven operations, scoped access, identity-aware matching, and verified learning.
+
+Architecture tiers and responsibilities
+
+- Presentation (desktop-client, web-dashboard): render role-scoped views, request allowed data only, present live-camera UI and fallback flows. Do not enforce authorization beyond hiding UI controls.
+- Application (client services & controllers): orchestrate flows (login→scope fetch→timetable load→live camera session), manage client-side caches and polling fallbacks, handle UX rules (period-selection windows) but rely on backend validation for correctness.
+- Domain (backend services): implement business rules — timetable window detection, scope narrowing, section enrollment checks, audit decisions, and verified-sample ingestion. This is the source of truth for allowed actions.
+- Persistence (Firestore via `attendance_backend/database/*`): canonical storage for `attendance`, `timetable`, `users`, `sections`, `enrollments`, `audit_logs`. Support queries by day, period, section, and user without full scans.
+- Realtime (websocket/SSE service): scoped event fan-out per section/user. Serve delta updates; do not carry authoritative state — clients re-fetch authoritative records when needed.
+- Security (auth service & decorators): attach role and section scope to tokens; enforce resource-level filters on every API and on any realtime subscription request.
+
+Core data model
+
+- Attendance: {id, date, period_id, section_id, student_id, status, marked_by, source, verified, created_at, metadata}
+- Timetable: {period_id, section_id, day_of_week, start_ts, end_ts, rules}
+- User: {user_id, roles, assigned_sections}
+
+Key flows (high level)
+
+- Live camera: client requests auth token → backend returns scope + current timetable window → client asks for allowed periods → backend validates period selection → camera frames sent to narrowing-matching endpoint (server restricts candidate set) → server returns candidate → client requests verification UI → confirmed matches produce verified-sample writes.
+
+File-by-file mapping (high priority changes)
+
+- Desktop client: `desktop-client/src/components/LiveCamera.tsx`, `desktop-client/src/services/api.ts`, `desktop-client/src/pages/AttendancePage.tsx` (implement scope fetch & period gating)
+- Web dashboard: `web-dashboard/src/components/LiveCamera.tsx`, `web-dashboard/src/hooks/useAttendanceHooks.ts` (reuse same gating logic)
+- Backend: `attendance_backend/api/timetable.py` (period window), `attendance_backend/api/attendance.py` (marking + candidate narrowing), `attendance_backend/services/auth_service.py` (token + scope), `attendance_backend/services/realtime_service.py` (scoped broadcasts), `attendance_backend/database/attendance_repository.py` (role-aware queries)
+
+Rollout & validation
+
+1. Add scope-reporting to login (`auth.py`) and protect `timetable` read endpoints. 2. Implement period-window checks in `timetable.py`. 3. Add candidate-narrowing parameter to recognition endpoint and require server-side validation. 4. Update desktop-client and web-dashboard to call new contract and gate UI. 5. Add audit logs for mutations and tests for denial paths.
+
+Acceptance criteria (concrete)
+
+- Desktop client + web dashboard only show periods returned by backend for the current session.  
+- Backend rejects any attendance mark outside allowed scope or time window.  
+- Face-matching endpoint accepts a `candidate_scope` and only searches within that set.  
+- Verified samples are persisted separately and require an explicit confirmation call before being used for learning.
+
+Notes
+
+Keep client-side changes minimal — prefer an API-first backend rollout so legacy clients degrade gracefully. Update `SYSTEM_REDESIGN_PLAN.md` with implementation tasks when you want me to proceed to the next file edits.

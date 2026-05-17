@@ -65,6 +65,7 @@ indexes/
 tmp/
 temp/
 *.tmp
+tmp_jwt.txt
 
 # Database
 *.db

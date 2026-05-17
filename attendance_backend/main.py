@@ -58,7 +58,7 @@ from api.attendance import router as attendance_router
 from api.sections   import router as sections_router   # courses, sections, enrollments, assignments
 from api.timetable  import router as timetable_router
 from api.teacher    import router as teacher_router
-from api.student    import router as student_router
+from api.student_secured import router as student_router
 
 # Real-time + health
 from api.websocket import router as websocket_router
@@ -76,6 +76,7 @@ from services.firebase_service         import initialize_firebase
 from services.period_detection_service import init_period_detection_service
 from services.rtsp_stream_handler      import get_stream_manager
 from services.timetable_service        import init_timetable_service
+from services.realtime_service         import get_realtime_service
 
 # ── Repositories ──────────────────────────────────────────────────────────────
 from database.timetable_repository import init_timetable_repository
@@ -146,7 +147,10 @@ def _install_windows_asyncio_exception_filter() -> None:
     other exception to the original handler.
     """
 
-    loop = asyncio.get_event_loop()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.get_event_loop()
     previous_handler = loop.get_exception_handler()
 
     def _exception_handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
@@ -167,6 +171,8 @@ def _install_windows_asyncio_exception_filter() -> None:
             previous_handler(loop, context)
         else:
             loop.default_exception_handler(context)
+
+    loop.set_exception_handler(_exception_handler)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -200,6 +206,15 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.error("✗ FirebaseService init failed: %s", exc)
 
+    # Initialise EmbeddingScopeService (optional - non-fatal)
+    try:
+        if firebase_svc:
+            from services.embedding_scope_service import init_scope_service
+            init_scope_service(firebase_svc)
+            logger.info("✓ EmbeddingScopeService initialised")
+    except Exception as exc:
+        logger.warning("⚠ EmbeddingScopeService init failed: %s", exc)
+
     # 2. AuditService ─────────────────────────────────────────────────────────
     try:
         init_audit_service(firestore_db=firestore_db)
@@ -222,9 +237,17 @@ async def lifespan(app: FastAPI):
             logger.info("✓ TimetableRepository initialised")
         except Exception as exc:
             logger.error("✗ TimetableRepository init failed: %s", exc)
+
+        # 4b. AttendanceLockService (period locking + audit) ──────────────────
+        try:
+            from services.attendance_lock_service import init_lock_service
+            init_lock_service(firestore_db)
+            logger.info("✓ AttendanceLockService initialised")
+        except Exception as exc:
+            logger.error("✗ AttendanceLockService init failed: %s", exc)
     else:
         logger.warning(
-            "⚠ TimetableService + TimetableRepository skipped — Firestore unavailable."
+            "⚠ TimetableService + TimetableRepository + AttendanceLockService skipped — Firestore unavailable."
         )
 
     # 5. PeriodDetectionService ───────────────────────────────────────────────
@@ -258,6 +281,14 @@ async def lifespan(app: FastAPI):
         )
 
     logger.info("═══ Startup complete — all services ready ═══")
+
+    # Start realtime window_tick loop (best-effort)
+    try:
+        rt_svc = get_realtime_service()
+        rt_svc.start_window_tick_loop()
+        logger.info("✓ Realtime window_tick loop started")
+    except Exception as exc:
+        logger.warning("Could not start realtime window_tick loop: %s", exc)
     yield
 
     # ── Shutdown ──────────────────────────────────────────────────────────────

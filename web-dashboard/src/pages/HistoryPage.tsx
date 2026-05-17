@@ -17,7 +17,10 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Layout } from '../components/Layout';
 import { AttendanceHistory, AdminHistoryTable } from '../components/AttendanceHistory';
 import { useAdminHistory, useClassesAndPeriods } from '../hooks/useAttendanceHooks';
+import { getStoredAssignedSections, getSessionToken } from '../services/firebase/auth.service';
 import { getStoredRole } from '../utils/roles';
+import ChannelBadge from '../components/ChannelBadge';
+import useTeacherRealtime from '../hooks/useTeacherRealtime';
 import type { AttendanceRecord } from '../services/api';
 import {
   Calendar, SlidersHorizontal, RefreshCw, X, Clock,
@@ -85,12 +88,18 @@ const DEFAULT_ADMIN_FILTERS: AdminFiltersState = {
 function AdminFilterPanel({
   filters,
   onChange,
+  allowedClassIds = [],
 }: {
   filters: AdminFiltersState;
   onChange: (patch: Partial<AdminFiltersState>) => void;
+  allowedClassIds?: string[];
 }) {
   const { classes, periods, classesLoading, periodsLoading, loadPeriods } =
     useClassesAndPeriods();
+
+  const visibleClasses = allowedClassIds.length
+    ? classes.filter(c => allowedClassIds.includes(c.class_id))
+    : classes;
 
   // Reload periods whenever class or date changes
   useEffect(() => {
@@ -132,8 +141,8 @@ function AdminFilterPanel({
             style={inputSx}
             disabled={classesLoading}
           >
-            <option value="">All Classes</option>
-            {classes.map(c => (
+            {allowedClassIds.length === 0 && <option value="">All Classes</option>}
+            {visibleClasses.map(c => (
               <option key={c.class_id} value={c.class_id}>
                 {c.class_name}{c.section ? ` (${c.section})` : ''}
               </option>
@@ -355,12 +364,22 @@ const AttendanceRow: React.FC<{ record: AttendanceRecord }> = ({ record }) => {
 // AdminHistoryPage  (full filter panel + AdminHistoryTable from doc 4)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function AdminHistoryPage() {
+function AdminHistoryPage({ allowedClassIds = [] }: { allowedClassIds?: string[] }) {
+  const role = getStoredRole();
+  const teacherScoped = role === 'teacher';
   const [filters, setFilters] = useState<AdminFiltersState>({
     ...DEFAULT_ADMIN_FILTERS,
     date: todayISO(),
+    classId: teacherScoped && allowedClassIds.length > 0 ? allowedClassIds[0] : '',
   });
   const [showFilters, setShowFilters] = useState(true);
+
+  useEffect(() => {
+    if (!teacherScoped) return;
+    if (allowedClassIds.length === 0) return;
+    if (filters.classId) return;
+    setFilters(prev => ({ ...prev, classId: allowedClassIds[0], periodId: '' }));
+  }, [teacherScoped, allowedClassIds, filters.classId]);
 
   const mergeFilters = useCallback((patch: Partial<AdminFiltersState>) => {
     setFilters(prev => ({ ...prev, ...patch }));
@@ -377,7 +396,7 @@ function AdminHistoryPage() {
     page:           filters.page,
     limit:          50,
     pollIntervalMs: filters.pollInterval,
-    enabled:        true,
+    enabled:        !teacherScoped || Boolean(filters.classId),
   });
 
   const activeFilterCount = [
@@ -427,6 +446,16 @@ function AdminHistoryPage() {
             Refresh
           </button>
 
+          {/* Realtime badge (staff only) */}
+          {(() => {
+            const roleLocal = sessionStorage.getItem('user_role') || '';
+            if (roleLocal === 'student') return null;
+            const clientId = sessionStorage.getItem('user_id') || '';
+            const token = getSessionToken();
+            const { totalUnread } = useTeacherRealtime({ clientId, token: token ?? undefined, urlBase: '' });
+            return <ChannelBadge count={totalUnread} />;
+          })()}
+
           {/* Filter toggle */}
           <button
             onClick={() => setShowFilters(v => !v)}
@@ -468,9 +497,11 @@ function AdminHistoryPage() {
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 12px', borderRadius: 99, background: '#F5F3FF', border: '1px solid #C4B5FD', fontSize: '0.75rem', fontWeight: 700, color: '#7C3AED' }}>
               <Users size={12} />
               {filters.classId}
-              <button onClick={() => mergeFilters({ classId: '', periodId: '' })} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7C3AED', padding: 0, marginLeft: 2 }}>
-                <X size={10} />
-              </button>
+              {!teacherScoped && (
+                <button onClick={() => mergeFilters({ classId: '', periodId: '' })} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#7C3AED', padding: 0, marginLeft: 2 }}>
+                  <X size={10} />
+                </button>
+              )}
             </div>
           )}
           {filters.periodId && (
@@ -487,7 +518,7 @@ function AdminHistoryPage() {
 
       {/* ── Filter panel ── */}
       {showFilters && (
-        <AdminFilterPanel filters={filters} onChange={mergeFilters} />
+          <AdminFilterPanel filters={filters} onChange={mergeFilters} allowedClassIds={allowedClassIds} />
       )}
 
       {/* ── Table ── */}
@@ -624,39 +655,32 @@ const StudentHistoryView: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <p
-            className="text-[10px] font-bold tracking-[0.14em] uppercase mb-1"
-            style={{ color: 'var(--whisper)' }}
-          >
-            My Records
-          </p>
-          <h1
-            className="text-3xl font-bold"
-            style={{ fontFamily: 'Fraunces, serif', color: 'var(--ink)' }}
-          >
-            Attendance History
-          </h1>
-          <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>
-            Your personal attendance across all enrolled courses.
-          </p>
-        </div>
+      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400 mb-2">
+              My Records
+            </p>
+            <h1 className="text-3xl font-black text-slate-900">
+              Attendance History
+            </h1>
+            <p className="mt-2 text-sm text-slate-500 max-w-2xl">
+              A complete view of your attendance records, styled like the staff dashboard but locked to your own account.
+            </p>
+          </div>
 
-        <div
-          className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold"
-          style={{ background: 'rgba(155,122,58,0.10)', border: '1px solid rgba(155,122,58,0.22)', color: 'var(--gold)' }}
-        >
-          <Clock size={12} />
-          {new Date().toLocaleDateString('en-IN', {
-            weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
-          })}
+          <div className="flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">
+            <Clock size={12} />
+            {new Date().toLocaleDateString('en-IN', {
+              weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+            })}
+          </div>
         </div>
       </div>
 
-      {/* Self-only history */}
-      <AttendanceHistory studentId={studentId} />
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <AttendanceHistory studentId={studentId} />
+      </div>
     </div>
   );
 };
@@ -667,6 +691,7 @@ const StudentHistoryView: React.FC = () => {
 
 export const HistoryPage: React.FC = () => {
   const role = getStoredRole();
+  const assignedSections = role === 'teacher' ? getStoredAssignedSections() : [];
 
   return (
     <Layout>
@@ -676,7 +701,7 @@ export const HistoryPage: React.FC = () => {
         ) : (
           // admin/teacher get the full filter-driven AdminHistoryPage;
           // StaffHistoryView is available as a sub-section within it.
-          <AdminHistoryPage />
+          <AdminHistoryPage allowedClassIds={assignedSections} />
         )}
       </div>
 

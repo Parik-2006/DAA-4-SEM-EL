@@ -102,6 +102,7 @@ docker-compose.override.yml
 /output/
 /logs/
 logs/
+tmp_jwt.txt
 *.csv
 *.xlsx
 *.pdf

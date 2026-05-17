@@ -86,6 +86,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from services.realtime_service import get_realtime_service, _now
+from typing import FrozenSet
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +226,54 @@ async def _authorise(
     return False
 
 
+async def _resolve_authorized_sections(role: str, client_id: str) -> FrozenSet[str]:
+    """
+    Return the set of section_ids this client may receive events for.
+
+    Called once at connection time; avoids per-event Firebase reads.
+    """
+    if role == "admin":
+        return frozenset(["*"])
+
+    try:
+        from database.firebase_client import FirebaseClient
+        fb = FirebaseClient()
+
+        if role == "teacher":
+            try:
+                secs = fb.get_teacher_sections(client_id)
+                return frozenset(secs)
+            except Exception:
+                # RTDB fallback for legacy deployments
+                try:
+                    raw = fb.get_reference("course_assignments").get() or {}
+                    ids = {
+                        v.get("class_id")
+                        for v in raw.values()
+                        if isinstance(v, dict) and v.get("faculty_id") == client_id and v.get("class_id")
+                    }
+                    return frozenset(ids)
+                except Exception:
+                    logger.warning("Section resolution failed for teacher %s", client_id)
+                    return frozenset()
+
+        if role == "student":
+            try:
+                raw = fb.get_reference(f"users/{client_id}").get() or {}
+                if not isinstance(raw, dict):
+                    return frozenset()
+                class_id = raw.get("class_id", "")
+                return frozenset([class_id]) if class_id else frozenset()
+            except Exception:
+                logger.warning("Section resolution failed for student %s", client_id)
+                return frozenset()
+
+    except Exception as exc:
+        logger.warning("Section resolution error: %s", exc)
+
+    return frozenset()
+
+
 # ── WebSocket endpoint ────────────────────────────────────────────────────────
 
 @router.websocket("/ws/{section_id}")
@@ -265,8 +314,20 @@ async def websocket_endpoint(
         await websocket.close(code=4003, reason="Not authorised for this section")
         return
 
+    # Resolve authorized sections once at connect time
+    try:
+        authorized_sections = await _resolve_authorized_sections(role, client_id)
+    except Exception:
+        authorized_sections = frozenset()
+
     # Delegate to service (blocks until client disconnects)
-    await svc.connect_ws(websocket, section_id=section_id, client_id=client_id, role=role)
+    await svc.connect_ws(
+        websocket,
+        section_id=section_id,
+        client_id=client_id,
+        role=role,
+        authorized_sections=authorized_sections,
+    )
 
 
 # ── SSE endpoint ──────────────────────────────────────────────────────────────
@@ -304,10 +365,17 @@ async def sse_endpoint(
             detail=f"Not authorised to subscribe to section '{section_id}'",
         )
 
+    try:
+        authorized_sections = await _resolve_authorized_sections(role, client_id)
+    except Exception:
+        authorized_sections = frozenset()
+
     svc = get_realtime_service()
 
     async def _generate():
-        async for chunk in svc.sse_stream(section_id, client_id=client_id, role=role):
+        async for chunk in svc.sse_stream(
+            section_id, client_id=client_id, role=role, authorized_sections=authorized_sections
+        ):
             yield chunk
 
     return StreamingResponse(

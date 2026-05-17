@@ -357,6 +357,47 @@ class FirebaseService:
                 })
                 logger.info(f"Embedding appended for {student_id} (total: {len(formatted_list)})")
                 return True
+        except Exception as e:
+            logger.error(f"Failed to store embedding for {student_id}: {e}")
+            return False
+
+    def compute_and_update_prototype(self, student_id: str) -> Optional[List[float]]:
+        """
+        Compute L2-normalized prototype (mean of normalized embeddings) for a student
+        and store it in the student document under the `prototype` field.
+        Returns the prototype vector as a Python list, or None on failure.
+        """
+        try:
+            self._ensure_ready()
+            student = self.get_student(student_id)
+            if not student:
+                return None
+            embs = self.get_all_embeddings(student)
+            if not embs:
+                return None
+            normed = []
+            for e in embs:
+                try:
+                    arr = np.array(e, dtype=np.float32)
+                    norm = arr / (np.linalg.norm(arr) + 1e-10)
+                    normed.append(norm)
+                except Exception:
+                    continue
+            if not normed:
+                return None
+            proto = np.mean(np.stack(normed, axis=0), axis=0)
+            proto_list = proto.tolist()
+
+            if self.db:
+                self.db.collection("students").document(student_id).update({"prototype": proto_list})
+            elif self.firebase_db:
+                self.firebase_db.child("students").child(student_id).update({"prototype": proto_list})
+
+            logger.info(f"Updated prototype for {student_id}")
+            return proto_list
+        except Exception as e:
+            logger.error(f"Failed to compute/update prototype for {student_id}: {e}")
+            return None
 
         except Exception as e:
             logger.error(f"Failed to store embedding for {student_id}: {e}")

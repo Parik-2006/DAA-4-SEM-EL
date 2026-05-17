@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 from pathlib import Path
 import logging
 import numpy as np
@@ -24,6 +25,25 @@ STUDENT_MAPPING = {
     "STUD_006": "Nischith G A"
 }
 
+
+def _normalize_folder_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+
+
+def _resolve_folder_path(photos_base: Path, stud_id: str, name: str) -> Path | None:
+    candidates = [
+        stud_id.lower(),
+        stud_id.lower().replace("stud_", "student_"),
+        _normalize_folder_name(name),
+        _normalize_folder_name(f"{name}_{stud_id}"),
+    ]
+
+    for candidate in dict.fromkeys(candidates):
+        folder = photos_base / candidate
+        if folder.exists() and folder.is_dir():
+            return folder
+    return None
+
 def seed():
     # Initialize Firebase
     creds = os.getenv("FIREBASE_CREDENTIALS_PATH", "config/firebase-credentials.json")
@@ -39,38 +59,49 @@ def seed():
         return
 
     for stud_id, name in STUDENT_MAPPING.items():
-        # Folder names are student_001, etc.
-        folder_name = stud_id.lower().replace("stud_", "student_")
-        folder_path = photos_base / folder_name
-        
-        if not folder_path.exists():
-            logger.warning(f"Folder not found: {folder_path}")
+        folder_path = _resolve_folder_path(photos_base, stud_id, name)
+
+        if folder_path is None:
+            logger.warning(f"Folder not found for {name} ({stud_id})")
             continue
             
         logger.info(f"Processing {name} ({stud_id})...")
         
-        # Get first image from folder
-        images = list(folder_path.glob("*.jpg")) + list(folder_path.glob("*.png"))
+        # Use every valid image in the folder so the student gets multiple
+        # embeddings. This improves recognition stability in live camera scans.
+        images = (
+            sorted(folder_path.glob("*.jpg"))
+            + sorted(folder_path.glob("*.jpeg"))
+            + sorted(folder_path.glob("*.png"))
+        )
         if not images:
             logger.warning(f"No images in {folder_path}")
             continue
-            
+
+        embeddings: list[np.ndarray] = []
         try:
-            img = Image.open(images[0]).convert("RGB")
-            img_arr = np.array(img)
-            embedding = extractor.extract_embedding(img_arr)
-            
-            if embedding is not None:
-                # Register student
+            for image_path in images:
+                img = Image.open(image_path).convert("RGB")
+                img_arr = np.array(img)
+                embedding = extractor.extract_embedding(img_arr)
+                if embedding is not None:
+                    embeddings.append(embedding)
+
+            if embeddings:
+                # Register the first embedding, then append the remaining ones.
                 firebase.register_student(
                     student_id=stud_id,
                     name=name,
                     email=f"{stud_id.lower()}@example.com",
-                    embeddings=embedding
+                    embeddings=embeddings[0]
                 )
-                logger.info(f"✅ Registered {name}")
+
+                for extra_embedding in embeddings[1:]:
+                    firebase.store_embedding(stud_id, extra_embedding)
+
+                logger.info(f"✅ Registered {name} with {len(embeddings)} embedding(s)")
             else:
-                logger.error(f"❌ Failed to extract face for {name}")
+                logger.error(f"❌ Failed to extract face for {name} from any image")
         except Exception as e:
             logger.error(f"❌ Error processing {name}: {e}")
 

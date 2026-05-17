@@ -236,7 +236,6 @@ class AttendanceRepository:
             DB_FIELD_ATTENDANCE_TIME,
             DB_FIELD_TIMESTAMP,
             "status",
-            DB_FIELD_CONFIDENCE_SCORE,
             "period_id",
             "record_id",
         }
@@ -244,6 +243,54 @@ class AttendanceRepository:
             {k: v for k, v in r.items() if k in student_safe_fields}
             for r in records
         ]
+
+    def _paginate_records(
+        self,
+        records: List[Dict[str, Any]],
+        page: int,
+        page_size: int,
+    ) -> Dict[str, Any]:
+        records = sorted(
+            records,
+            key=lambda r: (
+                r.get(DB_FIELD_ATTENDANCE_DATE, ""),
+                r.get(DB_FIELD_ATTENDANCE_TIME, ""),
+            ),
+            reverse=True,
+        )
+        total = len(records)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        offset = (page - 1) * page_size
+        return {
+            "records": records[offset: offset + page_size],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+        }
+
+    def get_student_attendance_paginated(
+        self,
+        student_id: str,
+        page: int = 1,
+        page_size: int = 20,
+        course_id: Optional[str] = None,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> Dict[str, Any]:
+        """
+        Returns a paginated, immutable student-scoped history payload.
+
+        The caller cannot widen scope beyond ``student_id``; all filtering is
+        applied here before pagination.
+        """
+        records = self.get_student_attendance(
+            student_id,
+            course_id=course_id,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        return self._paginate_records(records, page, page_size)
 
     # ── Section-scoped queries (teacher-level) ────────────────────────────────
 
@@ -258,17 +305,14 @@ class AttendanceRepository:
 
         Access contract
         ~~~~~~~~~~~~~~~
-        *faculty_id* is optional but should always be supplied by the teacher
-        API layer, which has already validated that this faculty owns the
-        section.  The repository performs a secondary filter to ensure only
-        records with matching ``class_id`` are returned — it does NOT
-        re-validate faculty ownership (that is the API layer's job).
+        The repository performs a double-check on both ``class_id`` and
+        ``faculty_id`` so that stale tokens or API bugs cannot widen the
+        query scope.
 
         Args:
             class_id:    The section whose records to fetch.
             date_filter: ISO date string ``YYYY-MM-DD``.  Defaults to today.
-            faculty_id:  Informational; stored in audit log but not used to
-                         further filter records.
+            faculty_id:  Optional faculty double-filter.
 
         Returns:
             List of attendance record dicts for the section.
@@ -282,7 +326,9 @@ class AttendanceRepository:
 
             records = [
                 r for r in raw.values()
-                if isinstance(r, dict) and r.get("class_id") == class_id
+                if isinstance(r, dict)
+                and r.get("class_id") == class_id
+                and (faculty_id is None or r.get("faculty_id") == faculty_id)
             ]
 
             logger.debug(
@@ -294,6 +340,47 @@ class AttendanceRepository:
         except Exception as exc:
             logger.error("get_section_attendance failed: %s", exc)
             return []
+
+    def get_section_attendance_paginated(
+        self,
+        class_id: str,
+        faculty_id: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 20,
+        course_id: Optional[str] = None,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> Dict[str, Any]:
+        """
+        Returns a paginated, section-scoped attendance history payload.
+
+        Filtering is applied before pagination so the page envelope always
+        reflects the authorized result set only.
+        """
+        try:
+            data = self.db.read_data(self.collection)
+            if not data:
+                return self._paginate_records([], page, page_size)
+
+            records: List[Dict[str, Any]] = []
+            for record in data.values():
+                if not isinstance(record, dict):
+                    continue
+                if record.get("class_id") != class_id:
+                    continue
+                if faculty_id is not None and record.get("faculty_id") != faculty_id:
+                    continue
+                if course_id and record.get(DB_FIELD_COURSE_ID) != course_id:
+                    continue
+                records.append(record)
+
+            if start_date or end_date:
+                records = self._filter_by_date_range(records, start_date, end_date)
+
+            return self._paginate_records(records, page, page_size)
+        except Exception as exc:
+            logger.error("get_section_attendance_paginated failed: %s", exc)
+            return self._paginate_records([], page, page_size)
 
     def get_section_attendance_summary(
         self,
@@ -391,7 +478,12 @@ class AttendanceRepository:
 
     # ── Admin-scoped queries ──────────────────────────────────────────────────
 
-    def get_admin_daily_summary(self, date_filter: Optional[str] = None) -> Dict[str, Any]:
+    def get_admin_daily_summary(
+        self,
+        date_filter: Optional[str] = None,
+        *,
+        _admin_caller: str = "unknown",
+    ) -> Dict[str, Any]:
         """
         Cross-section attendance summary for admin analytics.
 
@@ -413,6 +505,7 @@ class AttendanceRepository:
         for verifying admin privileges before calling this method.  The
         repository itself does not enforce role checks.
         """
+        logger.info("Admin daily summary requested by %s", _admin_caller)
         target_date = date_filter or datetime.now().strftime("%Y-%m-%d")
 
         total_present = total_late = total_absent = 0

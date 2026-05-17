@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     # ============ FaceNet Configuration ============
     facenet_model_path: str = Field(default="weights/facenet_model.pt", alias="FACENET_MODEL_PATH")
     face_embedding_dim: int = Field(default=128, alias="FACE_EMBEDDING_DIM")
-    face_recognition_threshold: float = Field(default=0.6, alias="FACE_RECOGNITION_THRESHOLD")
+    face_recognition_threshold: float = Field(default=0.58, alias="FACE_RECOGNITION_THRESHOLD")
     
     # ============ Detection Configuration ============
     detection_img_size: int = Field(default=640, alias="DETECTION_IMG_SIZE")

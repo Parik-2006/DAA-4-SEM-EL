@@ -138,12 +138,12 @@ YOLOV8_VARIANTS = {
 # 🎯 DETECTION & RECOGNITION
 # ───────────────────────────────────────────────────────────────
 FACE_DETECTION_CONFIDENCE_MIN: Final[float] = 0.5
-FACE_RECOGNITION_CONFIDENCE_MIN: Final[float] = 0.6
+FACE_RECOGNITION_CONFIDENCE_MIN: Final[float] = 0.58
 FACE_MIN_PIXEL_SIZE: Final[int] = 30
 FACE_RECOGNITION_THRESHOLD: Final[float] = FACE_RECOGNITION_CONFIDENCE_MIN
 
-FACE_SIMILARITY_THRESHOLD: Final[float] = 0.6
-FACE_EMBEDDING_DISTANCE_THRESHOLD: Final[float] = 0.6
+FACE_SIMILARITY_THRESHOLD: Final[float] = 0.58
+FACE_EMBEDDING_DISTANCE_THRESHOLD: Final[float] = 0.58
 
 # ───────────────────────────────────────────────────────────────
 # 🎥 TRACKING

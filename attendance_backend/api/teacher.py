@@ -63,6 +63,7 @@ from config.constants import (
     LATE_THRESHOLD_MINUTES,
     TIME_FORMAT_HM,
 )
+from database.attendance_repository import AttendanceRepository
 from database.timetable_repository import get_timetable_repository
 from middleware.auth_middleware import require_role
 from services.attendance_lock_service import get_lock_service
@@ -1102,6 +1103,11 @@ async def get_period_attendance(
     if not allowed:
         raise HTTPException(403, reason)
 
+    assigned_sections = await _get_assigned_sections(_faculty_id)
+    period = repo.get_period(period_id)
+    if assigned_sections:
+        _assert_section_access(period.get("class_id", ""), assigned_sections)
+
     query_date = date or _today()
 
     try:
@@ -1119,6 +1125,44 @@ async def get_period_attendance(
         "date":         query_date,
         "record_count": len(filtered),
         "records":      filtered,
+    })
+
+
+@router.get(
+    "/attendance/history",
+    summary="Paginated attendance history for a teacher's assigned section",
+)
+async def get_section_history(
+    class_id:   str = Query(..., description="Must be in your assigned sections"),
+    page:       int = Query(1, ge=1),
+    page_size:  int = Query(20, ge=1, le=100),
+    start_date: Optional[str] = Query(None),
+    end_date:   Optional[str] = Query(None),
+    course_id:  Optional[str] = Query(None),
+    faculty_id: Optional[str] = Query(None, description="Admin override"),
+    current_user: TokenPayload = Depends(require_role("teacher", "admin")),
+):
+    _faculty_id = _resolve_faculty_id(current_user, faculty_id)
+    assigned = await _get_assigned_sections(_faculty_id)
+    _assert_section_access(class_id, assigned)
+
+    repo = AttendanceRepository()
+    result = repo.get_section_attendance_paginated(
+        class_id=class_id,
+        faculty_id=_faculty_id,
+        page=page,
+        page_size=page_size,
+        course_id=course_id,
+        start_date=datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None,
+        end_date=datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else None,
+    )
+    if page > result["total_pages"] and result["total"] > 0:
+        raise HTTPException(status_code=404, detail=f"Page {page} does not exist. Max page: {result['total_pages']}.")
+
+    return JSONResponse(status_code=200, content={
+        **result,
+        "class_id": class_id,
+        "faculty_id": _faculty_id,
     })
 
 
@@ -1444,3 +1488,111 @@ async def unlock_period(
             f"Period '{period_id}' unlocked."
         ),
     })
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET /analytics/section  (Prompt 5)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get(
+    "/analytics/section",
+    summary="Section attendance analytics for assigned class (teacher-scoped)",
+)
+async def get_section_analytics(
+    class_id: str = Query(..., description="Must be in your assigned sections"),
+    date: Optional[str] = Query(None, description="YYYY-MM-DD (defaults to today)"),
+    current_user: TokenPayload = Depends(require_role("teacher", "admin")),
+    faculty_id: Optional[str] = Query(None, description="Admin override"),
+):
+    """
+    Section-scoped analytics for an assigned class.
+
+    The teacher can only query sections they are assigned to. Admins can
+    query any section by providing their faculty_id.
+
+    **Response**
+    ```json
+    {
+      "class_id": "CSE-4C",
+      "date": "2026-05-14",
+      "present": 32,
+      "late": 1,
+      "absent": 5,
+      "not_marked": 7,
+      "total_students": 45,
+      "attendance_rate": 73.3,
+      "band": "warning"
+    }
+    ```
+    """
+    _faculty_id = _resolve_faculty_id(current_user, faculty_id)
+    target_date = date or _today()
+
+    # Verify section ownership
+    assigned_sections = await _get_assigned_sections(_faculty_id)
+    if assigned_sections:
+        _assert_section_access(class_id, assigned_sections)
+
+    try:
+        fb_rt = _get_rtdb()
+        day_recs = fb_rt.get_reference(f"attendance/{target_date}").get() or {}
+    except Exception as exc:
+        logger.error("Section analytics fetch failed: %s", exc)
+        raise HTTPException(500, f"Failed to fetch attendance data: {exc}")
+
+    present = late = absent = 0
+    for rec in day_recs.values():
+        if isinstance(rec, dict) and rec.get("class_id") == class_id:
+            s = rec.get("status", "")
+            if s == "present":
+                present += 1
+            elif s == "late":
+                late += 1
+            elif s == "absent":
+                absent += 1
+
+    total_marked = present + late + absent
+    rate = round((present + late) / total_marked * 100, 1) if total_marked else 0.0
+    band = _attendance_band_teacher(rate)
+
+    # Get total student count for the class
+    try:
+        db = _get_firestore()
+        stu_docs = (
+            db.collection("students")
+            .where(filter=FieldFilter("class_id", "==", class_id))
+            .where(filter=FieldFilter("active_status", "==", True))
+            .stream()
+        )
+        total_students = len(list(stu_docs))
+    except Exception:
+        total_students = 0
+
+    not_marked = max(0, total_students - total_marked)
+
+    logger.info(
+        "get_section_analytics | faculty_id=%s | class_id=%s | date=%s | rate=%f%%",
+        _faculty_id, class_id, target_date, rate,
+    )
+
+    return JSONResponse(status_code=200, content={
+        "class_id": class_id,
+        "date": target_date,
+        "present": present,
+        "late": late,
+        "absent": absent,
+        "not_marked": not_marked,
+        "total_students": total_students,
+        "attendance_rate": rate,
+        "band": band,
+        "generated_at": datetime.now().isoformat(),
+    })
+
+
+def _attendance_band_teacher(rate: float) -> str:
+    """Classify attendance rate into safety band."""
+    if rate >= 85:
+        return "safe"
+    if rate >= 75:
+        return "warning"
+    return "danger"
