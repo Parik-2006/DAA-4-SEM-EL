@@ -15,8 +15,8 @@ const STATIC_STUDENTS: Record<string, Array<{ student_id: string; roll_no: strin
     { student_id: 'STUD_006', roll_no: '4CS06', name: 'Nischith G A' },
   ],
   'CSE-B-4SEM': [
-    { student_id: 'STUD_007', roll_no: '4CS07', name: 'Arjun Sharma' },
-    { student_id: 'STUD_008', roll_no: '4CS08', name: 'Divya Nair' },
+    { student_id: 'STUD_007', roll_no: '4CS07', name: 'Yohith N' },
+    { student_id: 'STUD_008', roll_no: '4CS08', name: 'Mahesh Raju N' },
   ],
   'CSE-C-4SEM': [
     { student_id: 'STUD_010', roll_no: '4CS10', name: 'Sneha Patil' },

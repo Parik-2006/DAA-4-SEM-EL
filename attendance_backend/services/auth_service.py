@@ -46,6 +46,57 @@ _JWT_SECRET: str = os.getenv("JWT_SECRET", "dev-secret-change-in-production-plea
 _JWT_ALGORITHM: str = "HS256"
 _TOKEN_EXPIRY_SECONDS: int = int(os.getenv("JWT_EXPIRY_SECONDS", str(8 * 3600)))  # 8 h
 
+
+def _is_dev_auth_enabled() -> bool:
+    """
+    Allow hardcoded local test users only outside production.
+
+    This keeps RVCE demo accounts usable when Firestore has not been seeded yet,
+    while making the fallback opt-out in production-like environments.
+    """
+    # Prefer the FastAPI-specific environment flags. Some local legacy .env
+    # files contain ENV=production while still using development secrets, which
+    # would otherwise disable the local RVCE login fallback unexpectedly.
+    env = (os.getenv("FASTAPI_ENV") or os.getenv("ENVIRONMENT") or "development").strip().lower()
+    if env == "production":
+        return os.getenv("ENABLE_DEV_AUTH_FALLBACK", "false").lower() == "true"
+    return os.getenv("ENABLE_DEV_AUTH_FALLBACK", "true").lower() == "true"
+
+
+_DEV_RVCE_TEACHERS: Dict[str, Dict[str, Any]] = {
+    "saraswathigd@rvce.edu.in": {
+        "id": "FAC_SARASWATHI",
+        "name": "Prof. Saraswathi G Datar",
+        "assigned_sections": ["CSE_4C_SEM4"],
+    },
+    "neethus@rvce.edu.in": {
+        "id": "FAC_NEETHU",
+        "name": "Prof. Neethu Srikumaran",
+        "assigned_sections": ["CSE_4C_SEM4"],
+    },
+    "anithasandeep@rvce.edu.in": {
+        "id": "FAC_ANITHA",
+        "name": "Dr. Anitha Sandeep",
+        "assigned_sections": ["CSE_4C_SEM4"],
+    },
+    "nagarajags@rvce.edu.in": {
+        "id": "FAC_NAGARAJA",
+        "name": "Dr. G S Nagaraja",
+        "assigned_sections": ["CSE_4C_SEM4"],
+    },
+    "nagarajasg@rvce.edu.in": {
+        "id": "FAC_NAGARAJA",
+        "name": "Dr. G S Nagaraja",
+        "assigned_sections": ["CSE_4C_SEM4"],
+    },
+    "ravikiransw@rvce.edu.in": {
+        "id": "FAC_RAVIKIRAN",
+        "name": "Prof. Ravikiran S Wali",
+        "assigned_sections": ["CSE_4C_SEM4"],
+    },
+}
+_DEV_RVCE_TEACHER_PASSWORD_HASH = hashlib.sha256("Rvce@123".encode()).hexdigest()
+
 # ── Role → permission mapping ──────────────────────────────────────────────────
 ROLE_PERMISSIONS: Dict[str, List[str]] = {
     "admin": [
@@ -265,10 +316,11 @@ class AuthService:
 
         Returns the user dict on success, None on failure.
         """
+        normalized_email = email.strip().lower()
         try:
             docs = (
                 firestore_db.collection("users")
-                .where(filter=FieldFilter("email", "==", email))
+                .where(filter=FieldFilter("email", "==", normalized_email))
                 .limit(1)
                 .stream()
             )
@@ -277,10 +329,41 @@ class AuthService:
                 stored_hash = user.get("password_hash", "")
                 if stored_hash and self.verify_password(password, stored_hash):
                     return {**user, "doc_id": doc.id}
-            return None
         except Exception as exc:
             logger.error("Authentication query failed: %s", exc)
+
+        return self._authenticate_dev_rvce_teacher(normalized_email, password)
+
+    def _authenticate_dev_rvce_teacher(
+        self,
+        email: str,
+        password: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a local RVCE teacher test user when Firestore is not seeded."""
+        if not _is_dev_auth_enabled():
             return None
+
+        teacher = _DEV_RVCE_TEACHERS.get(email)
+        if teacher is None:
+            return None
+
+        if not self.verify_password(password, _DEV_RVCE_TEACHER_PASSWORD_HASH):
+            return None
+
+        logger.warning(
+            "Using dev RVCE teacher auth fallback for %s. "
+            "Seed Firestore users before production use.",
+            email,
+        )
+        return {
+            "id": teacher["id"],
+            "doc_id": teacher["id"],
+            "email": email,
+            "role": "teacher",
+            "name": teacher["name"],
+            "assigned_sections": teacher["assigned_sections"],
+            "password_hash": _DEV_RVCE_TEACHER_PASSWORD_HASH,
+        }
 
 
 # Module-level singleton

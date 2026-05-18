@@ -10,6 +10,7 @@ import {
   Layout,
   LiveCamera,
 } from '../components';
+import { getCurrentUser } from '../services/firebase/auth.service';
 
 import {
   AlertTriangle,
@@ -84,7 +85,7 @@ const FaceRegistrationPage: React.FC = () => {
 
   // Read optional query param to auto-start camera for a particular student
   const [searchParams] = useSearchParams();
-  const targetStudent = searchParams.get('student');
+  const targetStudent = searchParams.get('student') ?? getCurrentUser()?.uid ?? sessionStorage.getItem('user_id');
 
   // ─────────────────────────────────────────────────────────
   // Derived State

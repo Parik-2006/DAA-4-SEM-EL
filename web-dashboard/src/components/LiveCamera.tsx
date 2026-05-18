@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { attendanceAPI, DetectFaceResponse, ConfirmAttendanceResponse, AttendanceWindowInfo, CandidateSuggestion } from '@/services/api';
 import { Card } from './UI';
+import { getStudentDisplayName } from '../utils/student-directory';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const MAX_CONSECUTIVE_FAILURES = 5;
@@ -50,6 +51,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
   const confidencePct = Math.round((detection.confidence ?? 0) * 100);
   const barColor =
     confidencePct >= 85 ? '#4ade80' : confidencePct >= 70 ? '#fbbf24' : '#f87171';
+  const displayName = getStudentDisplayName(detection.student_id, detection.student_name ?? 'Unknown');
 
   return (
     /* Backdrop */
@@ -93,7 +95,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
             className="text-center font-bold mb-1"
             style={{ fontSize: 20, color: '#3d2b1a', letterSpacing: '-0.3px' }}
           >
-            Are you {detection.student_name}?
+            Are you {displayName}?
           </h2>
           <p className="text-center mb-5" style={{ color: '#7a5c3e', fontSize: 14 }}>
             Please confirm your identity to mark attendance.
@@ -108,7 +110,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
               className="text-center font-bold mb-0.5"
               style={{ fontSize: 22, color: '#2d1f0f' }}
             >
-              {detection.student_name}
+              {displayName}
             </p>
             <p className="text-center text-sm mb-3" style={{ color: '#7a5c3e' }}>
               ID: {detection.student_id}
@@ -229,6 +231,7 @@ const CandidatePromptModal: React.FC<CandidatePromptModalProps> = ({
         <div className="flex flex-col gap-3">
           {suggestions.map((candidate) => {
             const pct = Math.round(candidate.confidence * 100);
+            const displayName = getStudentDisplayName(candidate.student_id, candidate.student_name);
             return (
               <button
                 key={candidate.student_id}
@@ -245,7 +248,7 @@ const CandidatePromptModal: React.FC<CandidatePromptModalProps> = ({
               >
                 <div className="flex items-center justify-between gap-4">
                   <div>
-                    <p style={{ fontWeight: 700, color: '#0f172a' }}>{candidate.student_name}</p>
+                    <p style={{ fontWeight: 700, color: '#0f172a' }}>{displayName}</p>
                     <p style={{ fontSize: 12, color: '#64748b' }}>ID: {candidate.student_id}</p>
                   </div>
                   <div style={{ fontSize: 12, fontWeight: 700, color: '#2563eb' }}>{pct}%</div>

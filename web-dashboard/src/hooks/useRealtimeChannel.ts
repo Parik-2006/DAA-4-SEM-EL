@@ -18,7 +18,7 @@ type Opts = {
 };
 
 export default function useRealtimeChannel(opts: Opts) {
-  const { clientId, role = "viewer", token, urlBase = "", onEvent, pollingInterval = 15000, maxReconnects = 5 } = opts;
+  const { clientId, role = "viewer", token, urlBase = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'), onEvent, pollingInterval = 15000, maxReconnects = 5 } = opts;
   const wsRef = useRef<WebSocket | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const pollRef = useRef<number | null>(null);

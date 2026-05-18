@@ -54,8 +54,10 @@ export const ProfilePage: React.FC = () => {
 
         <div className="bg-white rounded-lg shadow-md p-6 space-y-4">
           <div>
-            <label className="block text-gray-700 font-semibold mb-2">Name</label>
+            <label htmlFor="profile-name" className="block text-gray-700 font-semibold mb-2">Name</label>
             <input
+              id="profile-name"
+              name="name"
               type="text"
               value={profile.name}
               onChange={(e) => setProfile({ ...profile, name: e.target.value })}
@@ -65,8 +67,10 @@ export const ProfilePage: React.FC = () => {
           </div>
 
           <div>
-            <label className="block text-gray-700 font-semibold mb-2">Email</label>
+            <label htmlFor="profile-email" className="block text-gray-700 font-semibold mb-2">Email</label>
             <input
+              id="profile-email"
+              name="email"
               type="email"
               value={profile.email}
               disabled
@@ -75,10 +79,12 @@ export const ProfilePage: React.FC = () => {
           </div>
 
           <div>
-            <label className="block text-gray-700 font-semibold mb-2">
+            <label htmlFor="profile-department" className="block text-gray-700 font-semibold mb-2">
               Department
             </label>
             <input
+              id="profile-department"
+              name="department"
               type="text"
               value={profile.department}
               onChange={(e) => setProfile({ ...profile, department: e.target.value })}
@@ -88,10 +94,12 @@ export const ProfilePage: React.FC = () => {
           </div>
 
           <div>
-            <label className="block text-gray-700 font-semibold mb-2">
+            <label htmlFor="profile-phone-number" className="block text-gray-700 font-semibold mb-2">
               Phone Number
             </label>
             <input
+              id="profile-phone-number"
+              name="phoneNumber"
               type="tel"
               value={profile.phoneNumber}
               onChange={(e) => setProfile({ ...profile, phoneNumber: e.target.value })}

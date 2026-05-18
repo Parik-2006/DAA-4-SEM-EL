@@ -334,10 +334,12 @@ export const DashboardPage: React.FC = () => {
         <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 20, alignItems: 'start' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             <div style={{ borderRadius: 18, border: '1px solid #e2e8f0', background: '#fff', padding: 16 }}>
-              <p style={{ fontSize: '0.66rem', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 8 }}>
+              <label htmlFor="dashboard-class-filter" style={{ fontSize: '0.66rem', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 8, display: 'block' }}>
                 Class
-              </p>
+              </label>
               <select
+                id="dashboard-class-filter"
+                name="classId"
                 value={selectedClassId}
                 onChange={(event) => setSelectedClassId(event.target.value)}
                 style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: '0.82rem' }}
@@ -363,10 +365,12 @@ export const DashboardPage: React.FC = () => {
             </div>
 
             <div style={{ borderRadius: 18, border: '1px solid #e2e8f0', background: '#fff', padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <p style={{ fontSize: '0.66rem', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+              <label htmlFor="dashboard-period-date" style={{ fontSize: '0.66rem', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>
                 {selectedDayName} periods
-              </p>
+              </label>
               <input
+                id="dashboard-period-date"
+                name="selectedDate"
                 type="date"
                 value={selectedDateKey}
                 onChange={(event) => setSelectedDate(new Date(`${event.target.value}T00:00:00`))}

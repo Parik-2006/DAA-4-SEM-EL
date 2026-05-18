@@ -173,6 +173,7 @@ export const LoginPage: React.FC = () => {
             </label>
             <input
               id="email"
+              name="email"
               type="email"
               autoComplete="username email"
               value={email}
@@ -222,6 +223,7 @@ export const LoginPage: React.FC = () => {
             <div style={{ position: 'relative' }}>
               <input
                 id="password"
+                name="password"
                 type={showPw ? 'text' : 'password'}
                 autoComplete="current-password"
                 value={password}

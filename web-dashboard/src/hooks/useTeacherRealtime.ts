@@ -4,7 +4,7 @@ import useRealtimeChannel, { EventEnvelope } from "./useRealtimeChannel";
 type SectionMap = Record<string, number>;
 
 export default function useTeacherRealtime(opts: { clientId: string; token?: string; urlBase?: string }) {
-  const { clientId, token, urlBase = "" } = opts;
+  const { clientId, token, urlBase = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000') } = opts;
   const [authorizedSections, setAuthorizedSections] = useState<Set<string>>(new Set());
   const [unreadBySection, setUnreadBySection] = useState<SectionMap>({});
   const latestRef = useRef<Record<string, EventEnvelope[]>>({});

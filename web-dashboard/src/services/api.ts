@@ -1407,9 +1407,16 @@ class AttendanceAPI {
   async getClasses(): Promise<ClassInfo[]> {
     try {
       return await withRetry(async () => {
-        let response = await apiClient.get('/api/v1/admin/classes');
-        if (response.status === 404 || response.status === 403) {
+        const role = getStoredRole();
+        let response;
+
+        if (role === 'teacher') {
           response = await apiClient.get('/api/v1/timetable/classes');
+        } else {
+          response = await apiClient.get('/api/v1/admin/classes');
+          if (response.status === 404 || response.status === 403) {
+            response = await apiClient.get('/api/v1/timetable/classes');
+          }
         }
         return toArray<Record<string, unknown>>(response.data).map((c) => ({
           class_id: String(c.class_id ?? c.id ?? ''),

@@ -131,11 +131,13 @@ function AdminFilterPanel({
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 12 }}>
         {/* Class */}
         <div>
-          <label style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: 5 }}>
+          <label htmlFor="history-filter-class" style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: 5 }}>
             <Users size={10} style={{ display: 'inline', marginRight: 4 }} />
             Class / Section
           </label>
           <select
+            id="history-filter-class"
+            name="classId"
             value={filters.classId}
             onChange={e => handleClass(e.target.value)}
             style={inputSx}
@@ -152,11 +154,13 @@ function AdminFilterPanel({
 
         {/* Period */}
         <div>
-          <label style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: 5 }}>
+          <label htmlFor="history-filter-period" style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: 5 }}>
             <Clock size={10} style={{ display: 'inline', marginRight: 4 }} />
             Period / Hour
           </label>
           <select
+            id="history-filter-period"
+            name="periodId"
             value={filters.periodId}
             onChange={e => onChange({ periodId: e.target.value, page: 1 })}
             style={inputSx}
@@ -176,11 +180,13 @@ function AdminFilterPanel({
 
         {/* Specific date */}
         <div>
-          <label style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: 5 }}>
+          <label htmlFor="history-filter-date" style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: 5 }}>
             <Calendar size={10} style={{ display: 'inline', marginRight: 4 }} />
             Date
           </label>
           <input
+            id="history-filter-date"
+            name="date"
             type="date"
             value={filters.date}
             onChange={e => onChange({ date: e.target.value, startDate: '', endDate: '', page: 1 })}
@@ -192,10 +198,12 @@ function AdminFilterPanel({
       {/* Row 2: date range + status + search */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: 12 }}>
         <div>
-          <label style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: 5 }}>
+          <label htmlFor="history-filter-start-date" style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: 5 }}>
             From (range)
           </label>
           <input
+            id="history-filter-start-date"
+            name="startDate"
             type="date"
             value={filters.startDate}
             onChange={e => onChange({ startDate: e.target.value, date: '', page: 1 })}
@@ -203,10 +211,12 @@ function AdminFilterPanel({
           />
         </div>
         <div>
-          <label style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: 5 }}>
+          <label htmlFor="history-filter-end-date" style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: 5 }}>
             To (range)
           </label>
           <input
+            id="history-filter-end-date"
+            name="endDate"
             type="date"
             value={filters.endDate}
             onChange={e => onChange({ endDate: e.target.value, date: '', page: 1 })}
@@ -214,10 +224,12 @@ function AdminFilterPanel({
           />
         </div>
         <div>
-          <label style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: 5 }}>
+          <label htmlFor="history-filter-status" style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: 5 }}>
             Status
           </label>
           <select
+            id="history-filter-status"
+            name="status"
             value={filters.status}
             onChange={e => onChange({ status: e.target.value, page: 1 })}
             style={inputSx}
@@ -230,10 +242,12 @@ function AdminFilterPanel({
           </select>
         </div>
         <div>
-          <label style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: 5 }}>
+          <label htmlFor="history-filter-search" style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.1em', display: 'block', marginBottom: 5 }}>
             Search student
           </label>
           <input
+            id="history-filter-search"
+            name="search"
             value={filters.search}
             onChange={e => onChange({ search: e.target.value, page: 1 })}
             placeholder="Name or ID…"
@@ -367,6 +381,12 @@ const AttendanceRow: React.FC<{ record: AttendanceRecord }> = ({ record }) => {
 function AdminHistoryPage({ allowedClassIds = [] }: { allowedClassIds?: string[] }) {
   const role = getStoredRole();
   const teacherScoped = role === 'teacher';
+  const realtimeClientId = sessionStorage.getItem('user_id') || '';
+  const realtimeToken = getSessionToken();
+  const { totalUnread } = useTeacherRealtime({
+    clientId: realtimeClientId,
+    token: realtimeToken ?? undefined,
+  });
   const [filters, setFilters] = useState<AdminFiltersState>({
     ...DEFAULT_ADMIN_FILTERS,
     date: todayISO(),
@@ -447,14 +467,7 @@ function AdminHistoryPage({ allowedClassIds = [] }: { allowedClassIds?: string[]
           </button>
 
           {/* Realtime badge (staff only) */}
-          {(() => {
-            const roleLocal = sessionStorage.getItem('user_role') || '';
-            if (roleLocal === 'student') return null;
-            const clientId = sessionStorage.getItem('user_id') || '';
-            const token = getSessionToken();
-            const { totalUnread } = useTeacherRealtime({ clientId, token: token ?? undefined, urlBase: '' });
-            return <ChannelBadge count={totalUnread} />;
-          })()}
+          {role !== 'student' && <ChannelBadge count={totalUnread} />}
 
           {/* Filter toggle */}
           <button

@@ -117,8 +117,10 @@ const StudentAnalyticsView: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-3 flex-wrap">
-          <label className="text-sm font-medium text-slate-600">Period:</label>
+          <label htmlFor="student-analytics-period" className="text-sm font-medium text-slate-600">Period:</label>
           <select
+            id="student-analytics-period"
+            name="days"
             value={days}
             onChange={(e) => setDays(parseInt(e.target.value))}
             className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -485,8 +487,10 @@ const AdminAnalyticsView: React.FC = () => {
 
         {/* Days filter */}
         <div className="flex items-center gap-3">
-          <label className="text-sm font-medium text-gray-600">Period:</label>
+          <label htmlFor="institution-analytics-period" className="text-sm font-medium text-gray-600">Period:</label>
           <select
+            id="institution-analytics-period"
+            name="trendDays"
             value={trendDays}
             onChange={(e) => setTrendDays(parseInt(e.target.value))}
             className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -596,10 +600,12 @@ const AdminAnalyticsView: React.FC = () => {
           <h2 className="text-lg font-semibold text-gray-800 mb-4">Student Drill-Down</h2>
           <div className="flex items-end gap-3 mb-6">
             <div className="flex-1">
-              <label className="block text-sm font-medium text-gray-600 mb-2">
+              <label htmlFor="analytics-drilldown-student-id" className="block text-sm font-medium text-gray-600 mb-2">
                 Student ID:
               </label>
               <input
+                id="analytics-drilldown-student-id"
+                name="studentId"
                 type="text"
                 placeholder="Enter student ID"
                 value={drillDownStudentId || ''}
@@ -608,10 +614,12 @@ const AdminAnalyticsView: React.FC = () => {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-600 mb-2">
+              <label htmlFor="analytics-drilldown-start-date" className="block text-sm font-medium text-gray-600 mb-2">
                 Start Date:
               </label>
               <input
+                id="analytics-drilldown-start-date"
+                name="startDate"
                 type="date"
                 value={drillDownStartDate}
                 onChange={(e) => setDrillDownStartDate(e.target.value)}
@@ -619,10 +627,12 @@ const AdminAnalyticsView: React.FC = () => {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-600 mb-2">
+              <label htmlFor="analytics-drilldown-end-date" className="block text-sm font-medium text-gray-600 mb-2">
                 End Date:
               </label>
               <input
+                id="analytics-drilldown-end-date"
+                name="endDate"
                 type="date"
                 value={drillDownEndDate}
                 onChange={(e) => setDrillDownEndDate(e.target.value)}
