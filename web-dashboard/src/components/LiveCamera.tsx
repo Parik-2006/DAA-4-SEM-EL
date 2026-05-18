@@ -519,6 +519,8 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
   const [candidateSuggestions, setCandidateSuggestions] = useState<CandidateSuggestion[] | null>(null);
   const [rejectedCandidateIds, setRejectedCandidateIds] = useState<string[]>([]);
   const [windowInfo, setWindowInfo] = useState<AttendanceWindowInfo | null>(null);
+  const targetStudentIdNormalized = (targetStudentId ?? '').trim().toLowerCase();
+  const strictSelfVerify = /^stud[_-]?/i.test(targetStudentIdNormalized);
 
   // ── Keep ref in sync; notify parent ───────────────────────────────────────
 
@@ -727,7 +729,9 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
                 scope_mode: 'self_verify',
                 student_id: targetStudentId,
                 period_id: periodId ?? undefined,
-                candidate_student_ids: candidateIds ?? undefined,
+                candidate_student_ids: strictSelfVerify
+                  ? [targetStudentId]
+                  : (candidateIds ?? undefined),
                 exclude_student_ids: rejectedCandidateIds.length > 0 ? rejectedCandidateIds : undefined,
               }
             : {
@@ -742,6 +746,24 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
         }
 
         setCandidateSuggestions(result.suggested_candidates ?? null);
+
+        // When a target student is provided (logged-in self-check), never allow
+        // cross-identity confirmation or candidate prompting.
+        const detectedStudentIdNormalized = (result.student_id ?? '').trim().toLowerCase();
+        if (
+          strictSelfVerify &&
+          result.matched &&
+          detectedStudentIdNormalized &&
+          detectedStudentIdNormalized !== targetStudentIdNormalized
+        ) {
+          const expectedName = getStudentDisplayName(targetStudentId, targetStudentId);
+          const detectedName = getStudentDisplayName(result.student_id, result.student_name ?? 'another student');
+          setFeedbackType('error');
+          setLastFeedback(`❌ Logged in as ${expectedName}. Detected ${detectedName}. Please verify using your own account only.`);
+          setCandidateSuggestions(null);
+          recordFailure('Logged-in user mismatch');
+          return;
+        }
 
         if (result.matched) {
           // ── SUCCESS: reset counter, pause loop, show confirmation ──────
@@ -783,6 +805,13 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
           }
 
           if (result.suggested_candidates?.length) {
+            if (strictSelfVerify) {
+              setCandidateSuggestions(null);
+              setFeedbackType('error');
+              setLastFeedback('❌ Face does not match the logged-in account. Please align your face and try again.');
+              recordFailure('Self-verify mismatch');
+              return;
+            }
             setCandidateSuggestions(result.suggested_candidates);
             pausedForConfirmRef.current = true;
             setLastFeedback('🤔 Not certain. Please pick who this is.');

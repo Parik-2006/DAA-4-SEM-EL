@@ -85,7 +85,11 @@ const FaceRegistrationPage: React.FC = () => {
 
   // Read optional query param to auto-start camera for a particular student
   const [searchParams] = useSearchParams();
-  const targetStudent = searchParams.get('student') ?? getCurrentUser()?.uid ?? sessionStorage.getItem('user_id');
+  const targetStudent =
+    searchParams.get('student') ??
+    sessionStorage.getItem('user_id') ??
+    getCurrentUser()?.uid ??
+    null;
 
   // ─────────────────────────────────────────────────────────
   // Derived State
