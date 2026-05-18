@@ -145,7 +145,6 @@ export const useStudentAnalytics = (
         `/api/v1/student/analytics`,
         {
           params: {
-            student_id: userId,
             days: Math.max(7, Math.min(180, days)),
           },
         },
@@ -161,7 +160,7 @@ export const useStudentAnalytics = (
     } finally {
       setIsLoading(false);
     }
-  }, [isAuthorized, enabled, days, userId]);
+  }, [isAuthorized, enabled, days]);
 
   useEffect(() => {
     void fetchAnalytics();

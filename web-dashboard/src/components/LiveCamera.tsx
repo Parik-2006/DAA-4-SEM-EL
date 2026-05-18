@@ -798,7 +798,7 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
         processingRef.current = false;
         onProcessing(false);
       }
-    }, 2500);
+    }, 1500);  // 1.5 second interval for faster detection attempts
   };
 
   // ── Confirmation: user says "Yes, it's me" ────────────────────────────────

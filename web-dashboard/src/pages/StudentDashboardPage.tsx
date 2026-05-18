@@ -138,8 +138,17 @@ async function fetchJSON<T>(url: string, params?: Record<string, string>): Promi
 
 async function fetchTodayPeriods(studentId: string): Promise<Period[]> {
   try {
-    // Don't pass student_id - endpoint defaults to authenticated user
-    return await fetchJSON<Period[]>('/api/v1/student/attendance/today');
+    // Fetch dashboard data which includes today's periods array
+    // Don't pass student_id - backend uses authenticated user from JWT token
+    const dashboardData = await fetchJSON<{
+      today_date: string;
+      day_name: string;
+      active_period: Period | null;
+      periods_today: Period[];
+      summary: Record<string, number>;
+      overall_attendance: Record<string, any>;
+    }>('/api/v1/student/dashboard');
+    return dashboardData.periods_today || [];
   } catch {
     return [
       { period_id: 'p1', course_code: 'CS401', course_name: 'Machine Learning',  start_time: '09:00', end_time: '10:00', faculty_name: 'Dr. Sharma',  room: 'A201',  is_lab_class: false, course_color: '#6366F1', status: 'present' },
@@ -152,10 +161,12 @@ async function fetchTodayPeriods(studentId: string): Promise<Period[]> {
 
 async function fetchOverallStats(studentId: string): Promise<OverallStats> {
   try {
-    // Don't pass student_id - endpoint defaults to authenticated user
+    // Don't pass student_id - backend uses authenticated user from JWT token
     return await fetchJSON<OverallStats>('/api/v1/student/attendance-summary');
-  } catch {
-    return { total_classes: 4, present: 2, late: 1, absent: 1, pending: 0, attendance_pct: 75.0, band: 'warning' };
+  } catch (err) {
+    console.warn('Failed to load overall stats:', err);
+    // Return default stats on error instead of mock data
+    return { total_classes: 0, present: 0, late: 0, absent: 0, pending: 0, attendance_pct: 0, band: 'safe' };
   }
 }
 
@@ -313,9 +324,10 @@ function OverallStatsPanel({ stats, loading }: { stats: OverallStats | null; loa
   }
   if (!stats) return null;
 
-  const band = BAND_META[stats.band];
+  const band = BAND_META[stats.band] || BAND_META['safe'];
+  const attendancePct = stats.attendance_pct ?? 0;
   const items = [
-    { label: 'Overall',        value: `${stats.attendance_pct.toFixed(1)}%`, color: band.color, sub: band.label },
+    { label: 'Overall',        value: `${attendancePct.toFixed(1)}%`, color: band.color, sub: band.label },
     { label: 'Present',        value: stats.present,                          color: '#22C55E',  sub: 'classes'  },
     { label: 'Late',           value: stats.late,                             color: '#F59E0B',  sub: 'classes'  },
     { label: 'Absent',         value: stats.absent,                           color: '#EF4444',  sub: 'classes'  },
@@ -666,7 +678,10 @@ export const StudentDashboardPage: React.FC = () => {
   // ── Derived ────────────────────────────────────────────────────────────────
 
   const selectedPeriod = useMemo(
-    () => periods.find(p => p.period_id === selectedPeriodId) ?? null,
+    () => {
+      if (!Array.isArray(periods) || !periods.length) return null;
+      return periods.find(p => p.period_id === selectedPeriodId) ?? null;
+    },
     [periods, selectedPeriodId]
   );
 
@@ -689,9 +704,13 @@ export const StudentDashboardPage: React.FC = () => {
     setErrorOverall(null);
     try {
       const stats = await fetchOverallStats(studentId);
-      setOverallStats(stats);
+      setOverallStats(stats || { total_classes: 0, present: 0, late: 0, absent: 0, pending: 0, attendance_pct: 0, band: 'safe' });
     } catch (e: unknown) {
-      setErrorOverall((e as Error).message ?? 'Failed to load overall stats');
+      const errMsg = (e as Error).message ?? 'Failed to load overall stats';
+      setErrorOverall(errMsg);
+      console.error('Load overall error:', e);
+      // Set default stats so UI doesn't crash
+      setOverallStats({ total_classes: 0, present: 0, late: 0, absent: 0, pending: 0, attendance_pct: 0, band: 'safe' });
     } finally {
       setLoadingOverall(false);
     }
@@ -701,12 +720,17 @@ export const StudentDashboardPage: React.FC = () => {
     setLoadingPeriods(true);
     try {
       const data = await fetchTodayPeriods(studentId);
-      setPeriods(data);
-      if (periodFromURL && data.find(p => p.period_id === periodFromURL)) {
+      // Ensure data is always an array
+      const periodsArray = Array.isArray(data) ? data : [];
+      setPeriods(periodsArray);
+      if (periodFromURL && periodsArray.find(p => p.period_id === periodFromURL)) {
         setSelectedPeriodId(periodFromURL);
       }
     } catch (e: unknown) {
-      addToast({ type: 'error', message: "Could not load today's periods" });
+      const errMsg = (e as Error).message ?? "Could not load today's periods";
+      console.warn('Failed to load periods:', errMsg);
+      addToast({ type: 'error', message: errMsg });
+      setPeriods([]); // Reset to empty array on error
     } finally {
       setLoadingPeriods(false);
     }

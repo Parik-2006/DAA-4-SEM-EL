@@ -892,6 +892,7 @@ async def get_record_audit(record_id: str):
     summary="Detect and identify face — does NOT write to database",
 )
 async def detect_face_only(
+    request: Request,
     file: UploadFile = File(..., description="JPEG or PNG image"),
     period_id: Optional[str] = Query(None),
     candidate_student_ids: Optional[str] = Query(None),
@@ -948,6 +949,29 @@ async def detect_face_only(
     embedding, err = await _extract_embedding_from_upload(file)
     if err is not None:
         return err
+
+    # ── Metadata extraction from request (for liveness fusion) ────────────────
+    device_id = request.headers.get("X-Device-ID")
+    ip_address = request.client.host if request.client else None
+    geolocation_str = request.headers.get("X-Geolocation")  # Expected format: "lat,lon"
+    geolocation = None
+    if geolocation_str:
+        try:
+            parts = geolocation_str.split(",")
+            if len(parts) == 2:
+                geolocation = {"lat": float(parts[0]), "lon": float(parts[1])}
+        except (ValueError, IndexError):
+            logger.warning("Invalid geolocation header: %s", geolocation_str)
+
+    from services.liveness import LoginMetadata
+    login_metadata = LoginMetadata(
+        device_id=device_id,
+        ip_address=ip_address,
+        geolocation=geolocation,
+        time_of_day_hour=datetime.now().hour,
+        known_device=device_id is not None,
+        expected_location=True,  # Assume in-classroom
+    )
 
     firebase = get_firebase_service()
     if not firebase:

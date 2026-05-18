@@ -750,16 +750,15 @@ export function useStudentAttendance({
     try {
       const [hist, summ, dash, warn] = await Promise.allSettled([
         apiFetch<PaginatedHistory>('/api/v1/student/attendance/history', {
-          student_id: studentId,
           page,
           page_size: pageSize,
           ...(courseId   ? { course_id:   courseId   } : {}),
           ...(startDate  ? { start_date:  startDate  } : {}),
           ...(endDate    ? { end_date:    endDate    } : {}),
         }),
-        apiFetch<AttendanceSummary>('/api/v1/student/attendance-summary', { student_id: studentId }),
-        apiFetch<DashboardData>('/api/v1/student/dashboard',              { student_id: studentId }),
-        apiFetch<UseStudentAttendanceResult['warnings']>('/api/v1/student/warnings', { student_id: studentId }),
+        apiFetch<AttendanceSummary>('/api/v1/student/attendance-summary', {}),
+        apiFetch<DashboardData>('/api/v1/student/dashboard',              {}),
+        apiFetch<UseStudentAttendanceResult['warnings']>('/api/v1/student/warnings', {}),
       ]);
       if (hist.status === 'fulfilled') setHistory(hist.value);
       if (summ.status === 'fulfilled') setSummary(summ.value);

@@ -257,7 +257,7 @@ def _parse_date_safe(value: Optional[str]):
     response_description="Attendance record for today, or {status: not_marked}",
 )
 async def get_today_attendance(
-    student_id: str = Query(..., description="Must match your authenticated identity"),
+    student_id: Optional[str] = Query(None, description="Optional; defaults to authenticated user"),
     user: TokenPayload = Depends(_require_student),
 ):
     """
@@ -271,12 +271,14 @@ async def get_today_attendance(
     ``_FIREBASE_NOT_FOUND`` (node absent) is caught separately and returns
     ``{"status": "not_marked"}`` — not an error from the client's perspective.
     """
-    _assert_own_record(user.user_id, student_id)
+    # Use provided student_id or fall back to authenticated user
+    effective_student_id = student_id or user.user_id
+    _assert_own_record(user.user_id, effective_student_id)
 
     try:
         fb    = FirebaseClient()
         today = datetime.now().strftime("%Y-%m-%d")
-        data  = fb.get_reference(f"attendance/{today}/{student_id}").get()
+        data  = fb.get_reference(f"attendance/{today}/{effective_student_id}").get()
         if data and isinstance(data, dict):
             # Return only fields safe for the student to see — strip any
             # internal metadata that may reference other students' data.
@@ -293,7 +295,7 @@ async def get_today_attendance(
         return {"status": "not_marked"}
     except Exception as exc:
         # P-4: real infrastructure errors surface as 500, not a 200 error body.
-        logger.error("get_today_attendance | student_id=%s | exc=%s", student_id, exc)
+        logger.error("get_today_attendance | student_id=%s | exc=%s", effective_student_id, exc)
         raise HTTPException(status_code=500, detail="Could not retrieve attendance record.")
 
 
@@ -303,7 +305,7 @@ async def get_today_attendance(
     response_description="Paginated list of attendance records",
 )
 async def get_attendance_history(
-    student_id: str  = Query(..., description="Must match your authenticated identity"),
+    student_id: Optional[str] = Query(None, description="Optional; defaults to authenticated user"),
     page:       int  = Query(1,   ge=1,        description="Page number (1-based)"),
     page_size:  int  = Query(20,  ge=1, le=100, description="Records per page"),
     course_id:  Optional[str] = Query(None,     description="Filter by course code"),
@@ -319,12 +321,14 @@ async def get_attendance_history(
     a ``status_color`` hex string for the frontend.
     Cross-student access is blocked server-side before any data is fetched.
     """
-    _assert_own_record(user.user_id, student_id)
+    # Use provided student_id or fall back to authenticated user
+    effective_student_id = student_id or user.user_id
+    _assert_own_record(user.user_id, effective_student_id)
 
     try:
         repo = AttendanceRepository()
         result = repo.get_student_attendance_paginated(
-            student_id=student_id,
+            student_id=effective_student_id,
             page=page,
             page_size=page_size,
             course_id=course_id,
@@ -336,7 +340,7 @@ async def get_attendance_history(
         result["records"] = [_student_safe_record(record) for record in result["records"]]
         return result
     except Exception as exc:
-        logger.error("get_attendance_history | student_id=%s | exc=%s", student_id, exc)
+        logger.error("get_attendance_history | student_id=%s | exc=%s", effective_student_id, exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -346,7 +350,7 @@ async def get_attendance_history(
     response_description="Today's periods with status, active period countdown, and summary",
 )
 async def get_dashboard(
-    student_id: str = Query(..., description="Must match your authenticated identity"),
+    student_id: Optional[str] = Query(None, description="Optional; defaults to authenticated user"),
     user: TokenPayload = Depends(_require_student),
 ):
     """
@@ -379,12 +383,14 @@ async def get_dashboard(
     }
     ```
     """
-    _assert_own_record(user.user_id, student_id)
+    # Use provided student_id or fall back to authenticated user
+    effective_student_id = student_id or user.user_id
+    _assert_own_record(user.user_id, effective_student_id)
 
     try:
-        return _service().build_dashboard_data(student_id)
+        return _service().build_dashboard_data(effective_student_id)
     except Exception as exc:
-        logger.error("get_dashboard | student_id=%s | exc=%s", student_id, exc)
+        logger.error("get_dashboard | student_id=%s | exc=%s", effective_student_id, exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -394,7 +400,7 @@ async def get_dashboard(
     response_description="Timetable organised by day with course colours",
 )
 async def get_timetable(
-    student_id: str = Query(..., description="Must match your authenticated identity"),
+    student_id: Optional[str] = Query(None, description="Optional; defaults to authenticated user"),
     user: TokenPayload = Depends(_require_student),
 ):
     """
@@ -422,12 +428,14 @@ async def get_timetable(
     }
     ```
     """
-    _assert_own_record(user.user_id, student_id)
+    # Use provided student_id or fall back to authenticated user
+    effective_student_id = student_id or user.user_id
+    _assert_own_record(user.user_id, effective_student_id)
 
     try:
-        return _service().get_weekly_timetable(student_id)
+        return _service().get_weekly_timetable(effective_student_id)
     except Exception as exc:
-        logger.error("get_timetable | student_id=%s | exc=%s", student_id, exc)
+        logger.error("get_timetable | student_id=%s | exc=%s", effective_student_id, exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -437,7 +445,7 @@ async def get_timetable(
     response_description="Attendance summary with colour-coded course breakdown",
 )
 async def get_attendance_summary(
-    student_id: str = Query(..., description="Must match your authenticated identity"),
+    student_id: Optional[str] = Query(None, description="Optional; defaults to authenticated user"),
     user: TokenPayload = Depends(_require_student),
 ):
     """
@@ -470,12 +478,14 @@ async def get_attendance_summary(
     }
     ```
     """
-    _assert_own_record(user.user_id, student_id)
+    # Use provided student_id or fall back to authenticated user
+    effective_student_id = student_id or user.user_id
+    _assert_own_record(user.user_id, effective_student_id)
 
     try:
-        return _service().get_attendance_summary(student_id)
+        return _service().get_attendance_summary(effective_student_id)
     except Exception as exc:
-        logger.error("get_attendance_summary | student_id=%s | exc=%s", student_id, exc)
+        logger.error("get_attendance_summary | student_id=%s | exc=%s", effective_student_id, exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -485,7 +495,7 @@ async def get_attendance_summary(
     response_description="List of at-risk courses with colour coding and human-readable messages",
 )
 async def get_warnings(
-    student_id: str = Query(..., description="Must match your authenticated identity"),
+    student_id: Optional[str] = Query(None, description="Optional; defaults to authenticated user"),
     user: TokenPayload = Depends(_require_student),
 ):
     """
@@ -506,12 +516,14 @@ async def get_warnings(
     }
     ```
     """
-    _assert_own_record(user.user_id, student_id)
+    # Use provided student_id or fall back to authenticated user
+    effective_student_id = student_id or user.user_id
+    _assert_own_record(user.user_id, effective_student_id)
 
     try:
-        return _service().get_warnings(student_id)
+        return _service().get_warnings(effective_student_id)
     except Exception as exc:
-        logger.error("get_warnings | student_id=%s | exc=%s", student_id, exc)
+        logger.error("get_warnings | student_id=%s | exc=%s", effective_student_id, exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -525,7 +537,7 @@ async def get_warnings(
     response_description="Attendance trend, overall percentage, and current/longest streak",
 )
 async def get_student_analytics(
-    student_id: str = Query(..., description="Must match your authenticated identity"),
+    student_id: Optional[str] = Query(None, description="Optional; defaults to authenticated user"),
     days: int = Query(30, ge=7, le=180, description="Trend window in days"),
     user: TokenPayload = Depends(_require_student),
 ):
@@ -570,14 +582,16 @@ async def get_student_analytics(
     }
     ```
     """
-    _assert_own_record(user.user_id, student_id)
+    # Use provided student_id or fall back to authenticated user
+    effective_student_id = student_id or user.user_id
+    _assert_own_record(user.user_id, effective_student_id)
 
     try:
         repo = AttendanceRepository()
         today = datetime.now().date()
         start = today - timedelta(days=days)
 
-        records = repo.get_student_attendance(student_id, start_date=start, end_date=today)
+        records = repo.get_student_attendance(effective_student_id, start_date=start, end_date=today)
 
         by_date: Dict[str, Dict[str, int]] = defaultdict(
             lambda: {"present": 0, "late": 0, "absent": 0}
@@ -628,11 +642,11 @@ async def get_student_analytics(
 
         logger.info(
             "get_student_analytics | student_id=%s | days=%d | rate=%f%%",
-            student_id, days, rate,
+            effective_student_id, days, rate,
         )
 
         return {
-            "student_id": student_id,
+            "student_id": effective_student_id,
             "days": days,
             "trend": trend,
             "overall": {
@@ -655,7 +669,7 @@ async def get_student_analytics(
     except Exception as exc:
         logger.error(
             "get_student_analytics | student_id=%s | exc=%s",
-            student_id, exc,
+            effective_student_id, exc,
         )
         raise HTTPException(status_code=500, detail=str(exc))
 

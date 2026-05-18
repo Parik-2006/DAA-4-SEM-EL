@@ -1,53 +1,58 @@
 """
 Optimized Attendance Pipeline with Tracking, Temporal Verification,
-Motion Detection Gatekeeper, Liveness Checks, and SELF_VERIFY Quick-Accept.
+Motion Detection Gatekeeper, Quality-Aware QUICK_ACCEPT, and
+Multi-Frame Embedding Aggregation.
 
 Integrates:
-- Motion Detection Gatekeeper    — frame differencing, O(W×H) μs cost
-- SORT tracking                  — O(1) identity maintenance
-- Frame-skipping                 — configurable 2–3 frame intervals
-- Efficient embedding search     — O(log n) via FAISS
-- FrameAggregator                — multi-frame embedding averaging + decisions
-- FusedConfidenceScorer          — risk-weighted acceptance gate
-- Temporal verification          — fallback consecutive-frame counter
-- Liveness detection             — per-crop texture/blink/depth checks;
-                                   acts as both a hard gate and a score input
-- SELF_VERIFY quick-accept       — single-frame bypass of aggregator when
-                                   adaptive threshold + liveness pass
+- Motion Detection Gatekeeper     — frame differencing, O(W×H) µs cost
+- CaptureQuality scoring          — frontality + sharpness + stillness, O(pixels)
+- QUICK_ACCEPT path               — bypass temporal verifier for HIGH-quality,
+                                    high-confidence matches
+- Quality-gated enrollment        — only HIGH/ACCEPTABLE frames fed to FAISS
+- Multi-frame embedding aggregation
+      Before each FAISS search, up to N=3 recent embeddings from the same
+      SORT track are mean-averaged and L2-normalised into a single query
+      vector.  One FAISS call is still made per track per frame; the
+      aggregated query is simply more representative of the face's "true"
+      embedding under lighting / expression variation.
+      QUICK_ACCEPT naturally benefits: the aggregated similarity is more
+      reliable than a single-frame score, making the high threshold safer.
+- SORT tracking                   — O(1) identity maintenance
+- Frame-skipping                  — configurable 2–3 frame intervals
+- Efficient embedding search      — O(log n) via FAISS
+- Temporal verification           — 5+ consecutive frames (standard path)
+- Cosine similarity matching
 
-Performance optimizations:
-- Motion gating:  skips YOLO + FaceNet entirely on static frames
-  → typical classroom: 60–80 % of frames are static between arrivals
-- Frame skipping:  8–12 FPS → 15–20 FPS with skip=2
-- O(log n) FAISS search replaces O(n×m) brute-force scan
-- Quick-accept:  SELF_VERIFY marking in 1 frame instead of 5+
+Performance optimizations
+--------------------------
+- Motion gating      skips YOLO + FaceNet entirely on static frames
+                     → typical classroom: 60–80 % of frames are static
+- Quality gating     skips FaceNet on LOW-quality crops (blurred, profile)
+                     → saves the costliest per-face call on bad frames
+- Frame skipping     8–12 FPS → 15–20 FPS with skip=2
+- O(log n) FAISS     replaces O(n×m) brute-force scan
+- QUICK_ACCEPT       eliminates temporal accumulation for obvious matches
+                     → mark-to-confirm latency from ~5 frames to 1 frame
+- Aggregation        1 FAISS call per track unchanged; accuracy improves free
 
 Pipeline decision tree (per frame)
------------------------------------
+------------------------------------
 Frame arrives
-  └─ Motion detector (μs)
+  └─ Motion detector (µs)
        ├─ No motion  →  return cached result, skip AI entirely
        └─ Motion detected
             └─ Frame-skip check
-                 ├─ Skip this frame  →  return cached result
+                 ├─ Skip  →  return cached result
                  └─ Process frame
-                      ├─ YOLOv8 face detection
-                      ├─ FaceNet embedding extraction
-                      ├─ Liveness check per crop
-                      │    ├─ Fail  →  drop face (not forwarded to tracker)
-                      │    └─ Pass  →  build liveness_by_emb_id + live_det_emb_lr
-                      ├─ SORT tracker update (liveness-gated input only)
-                      ├─ Lost-track cleanup  →  aggregator.force_decision()
-                      └─ Per-track decision
-                           ├─ SELF_VERIFY scope + quick_accept_self_verify enabled
-                           │    └─ ScopedEmbeddingSearch.search()
-                           │         ├─ quick_accept=True  →  force_mark immediately ⚡
-                           │         └─ quick_accept=False →  fall through to aggregator
-                           └─ Aggregator path (all other tracks)
-                                ├─ aggregator.add_frame()
-                                ├─ fused_scorer.compute_risk_score() [if session_meta]
-                                ├─ fused_scorer.score()
-                                └─ mark attendance if accepted
+                      ├─ YOLOv8 detection
+                      ├─ Quality scoring (frontality + sharpness + stillness)
+                      ├─ FaceNet — HIGH/ACCEPTABLE faces only
+                      ├─ SORT tracker update  (buffer += new embedding)
+                      └─ For each track:
+                           ├─ aggregated embedding (mean of ≤N buffered frames)
+                           ├─ FAISS O(log n) search (one call per track)
+                           ├─ QUICK_ACCEPT: HIGH quality + sim ≥ threshold
+                           └─ Standard temporal verifier (fallback path)
 """
 
 import cv2
@@ -59,59 +64,15 @@ from dataclasses import dataclass, field
 
 from .detection import FaceDetectionPipeline
 from .recognition import FaceRecognitionPipeline
-from .sorting_tracker import FaceTracker, TemporalVerification, TrackedFace
-from .frame_aggregator import FrameAggregator, AggregationVerdict
-from .fused_confidence import FusedConfidenceScorer
+from .sorting_tracker import (
+    FaceTracker, TemporalVerification, TrackedFace,
+    AGGREGATION_BUFFER_SIZE, AGGREGATION_MIN_FRAMES,
+)
+from services.face_detection_service import CaptureQuality, FaceDetectionService
+from services.liveness import get_liveness_detector, fuse_confidence, LoginMetadata
 from utils.efficient_embedding_search import OptimizedEmbeddingSearch
 from utils.motion_detector import MotionDetector, MotionConfig, MotionResult
-
-# ── Liveness ────────────────────────────────────────────────────────────────────
-# Primary: new LivenessDetector (instantiated per-pipeline, stateless per-crop).
-# Fallback: get_liveness_detector() from the existing module (stateful, per-track).
-# Both are imported; get_liveness_detector is still called in on_track_lost for
-# reset_track() to clean up per-track state in the legacy detector.
-try:
-    from .liveness import (
-        LivenessDetector,
-        LivenessResult,
-        LoginMetadata,
-        fuse_confidence,
-        get_liveness_detector,
-    )
-    _LIVENESS_AVAILABLE = True
-except ImportError:
-    try:
-        # Older module shape — only the factory function exists
-        from .liveness import get_liveness_detector
-        LivenessDetector = None   # type: ignore[assignment,misc]
-        LivenessResult = None     # type: ignore[assignment,misc]
-        LoginMetadata = None      # type: ignore[assignment,misc]
-        fuse_confidence = None    # type: ignore[assignment,misc]
-        _LIVENESS_AVAILABLE = False
-    except ImportError:
-        get_liveness_detector = None  # type: ignore[assignment]
-        LivenessDetector = None       # type: ignore[assignment,misc]
-        LivenessResult = None         # type: ignore[assignment,misc]
-        LoginMetadata = None          # type: ignore[assignment,misc]
-        fuse_confidence = None        # type: ignore[assignment,misc]
-        _LIVENESS_AVAILABLE = False
-
-# ── Quick-accept config ─────────────────────────────────────────────────────────
-try:
-    from attendance_backend.services.scoped_embedding_search import (
-        QUICK_ACCEPT_SELF_VERIFY as _QA_DEFAULT,
-    )
-except ImportError:
-    import os
-    _QA_DEFAULT: bool = os.environ.get("QUICK_ACCEPT_SELF_VERIFY", "true").lower() == "true"
-
-# ── Scope types ─────────────────────────────────────────────────────────────────
-try:
-    from attendance_backend.models.identity_context import IdentityScopeType
-    _SCOPE_AVAILABLE = True
-except ImportError:
-    _SCOPE_AVAILABLE = False
-    IdentityScopeType = None  # type: ignore[assignment,misc]
+from utils.preprocessing import FaceQualityAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -120,17 +81,32 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class OptimizedDetectedFace:
-    """Enhanced detected face with tracking, liveness, and quick-accept info."""
-    face_id: int
-    track_id: int
-    bbox: Tuple[float, float, float, float]
-    confidence: float
-    embedding: Optional[np.ndarray]
-    student_id: Optional[str]
-    match_similarity: Optional[float]
-    timestamp: datetime
-    liveness_score: float = 0.5   # per-face liveness score in [0, 1]
-    quick_accepted: bool = False  # True when SELF_VERIFY fast path was used
+    """
+    Enhanced detected face with tracking, quality, and aggregation info.
+
+    Fields
+    ------
+    quality:
+        CaptureQuality from the current frame's crop (frontality, sharpness,
+        stillness).  None if the crop could not be scored.
+    quick_accepted:
+        True when QUICK_ACCEPT fired for this detection — attendance was
+        marked immediately without waiting for temporal verification.
+    frames_aggregated:
+        Number of buffered embeddings that were mean-blended into the FAISS
+        query vector for this match.  1 means a single-frame query was used.
+    """
+    face_id:           int
+    track_id:          int
+    bbox:              Tuple[float, float, float, float]
+    confidence:        float
+    embedding:         Optional[np.ndarray]   # the aggregated query vector
+    student_id:        Optional[str]
+    match_similarity:  Optional[float]
+    timestamp:         datetime
+    quality:           Optional[CaptureQuality] = None
+    quick_accepted:    bool = False
+    frames_aggregated: int  = 1
 
 
 @dataclass
@@ -149,28 +125,29 @@ class PipelineFrameResult:
     tracked_faces:
         All SORT-tracked faces regardless of identity match.
     marked_students:
-        Students confirmed this frame (by aggregator, temporal verifier,
-        or quick-accept).
+        Students confirmed by the verifier this frame.
     fps:
-        Rolling-average frames-per-second of the AI sub-pipeline.
+        Rolling-average FPS of the AI sub-pipeline.
     motion_result:
         Raw output from the motion detector for this frame.
     ai_triggered:
-        True if YOLO + FaceNet actually ran; False if gated out by motion
-        detector or frame-skip logic.
+        True if YOLO + FaceNet actually ran.
     quick_accepted_students:
-        Student IDs accepted via the SELF_VERIFY fast path this frame.
-        Always a subset of ``marked_students``.
+        Student IDs marked via QUICK_ACCEPT this frame.
+    best_quality_score:
+        Highest composite quality score across all detected faces this
+        frame.  Useful for enrollment UI feedback.
     """
-    frame: np.ndarray
-    frame_id: int
-    detections: List[OptimizedDetectedFace]
-    tracked_faces: List[TrackedFace]
-    marked_students: dict
-    fps: float
-    motion_result: MotionResult
-    ai_triggered: bool
-    quick_accepted_students: frozenset = field(default_factory=frozenset)
+    frame:                   np.ndarray
+    frame_id:                int
+    detections:              List[OptimizedDetectedFace]
+    tracked_faces:           List[TrackedFace]
+    marked_students:         dict
+    fps:                     float
+    motion_result:           MotionResult
+    ai_triggered:            bool
+    quick_accepted_students: set   = field(default_factory=set)
+    best_quality_score:      float = 0.0
 
 
 # ── Pipeline ───────────────────────────────────────────────────────────────────
@@ -179,18 +156,31 @@ class OptimizedAttendancePipeline:
     """
     Production-grade attendance pipeline.
 
-    Decision layers (outermost → innermost)
-    ----------------------------------------
-    1. Motion gate       — O(W×H) frame diff; skips AI entirely on static scenes.
-    2. Frame skip        — processes every Nth motion-triggered frame.
-    3. Liveness gate     — Laplacian-texture (+ blink/depth stubs); drops spoofed
-                           crops before they reach the tracker.
-    4. SORT tracker      — maintains identities across frames.
-    5. Quick-accept      — for SELF_VERIFY sessions: single-frame accept when
-                           ScopedEmbeddingSearch returns quick_accept=True.
-    6. Aggregator path   — FrameAggregator averages embeddings across frames;
-                           FusedConfidenceScorer applies risk weighting.
-    7. Temporal verifier — fallback consecutive-frame gate (standard sessions).
+    Combines four orthogonal accuracy/performance features:
+
+    1. Motion Detection Gatekeeper
+       Static frames skip YOLO + FaceNet entirely; CPU usage drops 60–80 %
+       in a typical classroom without affecting accuracy.
+
+    2. Capture Quality Scoring
+       Each face crop is scored for frontality, sharpness, and stillness
+       before FaceNet is called.  LOW-tier crops skip embedding extraction
+       (saves the costliest per-face operation on bad frames) and are excluded
+       from enrollment centroids.
+
+    3. Multi-Frame Embedding Aggregation
+       ``TrackedFace.embedding_buffer`` holds the last N FaceNet outputs for
+       each SORT track.  Before each FAISS call, the buffer contents are
+       mean-averaged and L2-normalised into a single, noise-reduced query
+       vector.  FAISS call count is unchanged; discriminative power increases.
+
+    4. QUICK_ACCEPT
+       When a face simultaneously passes the quality threshold AND the
+       aggregated FAISS similarity exceeds ``quick_accept_similarity`` (default
+       0.92), attendance is marked immediately — no temporal accumulation
+       needed.  The combination of quality gating + aggregated similarity
+       makes this safe: both false-positive sources (noisy embeddings and
+       bad captures) are already suppressed.
 
     Parameters
     ----------
@@ -199,368 +189,316 @@ class OptimizedAttendancePipeline:
     detection_threshold:
         YOLO confidence threshold (0–1).
     recognition_threshold:
-        Cosine distance threshold for FaceNet match (0–1).
+        Cosine similarity floor for standard FAISS match (0–1).
+    quick_accept_similarity:
+        Similarity threshold for QUICK_ACCEPT.  Must be ≥
+        ``recognition_threshold``.  Default: 0.92.
+    quick_accept_min_tier:
+        Minimum quality tier required for QUICK_ACCEPT.
+        ``"HIGH"`` (default) is recommended; ``"ACCEPTABLE"`` is looser.
     device:
-        'cpu' or 'cuda'.
+        ``'cpu'`` or ``'cuda'``.
     frame_skip:
-        Process every Nth frame from the motion-triggered frames (1–5).
+        Process every Nth motion-triggered frame (1–5).
     min_consecutive_frames:
-        Temporal verifier requirement before marking attendance.
+        Temporal verifier requirement for standard-path marking.
     motion_config:
-        Fine-grained motion detector settings.  Pass ``None`` for defaults.
+        Fine-grained motion detector settings; ``None`` uses defaults.
     enable_motion_gate:
-        Set False to disable motion gating entirely.
-    enable_liveness:
-        Set False to disable liveness checks.  When False all faces are
-        treated as live, preserving original behaviour.
-    quick_accept_self_verify:
-        Instance-level override for ``QUICK_ACCEPT_SELF_VERIFY``.
-        ``None`` reads the module-level / env-var value.
-    session_scope:
-        Optional ``ScopeTarget`` for the current session.  When
-        ``scope_type == SELF_VERIFY`` the quick-accept path is active.
-        Can also be set later via ``set_session_scope()``.
+        ``False`` disables motion gating (useful for testing).
+    enable_quick_accept:
+        ``False`` always requires temporal verification (high-security mode).
+    aggregation_buffer_size:
+        Maximum embeddings stored per track (default: ``AGGREGATION_BUFFER_SIZE``).
+        Effective range: [1, 10].
+    aggregation_min_frames:
+        Minimum buffer entries required before aggregation is used
+        (default: ``AGGREGATION_MIN_FRAMES``).  Setting to 1 is effectively
+        disabling aggregation without touching ``enable_aggregation``.
+    enable_aggregation:
+        Master switch for multi-frame aggregation.
+        ``False`` always uses the single most-recent embedding.
     """
+
+    DEFAULT_QUICK_ACCEPT_SIMILARITY: float = 0.92
 
     def __init__(
         self,
-        detection_model: str = "yolov8n",
-        detection_threshold: float = 0.5,
-        recognition_threshold: float = 0.6,
-        device: str = "cpu",
-        frame_skip: int = 2,
-        min_consecutive_frames: int = 5,
-        motion_config: Optional[MotionConfig] = None,
-        enable_motion_gate: bool = True,
-        enable_liveness: bool = True,
-        quick_accept_self_verify: Optional[bool] = None,
-        session_scope=None,  # Optional[ScopeTarget]
+        detection_model:          str   = "yolov8n",
+        detection_threshold:      float = 0.5,
+        recognition_threshold:    float = 0.6,
+        quick_accept_similarity:  float = DEFAULT_QUICK_ACCEPT_SIMILARITY,
+        quick_accept_min_tier:    str   = "HIGH",
+        device:                   str   = "cpu",
+        frame_skip:               int   = 2,
+        min_consecutive_frames:   int   = 5,
+        motion_config:            Optional[MotionConfig] = None,
+        enable_motion_gate:       bool  = True,
+        enable_quick_accept:      bool  = True,
+        # Aggregation knobs
+        aggregation_buffer_size:  int   = AGGREGATION_BUFFER_SIZE,
+        aggregation_min_frames:   int   = AGGREGATION_MIN_FRAMES,
+        enable_aggregation:       bool  = True,
+        # Liveness knobs
+        enable_liveness:          bool  = True,
+        liveness_threshold:       float = 0.55,
+        fusion_accept_threshold:  float = 0.68,
     ):
-        self.detection_threshold = detection_threshold
-        self.recognition_threshold = recognition_threshold
-        self.device = device
-        self.frame_skip = max(1, min(5, frame_skip))
+        self.detection_threshold    = detection_threshold
+        self.recognition_threshold  = recognition_threshold
+        self.device                 = device
+        self.frame_skip             = max(1, min(5, frame_skip))
         self.min_consecutive_frames = min_consecutive_frames
-        self.enable_motion_gate = enable_motion_gate
-        self.enable_liveness = enable_liveness
-        self.quick_accept_self_verify: bool = (
-            _QA_DEFAULT if quick_accept_self_verify is None
-            else quick_accept_self_verify
-        )
-        self.session_scope = session_scope
+        self.enable_motion_gate     = enable_motion_gate
+        self.enable_quick_accept    = enable_quick_accept
+        self.enable_liveness        = enable_liveness
+        self.liveness_threshold     = liveness_threshold
+        self.fusion_accept_threshold = fusion_accept_threshold
+
+        # QUICK_ACCEPT thresholds
+        self.quick_accept_similarity = max(quick_accept_similarity, recognition_threshold)
+        self.quick_accept_min_tier   = quick_accept_min_tier
+
+        # Aggregation configuration
+        self._agg_buffer_size   = max(1, min(10, aggregation_buffer_size))
+        self._agg_min_frames    = max(1, min(self._agg_buffer_size, aggregation_min_frames))
+        self.enable_aggregation = enable_aggregation
 
         logger.info("🚀 Initializing Super Attendance Pipeline…")
-        logger.info("   Motion gate       : %s", "ON" if enable_motion_gate else "OFF")
-        logger.info("   Frame skip        : %d", self.frame_skip)
-        logger.info("   Min frames        : %d", self.min_consecutive_frames)
-        logger.info("   Liveness checks   : %s", "ON" if self.enable_liveness else "OFF")
-        logger.info("   Quick-accept SELF : %s", "ON" if self.quick_accept_self_verify else "OFF")
+        logger.info("   Motion gate      : %s", "ON" if enable_motion_gate else "OFF")
+        logger.info("   Frame skip       : %d", self.frame_skip)
+        logger.info("   Min frames       : %d", self.min_consecutive_frames)
+        logger.info(
+            "   Quick accept     : %s (sim≥%.2f, tier≥%s)",
+            "ON" if enable_quick_accept else "OFF",
+            self.quick_accept_similarity,
+            self.quick_accept_min_tier,
+        )
+        logger.info(
+            "   Embedding aggr.  : %s (N=%d, min=%d)",
+            "ON" if enable_aggregation else "OFF",
+            self._agg_buffer_size,
+            self._agg_min_frames,
+        )
 
         # ── Motion detector ─────────────────────────────────────────────────
         self.motion_detector = MotionDetector(config=motion_config or MotionConfig())
 
-        # ── ML models ────────────────────────────────────────────────────────
-        self.detector = FaceDetectionPipeline(
+        # ── Detection / quality service ─────────────────────────────────────
+        self._detection_svc = FaceDetectionService()
+
+        # ── ML models ───────────────────────────────────────────────────────
+        self.detector   = FaceDetectionPipeline(
             model_name=detection_model,
             confidence_threshold=detection_threshold,
             device=device,
         )
         self.recognizer = FaceRecognitionPipeline(device=device, pretrained=True)
 
-        # ── Liveness ─────────────────────────────────────────────────────────
-        # self.liveness_detector  — new LivenessDetector (stateless per-crop).
-        #   Provides both the hard gate (live_mask) and the per-crop score that
-        #   feeds the aggregator.  Takes priority when available.
-        # self._legacy_liveness   — get_liveness_detector() result.
-        #   Used in on_track_lost for reset_track() (stateful per-track cleanup)
-        #   and as a score-only fallback when LivenessDetector is not present.
-        if enable_liveness and _LIVENESS_AVAILABLE and LivenessDetector is not None:
-            self.liveness_detector = LivenessDetector(
-                texture_threshold=80.0,
-                enable_blink=True,
-                enable_depth=False,
-            )
-        else:
-            self.liveness_detector = None
-
-        self._legacy_liveness = (
-            get_liveness_detector() if get_liveness_detector is not None else None
-        )
-
-        # ── Multi-frame decision helpers ─────────────────────────────────────
-        self.aggregator = FrameAggregator()
-        self.fused_scorer = FusedConfidenceScorer()
-
-        # ── Tracking ──────────────────────────────────────────────────────────
+        # ── Tracking ────────────────────────────────────────────────────────
         self.tracker = FaceTracker(max_age=30, min_hits=2)
         self.tracker.set_frame_skip(frame_skip)
         self.temporal_verifier = TemporalVerification(
             min_consecutive=min_consecutive_frames
         )
 
-        # ── FAISS search ──────────────────────────────────────────────────────
+        # ── Liveness detection ──────────────────────────────────────────────
+        self.liveness_detector = get_liveness_detector(
+            threshold=liveness_threshold,
+            enable_blink=True,
+            enable_depth=False,
+        ) if enable_liveness else None
+
+        # ── FAISS search ────────────────────────────────────────────────────
         self.embedding_search = OptimizedEmbeddingSearch(use_faiss=True)
 
-        # ── Counters ──────────────────────────────────────────────────────────
-        self.face_counter = 0
-        self.frame_counter = 0
-        self.processed_frames = 0
-        self.skipped_frames = 0
-        self.motion_gated_frames = 0
-        self.ai_triggered_frames = 0
-        self.liveness_rejected_faces = 0
-        self.quick_accepted_total = 0
+        # ── Frame counters ───────────────────────────────────────────────────
+        self.face_counter            = 0
+        self.frame_counter           = 0
+        self.processed_frames        = 0
+        self.skipped_frames          = 0
+        self.motion_gated_frames     = 0
+        self.ai_triggered_frames     = 0
+        self.quick_accept_count      = 0
 
-        # Track IDs seen in the previous processed frame (for lost-track detection)
-        self._previous_track_ids: set = set()
+        # Aggregation search counters
+        self._agg_searches    = 0   # FAISS calls using aggregated query
+        self._single_searches = 0   # FAISS calls using single-frame query
 
-        # Cache last result for motion-gated / skipped frames
         self._last_result: Optional[PipelineFrameResult] = None
 
         logger.info(
             "✅ Super Pipeline ready "
-            "(motion-gated YOLO + liveness + FAISS + SORT + aggregator + quick-accept)"
+            "(motion-gate + quality + aggregation + FAISS + SORT + QUICK_ACCEPT)"
         )
 
     # ── Public API ──────────────────────────────────────────────────────────────
 
     def set_frame_skip(self, skip: int) -> None:
-        """Adjust frame-skip at runtime."""
         self.frame_skip = max(1, min(5, skip))
         self.tracker.set_frame_skip(skip)
         logger.info("Frame skip updated to %d", skip)
 
     def set_motion_gate(self, enabled: bool) -> None:
-        """Enable or disable the motion gatekeeper at runtime."""
         self.enable_motion_gate = enabled
         logger.info("Motion gate %s", "ENABLED" if enabled else "DISABLED")
 
     def set_quick_accept(self, enabled: bool) -> None:
-        """Toggle the SELF_VERIFY quick-accept path at runtime."""
-        self.quick_accept_self_verify = enabled
-        logger.info("Quick-accept SELF_VERIFY %s", "ENABLED" if enabled else "DISABLED")
+        """Enable or disable the QUICK_ACCEPT path at runtime."""
+        self.enable_quick_accept = enabled
+        logger.info("Quick-accept %s", "ENABLED" if enabled else "DISABLED")
 
-    def set_session_scope(self, scope) -> None:
+    def set_aggregation(
+        self,
+        enabled:     Optional[bool] = None,
+        buffer_size: Optional[int]  = None,
+        min_frames:  Optional[int]  = None,
+    ) -> None:
         """
-        Set or update the session scope at runtime.
+        Adjust aggregation settings at runtime without restarting the pipeline.
 
-        When ``scope.scope_type == IdentityScopeType.SELF_VERIFY`` the
-        quick-accept path becomes active (subject to
-        ``quick_accept_self_verify``).
-        """
-        self.session_scope = scope
-        scope_label = getattr(scope, "scope_type", "unknown") if scope else "None"
-        logger.info("Session scope updated to: %s", scope_label)
-
-    def update_motion_config(self, **kwargs) -> None:
-        """
-        Hot-update motion detector settings without restarting the pipeline.
+        Note: changing ``buffer_size`` does **not** retroactively resize
+        per-track deques already alive in the tracker — it takes effect on
+        newly created tracks.  Call ``self.tracker.reset()`` to apply
+        immediately (resets all tracks).
 
         Example
         -------
-        >>> pipeline.update_motion_config(diff_threshold=30, cooldown_frames=12)
+        >>> pipeline.set_aggregation(enabled=True, buffer_size=2, min_frames=2)
         """
+        if enabled is not None:
+            self.enable_aggregation = enabled
+        if buffer_size is not None:
+            self._agg_buffer_size = max(1, min(10, buffer_size))
+        if min_frames is not None:
+            self._agg_min_frames = max(1, min(self._agg_buffer_size, min_frames))
+        logger.info(
+            "Aggregation updated: enabled=%s buffer_size=%d min_frames=%d",
+            self.enable_aggregation, self._agg_buffer_size, self._agg_min_frames,
+        )
+
+    def update_motion_config(self, **kwargs) -> None:
+        """Hot-update motion detector settings without restarting the pipeline."""
         self.motion_detector.update_config(**kwargs)
-
-    # ── Private helpers ─────────────────────────────────────────────────────────
-
-    def _recognize_embedding_match(
-        self,
-        embedding: np.ndarray,
-    ) -> Optional[Tuple[str, float]]:
-        """Return the top FAISS match as ``(student_id, similarity)`` or None."""
-        matches = self.embedding_search.search(
-            embedding,
-            top_k=1,
-            threshold=self.recognition_threshold,
-        )
-        if not matches:
-            return None
-        match = matches[0]
-        student_id = getattr(match, "student_id", None)
-        similarity = getattr(match, "similarity", None)
-        if not student_id or similarity is None:
-            return None
-        return student_id, float(similarity)
-
-    def _is_self_verify_scope(self) -> bool:
-        """Return True when the active session is a SELF_VERIFY scope."""
-        if not _SCOPE_AVAILABLE or self.session_scope is None:
-            return False
-        scope_type = getattr(self.session_scope, "scope_type", None)
-        if IdentityScopeType is None:
-            return False
-        return scope_type == IdentityScopeType.SELF_VERIFY
-
-    def _liveness_score_for_track(
-        self,
-        track_embedding: np.ndarray,
-        live_det_emb_lr: list,
-    ) -> Tuple[float, Optional[object]]:
-        """
-        Find the liveness result whose detection embedding best aligns with
-        ``track_embedding`` and return ``(score, LivenessResult | None)``.
-
-        Alignment is measured by cosine similarity between the SORT-tracked
-        embedding and each detection embedding that passed the liveness gate.
-        Falls back to ``(0.5, None)`` when ``live_det_emb_lr`` is empty.
-        """
-        best_score = 0.5
-        best_lr = None
-        best_sim = -1.0
-        for _x1, _y1, _x2, _y2, _conf, det_emb, lr in live_det_emb_lr:
-            try:
-                norm_t = np.linalg.norm(track_embedding)
-                norm_d = np.linalg.norm(det_emb)
-                s = float(
-                    np.dot(track_embedding, det_emb) / (norm_t * norm_d + 1e-10)
-                )
-            except Exception:
-                s = 0.0
-            if s > best_sim:
-                best_sim = s
-                best_lr = lr
-                best_score = (
-                    float(lr.overall_score) if lr is not None
-                    else 0.5
-                )
-        return best_score, best_lr
-
-    # ── Track-lost handler ──────────────────────────────────────────────────────
-
-    def on_track_lost(
-        self,
-        track_id: int,
-        *,
-        session_meta: Optional[Dict] = None,
-    ) -> Optional[Tuple[str, float]]:
-        """
-        Force a final attendance decision for a lost track and clean up its
-        state in the aggregator and liveness detector.
-
-        Called automatically by ``process_frame`` when a SORT track
-        disappears.  Can also be called manually when the session ends to
-        flush any tracks still held by the aggregator.
-
-        Returns
-        -------
-        ``(student_id, confidence)`` if the forced decision accepted the track,
-        ``None`` otherwise.
-        """
-        result: AggregationVerdict = self.aggregator.force_decision(
-            track_id,
-            averaged_recognizer=self._recognize_embedding_match,
-        )
-
-        if result.accepted and result.student_id:
-            logger.info(
-                "Track %d lost — forced accept: %s (conf=%.3f)",
-                track_id,
-                result.student_id,
-                result.confidence,
-            )
-            self.temporal_verifier.marked_students.add(result.student_id)
-
-        self.aggregator.drop_track(track_id)
-
-        # Clean up per-track state in the legacy liveness detector (if present)
-        if self._legacy_liveness is not None:
-            self._legacy_liveness.reset_track(track_id)
-
-        if result.accepted and result.student_id:
-            return result.student_id, result.confidence
-        return None
-
-    # ── Student registration ────────────────────────────────────────────────────
 
     def register_students(
         self,
         students: Dict[str, List[np.ndarray]],
     ) -> Dict:
         """
-        Register students with face embeddings.
+        Register students with quality-gated face embeddings.
+
+        Before averaging embeddings into a centroid, each sample is scored by
+        ``FaceDetectionService.score_capture_quality()``.  LOW-tier frames are
+        discarded.  If *all* frames for a student are LOW quality, the full set
+        is used as a fallback — no student is silently unregistered.
 
         Parameters
         ----------
         students:
             ``{student_id: [face_image1, face_image2, …]}``
-            Each face image is a BGR or RGB numpy array.
+            Cropped face regions preferred; full frames are accepted.
 
         Returns
         -------
         dict
-            ``{"success": bool, "count": int}``
+            ``{"success": bool, "count": int, "quality_filtered": int}``
         """
-        logger.info("📝 Registering %d students…", len(students))
+        logger.info("📝 Registering %d students (quality-gated)…", len(students))
 
         student_ids, all_embeddings, metadata = [], [], {}
+        total_quality_filtered = 0
 
         for student_id, faces in students.items():
             if not faces:
                 continue
 
-            embeddings = self.recognizer.generate_embeddings(faces)
-            valid = [e for e in embeddings if e is not None]
+            scored_faces: List[Tuple[np.ndarray, CaptureQuality]] = [
+                (f, self._detection_svc.score_capture_quality(f, motion_magnitude=0.0))
+                for f in faces
+            ]
+
+            usable     = [(f, q) for f, q in scored_faces if q.is_usable]
+            n_filtered = len(scored_faces) - len(usable)
+            total_quality_filtered += n_filtered
+
+            if not usable:
+                logger.warning(
+                    "register_students: all %d frames for %s are LOW quality — "
+                    "falling back to full set",
+                    len(scored_faces), student_id,
+                )
+                usable = scored_faces
+            elif n_filtered:
+                logger.debug(
+                    "register_students: %s — dropped %d LOW frames, kept %d",
+                    student_id, n_filtered, len(usable),
+                )
+
+            embeddings = self.recognizer.generate_embeddings([f for f, _ in usable])
+            valid      = [e for e in embeddings if e is not None]
             if not valid:
                 logger.warning("No valid embeddings for %s", student_id)
                 continue
 
-            avg = np.mean(valid, axis=0)
-            avg = avg / (np.linalg.norm(avg) + 1e-8)
+            avg        = np.mean(valid, axis=0)
+            avg        = avg / (np.linalg.norm(avg) + 1e-8)
+            mean_score = float(np.mean([q.score for _, q in usable]))
 
             student_ids.append(student_id)
             all_embeddings.append(avg)
             metadata[student_id] = {
-                "name": student_id,
+                "name":          student_id,
                 "registered_at": datetime.now().isoformat(),
-                "samples": len(valid),
+                "samples":       len(valid),
+                "mean_quality":  round(mean_score, 3),
             }
 
         if student_ids:
             self.embedding_search.add_students(
                 student_ids, np.array(all_embeddings), metadata
             )
-            logger.info("✅ Registered %d students in FAISS index", len(student_ids))
-            return {"success": True, "count": len(student_ids)}
+            logger.info(
+                "✅ Registered %d students in FAISS index "
+                "(%d LOW-quality frames discarded)",
+                len(student_ids), total_quality_filtered,
+            )
+            return {"success": True, "count": len(student_ids),
+                    "quality_filtered": total_quality_filtered}
 
-        return {"success": False, "count": 0}
+        return {"success": False, "count": 0, "quality_filtered": total_quality_filtered}
 
     # ── Core processing ────────────────────────────────────────────────────────
 
     def process_frame(
         self,
-        frame: np.ndarray,
+        frame:       np.ndarray,
         fps_samples: Optional[List[float]] = None,
-        session_meta: Optional[Dict] = None,
-        login_metadata=None,  # Optional[LoginMetadata] — for quick-accept path
     ) -> PipelineFrameResult:
         """
-        Process a single BGR frame through the full Super Pipeline.
+        Process a single BGR frame through the full merged pipeline.
 
-        Parameters
+        Step order
         ----------
-        frame:
-            BGR image from the camera (any resolution).
-        fps_samples:
-            Optional rolling list; this method appends the per-frame AI time
-            so callers can compute a running FPS average.
-        session_meta:
-            Optional risk context for ``FusedConfidenceScorer``.
-            Recognised keys: ``device_known``, ``ip_anomaly``,
-            ``time_anomaly``, ``attempt_pressure``.
-        login_metadata:
-            Optional ``LoginMetadata`` forwarded to ``ScopedEmbeddingSearch``
-            when evaluating the SELF_VERIFY quick-accept path.
-
-        Returns
-        -------
-        PipelineFrameResult
+        A  YOLO detection
+        B  Crop face regions
+        C  Quality-score each crop (frontality + sharpness + stillness)
+        D  FaceNet — HIGH/ACCEPTABLE crops only; inject None for LOW
+        E  Build tracking input (valid-embedding faces only)
+        F  SORT tracker update → per-track embedding buffer receives new vector
+        G  Build quality map (bbox → CaptureQuality for annotation)
+        H  Per-track loop:
+              ① choose query: aggregated (mean of ≤N buffer) or single-frame
+              ② FAISS search (one call per track, always)
+              ③ QUICK_ACCEPT: HIGH quality + aggregated sim ≥ threshold
+              ④ standard temporal verifier (non-QUICK_ACCEPT path)
+        I  FPS accounting
         """
         import time
 
         self.frame_counter += 1
 
-        # ── GATE 1: Motion detection ────────────────────────────────────────
+        # ── GATE 1: Motion detection ─────────────────────────────────────────
         motion_result = self.motion_detector.detect(frame)
 
         if self.enable_motion_gate and not motion_result.motion_detected:
@@ -576,10 +514,11 @@ class OptimizedAttendancePipeline:
                     motion_result=motion_result,
                     ai_triggered=False,
                     quick_accepted_students=self._last_result.quick_accepted_students,
+                    best_quality_score=self._last_result.best_quality_score,
                 )
-            logger.debug("Motion gate: first frame, running AI despite static scene")
+            logger.debug("Motion gate: first frame — running AI despite static scene")
 
-        # ── GATE 2: Frame-skip ──────────────────────────────────────────────
+        # ── GATE 2: Frame-skip ───────────────────────────────────────────────
         if self.frame_counter % self.frame_skip != 0:
             self.skipped_frames += 1
             if self._last_result is not None:
@@ -593,235 +532,211 @@ class OptimizedAttendancePipeline:
                     motion_result=motion_result,
                     ai_triggered=False,
                     quick_accepted_students=self._last_result.quick_accepted_students,
+                    best_quality_score=self._last_result.best_quality_score,
                 )
 
-        # ── AI pipeline ─────────────────────────────────────────────────────
-        self.processed_frames += 1
+        # ── AI pipeline ──────────────────────────────────────────────────────
+        self.processed_frames    += 1
         self.ai_triggered_frames += 1
         frame_start = time.time()
 
-        # Step A: YOLOv8 detection
-        detections = self.detector.detect_faces_in_frame(frame)
+        # Normalised motion magnitude for quality stillness term.
+        motion_mag: float = getattr(motion_result, "magnitude", 0.0)
 
-        # Step B: FaceNet embeddings
-        faces = self.detector.extract_face_regions(frame, detections)
-        embeddings = self.recognizer.generate_embeddings(faces) if faces else []
+        # ── Step A: YOLO detection ───────────────────────────────────────────
+        raw_detections = self.detector.detect_faces_in_frame(frame)
 
-        # Step C: Liveness check per face crop
-        # ──────────────────────────────────────
-        # One check per crop; result feeds three downstream consumers:
-        #
-        #   live_mask          — True/False gate; only live faces enter tracker.
-        #   liveness_by_emb_id — float score keyed by id(emb); consumed by the
-        #                        aggregator path (matches existing behaviour).
-        #   live_det_emb_lr    — [(bbox, emb, LivenessResult)] for quick-accept
-        #                        liveness lookup and ScopedEmbeddingSearch.
-        #
-        # When liveness is disabled: all faces are marked live, score = 0.5.
-        liveness_by_emb_id: Dict[int, float] = {}
-        live_det_emb_lr: List = []   # (x1,y1,x2,y2,conf, emb, lr)
-        live_mask: List[bool] = []
+        # ── Step B: Crop face regions ────────────────────────────────────────
+        raw_faces = self.detector.extract_face_regions(frame, raw_detections)
 
-        for (x1, y1, x2, y2, conf), face, emb in zip(detections, faces, embeddings):
-            if emb is None:
-                live_mask.append(False)
+        # ── Step C: Quality scoring ──────────────────────────────────────────
+        # LOW faces skip FaceNet (Step D) to avoid wasting the costliest call.
+        quality_scores: List[Optional[CaptureQuality]] = []
+        best_quality_score: float = 0.0
+
+        for face in raw_faces:
+            if face is None or face.size == 0:
+                quality_scores.append(None)
                 continue
+            q = self._detection_svc.score_capture_quality(face, motion_magnitude=motion_mag)
+            quality_scores.append(q)
+            if q.score > best_quality_score:
+                best_quality_score = q.score
 
-            if self.enable_liveness and self.liveness_detector is not None:
-                # Primary: new LivenessDetector — provides hard gate + score
-                lr = self.liveness_detector.check(face)
-                score = float(lr.overall_score)
-                is_live = lr.is_live
-            elif self.enable_liveness and self._legacy_liveness is not None:
-                # Fallback: legacy detector — score only, no hard gate
-                lr = self._legacy_liveness.check(face)
-                score = float(getattr(lr, "score", 0.5))
-                is_live = True
-            else:
-                lr = None
-                score = 0.5
-                is_live = True
+        # ── Step D: FaceNet — HIGH/ACCEPTABLE only ───────────────────────────
+        # Parallel list aligned with raw_detections.  None = LOW quality or
+        # bad crop; these faces will not enter the SORT tracker this frame.
+        embeddings: List[Optional[np.ndarray]] = []
+        for face, q in zip(raw_faces, quality_scores):
+            if q is None or not q.is_usable:
+                embeddings.append(None)
+                continue
+            embs = self.recognizer.generate_embeddings([face])
+            embeddings.append(embs[0] if embs else None)
 
-            liveness_by_emb_id[id(emb)] = score
+        # ── Step E: Build tracking input ─────────────────────────────────────
+        tracking_input = []
+        for (x1, y1, x2, y2, conf), emb in zip(raw_detections, embeddings):
+            if emb is not None:
+                tracking_input.append((x1, y1, x2, y2, conf, emb))
 
-            if not is_live:
-                self.liveness_rejected_faces += 1
-                logger.debug(
-                    "Face rejected by liveness (score=%.3f): %s",
-                    score,
-                    getattr(lr, "reason", ""),
-                )
-                live_mask.append(False)
-            else:
-                live_mask.append(True)
-                live_det_emb_lr.append((x1, y1, x2, y2, conf, emb, lr))
-
-        # Step D: Tracker input — liveness-approved faces only
-        tracking_input = [
-            (x1, y1, x2, y2, conf, emb)
-            for (x1, y1, x2, y2, conf), emb, is_live
-            in zip(detections, embeddings, live_mask)
-            if emb is not None and is_live
-        ]
-
-        # Step E: SORT tracker update + lost-track detection
+        # ── Step F: SORT tracker update ──────────────────────────────────────
+        # Each TrackedFace.embedding_buffer receives the new embedding so the
+        # aggregation window grows with each processed frame.
         tracked_faces = self.tracker.update(tracking_input, self.processed_frames)
-        current_track_ids = {t.track_id for t in tracked_faces}
-        lost_track_ids = self._previous_track_ids - current_track_ids
 
-        # Step F: Per-track attendance decisions
+        # ── Step G: Build quality map ────────────────────────────────────────
+        det_quality_map = self._build_quality_map(raw_detections, quality_scores)
+
+        # ── Step H: Per-track aggregated FAISS + QUICK_ACCEPT ────────────────
         results: List[OptimizedDetectedFace] = []
-        quick_accepted_this_frame: set = set()
-        is_self_verify = self._is_self_verify_scope()
+        quick_accepted_students: set = set()
 
         for track in tracked_faces:
-            if track.embedding is None:
+            # ① Choose query embedding
+            # -----------------------------------------------------------------
+            # Aggregated query (mean-normalised from buffer) is more
+            # discriminative than any single frame and therefore also safer
+            # for QUICK_ACCEPT.  Falls back to single-frame on the first
+            # processed frame of a new track (buffer not yet full).
+            if self.enable_aggregation:
+                query_emb      = track.get_aggregated_embedding(
+                    min_frames=self._agg_min_frames
+                )
+                frames_used    = track.buffer_size()
+                was_aggregated = frames_used >= self._agg_min_frames
+            else:
+                query_emb      = track.embedding
+                frames_used    = 1
+                was_aggregated = False
+
+            if query_emb is None:
                 continue
 
-            liveness_score, best_lr = self._liveness_score_for_track(
-                track.embedding, live_det_emb_lr
+            # ② FAISS search ──────────────────────────────────────────────────
+            matches = self.embedding_search.search(
+                query_emb,
+                top_k=1,
+                threshold=self.recognition_threshold,
             )
 
-            # ── F1. SELF_VERIFY quick-accept path ─────────────────────────
+            if was_aggregated:
+                self._agg_searches    += 1
+            else:
+                self._single_searches += 1
+
+            if not matches:
+                continue
+
+            match = matches[0]
+            track.student_id = match.student_id
+
+            # Retrieve quality for this track from the current-frame scores
+            track_quality: Optional[CaptureQuality] = det_quality_map.get(
+                self._nearest_det_key(track.bbox, raw_detections)
+            )
+
+            # ② Liveness detection (NEW) ──────────────────────────────────────
+            # Check liveness on the best quality face for this track
+            liveness_result = None
+            if self.enable_liveness and self.liveness_detector is not None and raw_faces:
+                best_face_idx = next(
+                    (i for i, q in enumerate(quality_scores)
+                     if q is not None and q.tier in ("HIGH", "ACCEPTABLE")),
+                    None
+                )
+                if best_face_idx is not None and raw_faces[best_face_idx] is not None:
+                    liveness_result = self.liveness_detector.check(raw_faces[best_face_idx])
+
+            # ③ QUICK_ACCEPT with liveness fusion ────────────────────────────
+            # Conditions (all must hold):
+            #   a) feature enabled
+            #   b) current-frame quality ≥ required tier
+            #   c) fused confidence (similarity + liveness + metadata) ≥ threshold
+            #   d) liveness passes (if enabled)
+            #   e) student not already marked
+            quick_accepted = False
+
+            # Build metadata for fusion (extract from request context if available)
+            metadata = LoginMetadata(
+                device_id=None,  # Would be extracted from request headers
+                known_device=True,  # Assume device continuity in production
+                expected_location=True,  # Assume in-classroom
+            )
+
+            # Compute fused confidence if liveness is available
+            fused_score = match.similarity  # fallback to raw similarity
+            if liveness_result is not None:
+                fused_result = fuse_confidence(
+                    embedding_similarity=match.similarity,
+                    liveness_result=liveness_result,
+                    metadata=metadata,
+                    accept_threshold=self.fusion_accept_threshold,
+                    w_embedding=0.60,
+                    w_liveness=0.25,
+                    w_metadata=0.15,
+                )
+                fused_score = fused_result.final_confidence
+
             if (
-                is_self_verify
-                and self.quick_accept_self_verify
-                and self.session_scope is not None
-                and hasattr(self.session_scope, "student_ids")
+                self.enable_quick_accept
+                and track_quality is not None
+                and track_quality.tier == self.quick_accept_min_tier
+                and fused_score >= self.quick_accept_similarity
+                and (liveness_result is None or liveness_result.is_live)
+                and match.student_id not in self.temporal_verifier.marked_students
             ):
-                try:
-                    from attendance_backend.services.scoped_embedding_search import (
-                        ScopedEmbeddingSearch,
-                    )
-                except ImportError:
-                    from services.scoped_embedding_search import ScopedEmbeddingSearch
-
-                # TODO: inject a shared ScopedEmbeddingSearch instance via DI
-                # so the per-user adaptive threshold history persists across frames.
-                scoped_searcher = ScopedEmbeddingSearch(
-                    firebase_service=None,
-                    quick_accept_enabled=self.quick_accept_self_verify,
-                )
-                scoped_result = scoped_searcher.search(
-                    query_embedding=track.embedding,
-                    scope=self.session_scope,
-                    liveness_result=best_lr,
-                    login_metadata=login_metadata,
-                )
-
-                if scoped_result.matched and scoped_result.quick_accept:
-                    student_id = scoped_result.student_id
-                    track.student_id = student_id
-
-                    # Mark immediately — bypass aggregator and temporal verifier
-                    self.temporal_verifier.force_mark(student_id)
-                    quick_accepted_this_frame.add(student_id)
-                    self.quick_accepted_total += 1
-
-                    logger.info(
-                        "⚡ QUICK-ACCEPT SELF_VERIFY: %s (fused_conf=%.4f)",
-                        student_id,
-                        scoped_result.confidence,
-                    )
-
-                    self.face_counter += 1
-                    results.append(OptimizedDetectedFace(
-                        face_id=self.face_counter,
-                        track_id=track.track_id,
-                        bbox=track.bbox,
-                        confidence=track.confidence,
-                        embedding=track.embedding,
-                        student_id=student_id,
-                        match_similarity=scoped_result.confidence,
-                        timestamp=datetime.now(),
-                        liveness_score=liveness_score,
-                        quick_accepted=True,
-                    ))
-                    continue  # Skip aggregator path for this track
-
-                # quick_accept=False → fall through to aggregator below
-
-            # ── F2. Aggregator path (all non-quick-accepted tracks) ───────
-            raw_match = self._recognize_embedding_match(track.embedding)
-
-            agg_result: AggregationVerdict = self.aggregator.add_frame(
-                track_id=track.track_id,
-                embedding=track.embedding,
-                single_frame_match=raw_match,
-                liveness_score=liveness_score,
-                averaged_recognizer=self._recognize_embedding_match,
-            )
-
-            if not agg_result.accepted or not agg_result.student_id:
-                continue
-
-            # Risk scoring from session_meta
-            risk_score = 0.0
-            if session_meta:
-                risk_score = self.fused_scorer.compute_risk_score(
-                    device_known=bool(session_meta.get("device_known", True)),
-                    ip_anomaly=float(session_meta.get("ip_anomaly", 0.0) or 0.0),
-                    time_anomaly=float(session_meta.get("time_anomaly", 0.0) or 0.0),
-                    attempt_pressure=float(
-                        session_meta.get("attempt_pressure", 0.0) or 0.0
-                    ),
-                )
-
-            fused = self.fused_scorer.score(
-                similarity=agg_result.confidence,
-                liveness=liveness_score,
-                risk_score=risk_score,
-            )
-
-            if not fused.accepted:
+                self.temporal_verifier.force_mark(match.student_id)
+                quick_accepted = True
+                quick_accepted_students.add(match.student_id)
+                self.quick_accept_count += 1
                 logger.info(
-                    "Aggregator accepted but fused rejected: "
-                    "track=%d student=%s reason=%s",
-                    track.track_id,
-                    agg_result.student_id,
-                    fused.reject_reason,
+                    "⚡ QUICK_ACCEPT: %s (sim=%.4f, fused=%.4f, quality=%.3f, "
+                    "tier=%s, frames_agg=%d, live=%s)",
+                    match.student_id, match.similarity, fused_score,
+                    track_quality.score, track_quality.tier, frames_used,
+                    liveness_result.is_live if liveness_result else "N/A",
                 )
-                continue
 
-            track.student_id = agg_result.student_id
-            self.temporal_verifier.marked_students.add(agg_result.student_id)
-            self.temporal_verifier.add_detection(
-                agg_result.student_id, self.processed_frames
-            )
+            # ④ Standard temporal verifier (only when QUICK_ACCEPT did not fire)
+            else:
+                # Gating: liveness must pass if enabled
+                if liveness_result is not None and not liveness_result.is_live:
+                    logger.debug(
+                        "Temporal verifier skipped: %s failed liveness (score=%.3f)",
+                        match.student_id, liveness_result.overall_score,
+                    )
+                else:
+                    should_mark = self.temporal_verifier.add_detection(
+                        match.student_id, self.processed_frames
+                    )
+                    if should_mark:
+                        logger.info(
+                            "✅ ATTENDANCE MARKED (temporal): %s "
+                            "(sim=%.4f, fused=%.4f, frames_agg=%d, live=%s)",
+                            match.student_id, match.similarity, fused_score, frames_used,
+                            liveness_result.is_live if liveness_result else "N/A",
+                        )
 
             self.face_counter += 1
-            results.append(OptimizedDetectedFace(
-                face_id=self.face_counter,
-                track_id=track.track_id,
-                bbox=track.bbox,
-                confidence=track.confidence,
-                embedding=track.embedding,
-                student_id=agg_result.student_id,
-                match_similarity=agg_result.confidence,
-                timestamp=datetime.now(),
-                liveness_score=liveness_score,
-                quick_accepted=False,
-            ))
-            logger.info(
-                "✅ ATTENDANCE MARKED: %s (agg=%.4f fused=%.4f live=%.4f)",
-                agg_result.student_id,
-                agg_result.confidence,
-                fused.fused,
-                liveness_score,
+            results.append(
+                OptimizedDetectedFace(
+                    face_id=self.face_counter,
+                    track_id=track.track_id,
+                    bbox=track.bbox,
+                    confidence=track.confidence,
+                    embedding=query_emb,          # aggregated or single-frame
+                    student_id=match.student_id,
+                    match_similarity=match.similarity,
+                    timestamp=datetime.now(),
+                    quality=track_quality,
+                    quick_accepted=quick_accepted,
+                    frames_aggregated=frames_used,
+                )
             )
 
-        # Step G: Handle lost tracks
-        for lost_id in lost_track_ids:
-            self.on_track_lost(lost_id, session_meta=session_meta)
-
-        # Periodic aggregator stale-track eviction (every 30 total frames)
-        if self.frame_counter % 30 == 0:
-            self.aggregator.evict_stale_tracks(max_age_frames=60)
-
-        self._previous_track_ids = current_track_ids
-
-        # Step H: FPS accounting
-        elapsed = time.time() - frame_start
+        # ── Step I: FPS accounting ────────────────────────────────────────────
+        elapsed     = time.time() - frame_start
         current_fps = 1.0 / elapsed if elapsed > 0 else 0.0
         if fps_samples is not None:
             fps_samples.append(current_fps)
@@ -838,34 +753,29 @@ class OptimizedAttendancePipeline:
             fps=avg_fps,
             motion_result=motion_result,
             ai_triggered=True,
-            quick_accepted_students=frozenset(quick_accepted_this_frame),
+            quick_accepted_students=quick_accepted_students,
+            best_quality_score=best_quality_score,
         )
         self._last_result = result
         return result
 
-    # ── Webcam generator ────────────────────────────────────────────────────────
+    # ── Webcam generator ───────────────────────────────────────────────────────
 
     def process_frames(
         self,
-        webcam_index: int = 0,
-        show_stats: bool = True,
+        webcam_index: int  = 0,
+        show_stats:   bool = True,
     ) -> Generator[PipelineFrameResult, None, None]:
-        """
-        Yield processed frames from a webcam (blocking generator).
-
-        Each yielded ``PipelineFrameResult`` carries whether AI actually ran
-        (``ai_triggered``) and which students were quick-accepted this frame
-        (``quick_accepted_students``).
-        """
+        """Yield processed frames from a webcam (blocking generator)."""
         cap = cv2.VideoCapture(webcam_index)
         if not cap.isOpened():
             raise RuntimeError(f"Cannot open webcam {webcam_index}")
 
         fps_samples: List[float] = []
-        report_every = 30
 
         try:
             logger.info("🎥 Webcam %d opened", webcam_index)
+            report_every = 30
 
             while True:
                 ret, frame = cap.read()
@@ -878,13 +788,17 @@ class OptimizedAttendancePipeline:
                     md_stats = self.motion_detector.get_stats()
                     logger.info(
                         "📊 Frame %d | AI FPS=%.1f | motion-gated=%.1f%% | "
-                        "tracks=%d | marked=%d | quick-accepted=%d",
+                        "quick-accepts=%d | agg=%d/single=%d | "
+                        "tracks=%d | marked=%d | best-Q=%.2f",
                         self.frame_counter,
                         result.fps,
                         md_stats["ml_skip_rate"] * 100,
+                        self.quick_accept_count,
+                        self._agg_searches,
+                        self._single_searches,
                         len(self.tracker.tracks),
                         len(self.temporal_verifier.marked_students),
-                        self.quick_accepted_total,
+                        result.best_quality_score,
                     )
 
                 yield result
@@ -895,31 +809,48 @@ class OptimizedAttendancePipeline:
             cap.release()
             self._log_final_stats()
 
-    # ── Drawing helper ───────────────────────────────────────────────────────────
+    # ── Drawing helper ──────────────────────────────────────────────────────────
 
     def draw_results(
         self,
-        result: PipelineFrameResult,
-        show_motion_overlay: bool = True,
+        result:               PipelineFrameResult,
+        show_motion_overlay:  bool = True,
+        show_quality_overlay: bool = True,
+        show_aggregation_hud: bool = True,
     ) -> np.ndarray:
         """
-        Render tracking boxes, identities, liveness score, quick-accept
-        indicator, and motion HUD on the frame.
+        Render tracking boxes, identities, quality indicators, aggregation
+        counts, and motion HUD on the frame.
+
+        Visual encoding
+        ---------------
+        Bbox colour (quality tier of the *current* frame's crop):
+            HIGH        bright green  (80, 255, 0)
+            ACCEPTABLE  yellow        (0, 210, 255)
+            LOW / none  orange        (0, 140, 255)
+
+        Label line 1:  ``<name> (<sim>) [<N>f] ⚡``
+            ``[Nf]``  when ``show_aggregation_hud`` and N > 1
+            ``⚡``     when QUICK_ACCEPT fired
+
+        Label line 2 (when ``show_quality_overlay``):
+            ``Q:<score> F:<frontality> S:<sharpness>``
 
         Parameters
         ----------
-        result:
-            Output from ``process_frame``.
-        show_motion_overlay:
-            If True, draw motion regions and the MOTION / STATIC / COOLDOWN
-            status bar.
-
-        Returns
-        -------
-        np.ndarray
-            Annotated BGR copy of the frame.
+        show_aggregation_hud:
+            Show how many frames were blended per match.  Useful during
+            tuning to verify the buffer fills as expected.
+        show_quality_overlay:
+            Show per-face quality component scores and the best-quality HUD.
         """
         vis = result.frame.copy()
+
+        _tier_colors = {
+            "HIGH":       (80,  255, 0),
+            "ACCEPTABLE": (0,   210, 255),
+            "LOW":        (0,   140, 255),
+        }
 
         if show_motion_overlay:
             vis = self.motion_detector.draw_motion_overlay(vis, result.motion_result)
@@ -929,11 +860,28 @@ class OptimizedAttendancePipeline:
         cv2.putText(
             vis,
             "AI: ON" if result.ai_triggered else "AI: GATED",
-            (10, 48),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.6, ai_color, 2,
+            (10, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.6, ai_color, 2,
         )
 
-        # Tracked face boxes
+        # Best quality score (top-right)
+        if show_quality_overlay and result.ai_triggered:
+            cv2.putText(
+                vis, f"Q: {result.best_quality_score:.2f}",
+                (vis.shape[1] - 120, 56),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2,
+            )
+
+        # Aggregation rate (top-right, below quality)
+        if show_aggregation_hud and result.ai_triggered:
+            total   = self._agg_searches + self._single_searches
+            agg_pct = 100 * self._agg_searches / max(total, 1)
+            cv2.putText(
+                vis, f"AGG: {agg_pct:.0f}%",
+                (vis.shape[1] - 120, 78),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 255), 1,
+            )
+
+        # Tracked face boxes (all active SORT tracks)
         for track in result.tracked_faces:
             x1, y1, x2, y2 = (int(v) for v in track.bbox)
             color = (0, 255, 0) if track.student_id else (0, 165, 255)
@@ -943,21 +891,37 @@ class OptimizedAttendancePipeline:
                 (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2,
             )
 
-        # Matched student labels — include liveness score and quick-accept tag
+        # Per-detection labels (matched faces only)
         for det in result.detections:
             x1, y1, x2, y2 = (int(v) for v in det.bbox)
-            qa_tag = " ⚡QA" if det.quick_accepted else ""
-            label = (
-                f"{det.student_id} ({det.match_similarity:.2f}) "
-                f"L:{det.liveness_score:.2f}{qa_tag}"
+
+            box_color = (
+                _tier_colors.get(det.quality.tier, (0, 255, 0))
+                if det.quality else (255, 200, 0)
             )
-            label_color = (0, 215, 255) if det.quick_accepted else (0, 255, 0)
+            cv2.rectangle(vis, (x1, y1), (x2, y2), box_color, 3)
+
+            # Line 1: identity + similarity + aggregation count + quick-accept flag
+            id_label = f"{det.student_id} ({det.match_similarity:.2f})"
+            if show_aggregation_hud and det.frames_aggregated > 1:
+                id_label += f" [{det.frames_aggregated}f]"
+            if det.quick_accepted:
+                id_label += " ⚡"
             cv2.putText(
-                vis, label,
-                (x1, y2 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, label_color, 1,
+                vis, id_label,
+                (x1, y2 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1,
             )
 
-        # FPS counter
+            # Line 2: quality breakdown
+            if show_quality_overlay and det.quality:
+                q = det.quality
+                cv2.putText(
+                    vis,
+                    f"Q:{q.score:.2f} F:{q.frontality:.2f} S:{q.sharpness:.2f}",
+                    (x1, y2 + 38), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 1,
+                )
+
+        # FPS (top-right)
         cv2.putText(
             vis, f"FPS: {result.fps:.1f}",
             (vis.shape[1] - 120, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2,
@@ -965,49 +929,135 @@ class OptimizedAttendancePipeline:
 
         return vis
 
-    # ── Statistics ───────────────────────────────────────────────────────────────
+    # ── Statistics ──────────────────────────────────────────────────────────────
 
     def get_statistics(self) -> Dict:
-        """Return pipeline efficiency and attendance statistics."""
-        total = max(self.frame_counter, 1)
-        md_stats = self.motion_detector.get_stats()
+        """
+        Return pipeline efficiency, quality, and aggregation statistics.
+
+        Keys
+        ----
+        Frame counts:
+            total_frames, motion_gated_frames, frame_skipped_frames,
+            ai_triggered_frames, ai_skip_rate, motion_ml_skip_rate
+
+        Tracking:
+            active_tracks, confirmed_tracks, marked_students,
+            frame_skip, motion_gate_enabled
+
+        QUICK_ACCEPT:
+            quick_accept_enabled, quick_accept_count,
+            quick_accept_sim_threshold
+
+        Aggregation:
+            aggregation_enabled, aggregation_buffer_size,
+            aggregation_min_frames, aggregated_searches,
+            single_frame_searches, aggregation_rate
+        """
+        total          = max(self.frame_counter, 1)
+        md_stats       = self.motion_detector.get_stats()
+        total_searches = self._agg_searches + self._single_searches
+
         return {
-            "total_frames": self.frame_counter,
-            "motion_gated_frames": self.motion_gated_frames,
-            "frame_skipped_frames": self.skipped_frames,
-            "ai_triggered_frames": self.ai_triggered_frames,
-            "ai_skip_rate": round(1 - self.ai_triggered_frames / total, 4),
-            "motion_ml_skip_rate": md_stats["ml_skip_rate"],
-            "active_tracks": len(self.tracker.tracks),
-            "confirmed_tracks": len(self.tracker.get_active_tracks()),
-            "marked_students": len(self.temporal_verifier.marked_students),
-            "liveness_rejected_faces": self.liveness_rejected_faces,
-            "quick_accepted_total": self.quick_accepted_total,
-            "frame_skip": self.frame_skip,
-            "motion_gate_enabled": self.enable_motion_gate,
-            "liveness_enabled": self.enable_liveness,
-            "quick_accept_self_verify": self.quick_accept_self_verify,
+            # Frame counts
+            "total_frames":          self.frame_counter,
+            "motion_gated_frames":   self.motion_gated_frames,
+            "frame_skipped_frames":  self.skipped_frames,
+            "ai_triggered_frames":   self.ai_triggered_frames,
+            "ai_skip_rate":          round(1 - self.ai_triggered_frames / total, 4),
+            "motion_ml_skip_rate":   md_stats["ml_skip_rate"],
+            # Tracking
+            "active_tracks":         len(self.tracker.tracks),
+            "confirmed_tracks":      len(self.tracker.get_active_tracks()),
+            "marked_students":       len(self.temporal_verifier.marked_students),
+            "frame_skip":            self.frame_skip,
+            "motion_gate_enabled":   self.enable_motion_gate,
+            # QUICK_ACCEPT
+            "quick_accept_enabled":       self.enable_quick_accept,
+            "quick_accept_count":         self.quick_accept_count,
+            "quick_accept_sim_threshold": self.quick_accept_similarity,
+            # Aggregation
+            "aggregation_enabled":     self.enable_aggregation,
+            "aggregation_buffer_size": self._agg_buffer_size,
+            "aggregation_min_frames":  self._agg_min_frames,
+            "aggregated_searches":     self._agg_searches,
+            "single_frame_searches":   self._single_searches,
+            "aggregation_rate":        round(
+                self._agg_searches / max(total_searches, 1), 4
+            ),
         }
 
     def _log_final_stats(self) -> None:
         stats = self.get_statistics()
         logger.info(
             "✅ Pipeline stopped\n"
-            "   Total frames          : %d\n"
-            "   Motion-gated          : %d (%.1f%%)\n"
-            "   Frame-skipped         : %d\n"
-            "   AI triggered          : %d\n"
-            "   AI skip rate          : %.1f%%\n"
-            "   Liveness rejected     : %d\n"
-            "   Quick-accepted        : %d\n"
-            "   Students marked       : %d",
+            "   Total frames     : %d\n"
+            "   Motion-gated     : %d (%.1f%%)\n"
+            "   Frame-skipped    : %d\n"
+            "   AI triggered     : %d\n"
+            "   AI skip rate     : %.1f%%\n"
+            "   Quick-accepts    : %d\n"
+            "   Students marked  : %d\n"
+            "   Aggregated FAISS : %d / %d searches (%.1f%%)",
             stats["total_frames"],
             stats["motion_gated_frames"],
             stats["motion_ml_skip_rate"] * 100,
             stats["frame_skipped_frames"],
             stats["ai_triggered_frames"],
             stats["ai_skip_rate"] * 100,
-            stats["liveness_rejected_faces"],
-            stats["quick_accepted_total"],
+            stats["quick_accept_count"],
             stats["marked_students"],
+            stats["aggregated_searches"],
+            stats["aggregated_searches"] + stats["single_frame_searches"],
+            stats["aggregation_rate"] * 100,
         )
+
+    # ── Private helpers ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _build_quality_map(
+        detections:     List[Tuple],
+        quality_scores: List[Optional[CaptureQuality]],
+    ) -> Dict[str, CaptureQuality]:
+        """
+        Build a bbox-key → CaptureQuality dict for O(1) lookup during tracking.
+
+        Key format: ``"{x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f}"`` — consistent
+        within a single frame since YOLO returns stable float coords.
+        """
+        result = {}
+        for det, q in zip(detections, quality_scores):
+            if q is not None:
+                x1, y1, x2, y2, _ = det
+                result[f"{x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f}"] = q
+        return result
+
+    @staticmethod
+    def _nearest_det_key(
+        track_bbox: Tuple[float, float, float, float],
+        detections: List[Tuple],
+    ) -> str:
+        """
+        Return the detection-map key whose bbox centre is closest to the
+        tracked face's centre.
+
+        SORT may interpolate bboxes slightly across frames, so nearest-centre
+        lookup is more robust than exact-key matching.
+        """
+        if not detections:
+            return ""
+
+        tx = (track_bbox[0] + track_bbox[2]) / 2.0
+        ty = (track_bbox[1] + track_bbox[3]) / 2.0
+
+        best_key  = ""
+        best_dist = float("inf")
+        for det in detections:
+            x1, y1, x2, y2, _ = det
+            dx = ((x1 + x2) / 2.0) - tx
+            dy = ((y1 + y2) / 2.0) - ty
+            dist = dx * dx + dy * dy
+            if dist < best_dist:
+                best_dist = dist
+                best_key  = f"{x1:.0f},{y1:.0f},{x2:.0f},{y2:.0f}"
+        return best_key

@@ -9,7 +9,7 @@
  *                  manual-override badge, marked-by, confidence score, and stats strip.
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Search, Filter, Download, ChevronLeft, ChevronRight,
   CheckCircle, XCircle, Clock, Activity, X, SlidersHorizontal,
@@ -186,6 +186,18 @@ export const AttendanceHistory: React.FC<AttendanceHistoryProps> = ({
     endDate: endDate || undefined,
     enabled: !!studentId,
   });
+
+  // Listen for attendance updates from face detection or other sources
+  useEffect(() => {
+    const handleAttendanceUpdated = () => {
+      // Reset to page 1 and refetch when attendance is updated
+      setPage(1);
+      refetch();
+    };
+
+    window.addEventListener('attendance:updated', handleAttendanceUpdated as EventListener);
+    return () => window.removeEventListener('attendance:updated', handleAttendanceUpdated as EventListener);
+  }, [refetch]);
 
   const records = useMemo(() => {
     if (!history?.records) return [];
