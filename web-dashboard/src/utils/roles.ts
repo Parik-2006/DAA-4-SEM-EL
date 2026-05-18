@@ -11,6 +11,9 @@
 
 export type UserRole = 'admin' | 'teacher' | 'student';
 
+export const LOGIN_EMAIL_POLICY_MESSAGE =
+  'This login accepts only RVCE email IDs (@rvce.edu.in) and configured admin email IDs.';
+
 // ── Hardcoded whitelists ───────────────────────────────────────────────────────
 
 const ADMIN_EMAILS = new Set<string>([
@@ -98,8 +101,7 @@ export function resolveUserRole({
     return {
       role: 'student', // unused, but satisfies the type
       rejected: true,
-      rejectionReason:
-        'Access denied. Only RVCE institutional accounts and authorised administrators may log in.',
+      rejectionReason: LOGIN_EMAIL_POLICY_MESSAGE,
     };
   }
 

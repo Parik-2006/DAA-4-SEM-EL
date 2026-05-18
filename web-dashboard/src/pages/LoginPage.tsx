@@ -6,7 +6,7 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { signIn, clearSession } from '../services/firebase/auth.service';
-import { getStoredRole } from '../utils/roles';
+import { getStoredRole, resolveRoleFromEmail, LOGIN_EMAIL_POLICY_MESSAGE } from '../utils/roles';
 
 // Minimal field-level validation messages
 type FieldError = { email?: string; password?: string; general?: string };
@@ -39,6 +39,7 @@ export const LoginPage: React.FC = () => {
     const e: FieldError = {};
     if (!email.trim())                               e.email    = 'Email is required.';
     else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) e.email = 'Enter a valid email address.';
+    else if (resolveRoleFromEmail(email) === null)  e.email    = LOGIN_EMAIL_POLICY_MESSAGE;
     if (!password)                                   e.password = 'Password is required.';
     else if (password.length < 6)                   e.password = 'Password must be at least 6 characters.';
     setErrors(e);
