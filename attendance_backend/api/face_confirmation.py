@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 
-from decorators.auth import get_user, UserRole
+from decorators.auth_decorators import get_optional_user
 from services.face_confirmation_service import FaceConfirmationService
 from services.face_profile_learning_service import FaceProfileLearningService
 from database.face_profile_repository import FaceProfileRepository
@@ -73,7 +73,7 @@ def get_profile_repo() -> FaceProfileRepository:
 )
 async def submit_face_confirmation(
     body: FaceConfirmationRequest,
-    user = Depends(get_user),
+    user = Depends(get_optional_user),
     svc: FaceConfirmationService = Depends(get_confirmation_service),
     learning_svc: FaceProfileLearningService = Depends(get_learning_service),
     repo: FaceProfileRepository = Depends(get_profile_repo),
@@ -103,6 +103,13 @@ async def submit_face_confirmation(
     - `message`: Human-readable status message
     """
     try:
+        # Verify user is authenticated
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+            )
+        
         # Process the confirmation
         success, learning_status, result = svc.process_confirmation(
             session_id=body.session_id,
@@ -112,7 +119,7 @@ async def submit_face_confirmation(
             detection_id=body.detection_id,
             yes_this_is_me=body.yes_this_is_me,
             authenticated_user_id=user.user_id,
-            authenticated_user_role=user.role.value if hasattr(user.role, 'value') else str(user.role),
+            authenticated_user_role=user.role,
             client_timestamp=body.client_timestamp,
         )
         
@@ -208,7 +215,7 @@ async def submit_face_confirmation(
 )
 async def get_face_profile_diagnostics(
     student_id: str,
-    user = Depends(get_user),
+    user = Depends(get_optional_user),
     repo: FaceProfileRepository = Depends(get_profile_repo),
 ):
     """
@@ -228,8 +235,15 @@ async def get_face_profile_diagnostics(
     - `needs_reenrollment`: Flag if profile quality is poor
     """
     try:
+        # Verify user is authenticated
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+            )
+        
         # Authorization check
-        if user.role == UserRole.STUDENT and user.user_id != student_id:
+        if user.role == "student" and user.user_id != student_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Students can only view their own profile",
