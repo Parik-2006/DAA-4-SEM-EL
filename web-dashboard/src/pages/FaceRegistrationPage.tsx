@@ -10,8 +10,9 @@ import {
   Layout,
   LiveCamera,
 } from '../components';
-import { getCurrentUser } from '../services/firebase/auth.service';
+import { getCurrentUser, getStoredClassId } from '../services/firebase/auth.service';
 import { attendanceAPI, ClassPeriod } from '../services/api';
+import { loadStudentDirectory } from '../utils/student-directory';
 import {
   useAttendanceEligibility,
   usePostMarkRefresh,
@@ -115,13 +116,49 @@ const FaceRegistrationPage: React.FC = () => {
   // Load timetable when page mounts
   useEffect(() => {
     const loadTimetable = async () => {
-      // TODO: Get actual class_id from student profile/context
-      // For now, use a placeholder or fetch from user profile
-      const classId = sessionStorage.getItem('class_id') || 'class_default';
+      const classId = getStoredClassId() || sessionStorage.getItem('class_id') || 'class_default';
       
       setTimetableLoading(true);
       try {
-        const timetable = await attendanceAPI.getClassTimetable(classId);
+        // Check localStorage cache first (24-hour TTL)
+        const cacheKey = `timetable_${classId}`;
+        const cached = localStorage.getItem(cacheKey);
+        let timetable;
+
+        if (cached) {
+          try {
+            const { data, timestamp } = JSON.parse(cached);
+            const cacheAgeMs = Date.now() - timestamp;
+            const cacheExpiryMs = 24 * 60 * 60 * 1000; // 24 hours
+
+            if (cacheAgeMs < cacheExpiryMs) {
+              console.log(`[FaceRegistration] Using cached timetable for ${classId}`);
+              timetable = data;
+            } else {
+              console.log(`[FaceRegistration] Timetable cache expired for ${classId}`);
+              localStorage.removeItem(cacheKey);
+            }
+          } catch (parseErr) {
+            console.warn('Failed to parse cached timetable:', parseErr);
+            localStorage.removeItem(cacheKey);
+          }
+        }
+
+        // Fetch from API if not cached
+        if (!timetable) {
+          console.log(`[FaceRegistration] Fetching timetable from API for ${classId}`);
+          timetable = await attendanceAPI.getClassTimetable(classId);
+          
+          // Cache the result
+          if (timetable?.days) {
+            localStorage.setItem(cacheKey, JSON.stringify({
+              data: timetable,
+              timestamp: Date.now(),
+            }));
+            console.log(`[FaceRegistration] Cached timetable for ${classId}`);
+          }
+        }
+
         if (timetable?.days) {
           const days = Object.keys(timetable.days).sort();
           setAvailableDays(days);
@@ -132,6 +169,9 @@ const FaceRegistrationPage: React.FC = () => {
             setSelectedDay(days[0]);
           }
         }
+
+        // Load student directory for this class
+        await loadStudentDirectory(classId, attendanceAPI);
       } catch (err) {
         console.error('Failed to load timetable:', err);
       } finally {

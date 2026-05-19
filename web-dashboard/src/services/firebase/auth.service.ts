@@ -36,6 +36,7 @@ const USER_ID_KEY             = 'user_id';
 const USER_EMAIL_KEY          = 'user_email';
 const USER_ROLE_KEY           = 'user_role';
 const USER_ASSIGNED_SECTIONS_KEY = 'assigned_sections';
+const CLASS_ID_KEY            = 'class_id';
 
 const ALL_SESSION_KEYS = [
   AUTH_TOKEN_KEY,
@@ -44,6 +45,7 @@ const ALL_SESSION_KEYS = [
   USER_EMAIL_KEY,
   USER_ROLE_KEY,
   USER_ASSIGNED_SECTIONS_KEY,
+  CLASS_ID_KEY,
 ] as const;
 const REFRESH_WINDOW_MS = 5 * 60 * 1000;
 
@@ -65,11 +67,13 @@ function persistSession(data: {
   email: string;
   role: string;
   assignedSections?: string[];
+  classId?: string;
   expiresIn?: number; // seconds
 }): void {
   const expiresAt = Date.now() + (data.expiresIn ?? 8 * 3600) * 1000;
   if (data.token)  sessionStorage.setItem(AUTH_TOKEN_KEY,   data.token);
   if (data.userId) sessionStorage.setItem(USER_ID_KEY,      data.userId);
+  if (data.classId) sessionStorage.setItem(CLASS_ID_KEY,    data.classId);
   sessionStorage.setItem(TOKEN_EXPIRY_KEY, String(expiresAt));
   sessionStorage.setItem(USER_EMAIL_KEY,   data.email);
   sessionStorage.setItem(USER_ROLE_KEY,    data.role);
@@ -114,6 +118,10 @@ export function getStoredAssignedSections(): string[] {
   } catch {
     return [];
   }
+}
+
+export function getStoredClassId(): string | null {
+  return sessionStorage.getItem(CLASS_ID_KEY) ?? null;
 }
 
 /**
@@ -193,6 +201,7 @@ export const signIn = async (email: string, password: string): Promise<User> => 
       userId:    data.user_id,
       email:     data.email ?? email,
       role:      resolution.role,
+      classId:   data.class_id,
       expiresIn: data.expires_in,
     });
 

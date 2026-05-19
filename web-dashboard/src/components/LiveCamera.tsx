@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { attendanceAPI, DetectFaceResponse, ConfirmAttendanceResponse, AttendanceWindowInfo, CandidateSuggestion } from '@/services/api';
 import { Card } from './UI';
-import { getStudentDisplayName } from '../utils/student-directory';
+import { getStudentDisplayName, getStudentEmail } from '../utils/student-directory';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const MAX_CONSECUTIVE_FAILURES = 5;
@@ -52,6 +52,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
   const barColor =
     confidencePct >= 85 ? '#4ade80' : confidencePct >= 70 ? '#fbbf24' : '#f87171';
   const displayName = getStudentDisplayName(detection.student_id, detection.student_name ?? 'Unknown');
+  const displayEmail = getStudentEmail(detection.student_id);
 
   return (
     /* Backdrop */
