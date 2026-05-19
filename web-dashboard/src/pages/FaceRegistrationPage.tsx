@@ -64,6 +64,19 @@ const FaceRegistrationPage: React.FC = () => {
     useState(0);
 
   // ─────────────────────────────────────────────────────────
+  // Hooks
+  // ─────────────────────────────────────────────────────────
+
+  // Eligibility check: is current time within a scheduled period?
+  const eligibility = useAttendanceEligibility();
+
+  // Auto-refresh after marking attendance
+  const triggerPostMarkRefresh = usePostMarkRefresh(() => {
+    // Optional: trigger any dashboard refresh here
+    eligibility.refetch();
+  });
+
+  // ─────────────────────────────────────────────────────────
   // Callbacks
   // ─────────────────────────────────────────────────────────
 
@@ -88,15 +101,6 @@ const FaceRegistrationPage: React.FC = () => {
     },
     []
   );
-
-  // Eligibility check: is current time within a scheduled period?
-  const eligibility = useAttendanceEligibility();
-
-  // Auto-refresh after marking attendance
-  const triggerPostMarkRefresh = usePostMarkRefresh(() => {
-    // Optional: trigger any dashboard refresh here
-    eligibility.refetch();
-  });
 
   // Read optional query param to auto-start camera for a particular student
   const [searchParams] = useSearchParams();
