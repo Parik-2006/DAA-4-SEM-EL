@@ -10,9 +10,9 @@ import {
   Layout,
   LiveCamera,
 } from '../components';
-import { getCurrentUser, getStoredClassId } from '../services/firebase/auth.service';
+import { getCurrentUser, getStoredClassId, getStoredEmail } from '../services/firebase/auth.service';
 import { attendanceAPI, ClassPeriod } from '../services/api';
-import { loadStudentDirectory } from '../utils/student-directory';
+import { findStudentByEmail, loadStudentDirectory } from '../utils/student-directory';
 import {
   useAttendanceEligibility,
   usePostMarkRefresh,
@@ -73,6 +73,9 @@ const FaceRegistrationPage: React.FC = () => {
   const [availableDays, setAvailableDays] = useState<string[]>([]);
   const [periodsByDay, setPeriodsByDay] = useState<Record<string, ClassPeriod[]>>({});
   const [timetableLoading, setTimetableLoading] = useState(false);
+  const [resolvedStudentId, setResolvedStudentId] = useState<string | null>(null);
+  const [resolvedStudentName, setResolvedStudentName] = useState<string | null>(null);
+  const [resolvedStudentEmail, setResolvedStudentEmail] = useState<string | null>(null);
 
   // ─────────────────────────────────────────────────────────
   // Hooks
@@ -117,6 +120,7 @@ const FaceRegistrationPage: React.FC = () => {
   useEffect(() => {
     const loadTimetable = async () => {
       const classId = getStoredClassId() || sessionStorage.getItem('class_id') || 'class_default';
+      const loggedInEmail = getStoredEmail() || sessionStorage.getItem('user_email') || getCurrentUser()?.email || null;
       
       setTimetableLoading(true);
       try {
@@ -172,6 +176,15 @@ const FaceRegistrationPage: React.FC = () => {
 
         // Load student directory for this class
         await loadStudentDirectory(classId, attendanceAPI);
+
+        if (loggedInEmail) {
+          const match = findStudentByEmail(loggedInEmail);
+          if (match) {
+            setResolvedStudentId(match.studentId);
+            setResolvedStudentName(match.name);
+            setResolvedStudentEmail(match.email ?? loggedInEmail);
+          }
+        }
       } catch (err) {
         console.error('Failed to load timetable:', err);
       } finally {
@@ -191,11 +204,9 @@ const FaceRegistrationPage: React.FC = () => {
 
   // Read optional query param to auto-start camera for a particular student
   const [searchParams] = useSearchParams();
-  const targetStudent =
-    searchParams.get('student') ??
-    sessionStorage.getItem('user_id') ??
-    getCurrentUser()?.uid ??
-    null;
+  const requestedStudent = searchParams.get('student');
+  const targetStudent = requestedStudent ?? resolvedStudentId ?? null;
+  const targetStudentLabel = resolvedStudentName ?? getCurrentUser()?.displayName ?? targetStudent ?? null;
 
   // ─────────────────────────────────────────────────────────
   // Derived State
@@ -401,6 +412,7 @@ const FaceRegistrationPage: React.FC = () => {
               }
               autoStart={!!targetStudent && eligibility.isEligible}
               targetStudentId={targetStudent}
+              targetStudentLabel={targetStudentLabel}
               periodId={selectedPeriodId || undefined}
             />
           </div>

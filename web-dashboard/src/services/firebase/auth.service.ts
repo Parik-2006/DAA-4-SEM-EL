@@ -124,6 +124,10 @@ export function getStoredClassId(): string | null {
   return sessionStorage.getItem(CLASS_ID_KEY) ?? null;
 }
 
+export function getStoredEmail(): string | null {
+  return sessionStorage.getItem(USER_EMAIL_KEY) ?? null;
+}
+
 /**
  * True when a valid, non-expired backend token exists in sessionStorage.
  */

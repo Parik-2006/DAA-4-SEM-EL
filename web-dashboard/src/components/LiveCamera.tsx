@@ -22,6 +22,8 @@ interface LiveCameraProps {
   autoStart?: boolean;
   /** Optional student id to hint the detection flow (passed as query param) */
   targetStudentId?: string | null;
+  /** Optional resolved student display name for the logged-in user */
+  targetStudentLabel?: string | null;
   /** Optional timetable period id to scope detection/confirmation */
   periodId?: string | null;
 }
@@ -116,6 +118,11 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
             <p className="text-center text-sm mb-3" style={{ color: '#7a5c3e' }}>
               ID: {detection.student_id}
             </p>
+            {displayEmail && (
+              <p className="text-center text-xs mb-3" style={{ color: '#8b6b49' }}>
+                {displayEmail}
+              </p>
+            )}
 
             {/* Confidence bar */}
             <div>
@@ -480,12 +487,14 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
   onConsecutiveFailures,
   autoStart,
   targetStudentId,
+  targetStudentLabel,
   periodId,
 }) => {
   const videoRef    = useRef<HTMLVideoElement>(null);
   const canvasRef   = useRef<HTMLCanvasElement>(null);
   const streamRef   = useRef<MediaStream | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const processingRef       = useRef(false);
   const pausedForConfirmRef = useRef(false);
 
@@ -520,6 +529,7 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
   const [candidateSuggestions, setCandidateSuggestions] = useState<CandidateSuggestion[] | null>(null);
   const [rejectedCandidateIds, setRejectedCandidateIds] = useState<string[]>([]);
   const [windowInfo, setWindowInfo] = useState<AttendanceWindowInfo | null>(null);
+  const [cooldownNotice, setCooldownNotice] = useState<string | null>(null);
   const targetStudentIdNormalized = (targetStudentId ?? '').trim().toLowerCase();
   const strictSelfVerify = /^stud[_-]?/i.test(targetStudentIdNormalized);
 
@@ -533,6 +543,15 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
   // ── Cleanup on unmount ────────────────────────────────────────────────────
 
   useEffect(() => () => stopCamera(), []);
+
+  useEffect(() => {
+    return () => {
+      if (cooldownTimerRef.current) {
+        clearTimeout(cooldownTimerRef.current);
+        cooldownTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -558,6 +577,10 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
       clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
+    if (cooldownTimerRef.current) {
+      clearTimeout(cooldownTimerRef.current);
+      cooldownTimerRef.current = null;
+    }
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
@@ -567,6 +590,7 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
     setFrameCount(0);
     setLastFeedback(null);
     setWindowInfo(null);
+    setCooldownNotice(null);
     // Preserved from existing: always zero the streak on camera stop so a
     // manual stop doesn't carry stale failures into the next session.
     consecutiveFailuresRef.current = 0;
@@ -575,11 +599,16 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
   // ── Reset after hard stop — user explicitly retries ───────────────────────
 
   const resetForRetry = useCallback(() => {
+    if (cooldownTimerRef.current) {
+      clearTimeout(cooldownTimerRef.current);
+      cooldownTimerRef.current = null;
+    }
     consecutiveFailuresRef.current = 0;
     setConsecutiveFailures(0);
     setShowHardStop(false);
     setHardStopMessage('');
     setLastFeedback(null);
+    setCooldownNotice(null);
     // Stop the camera so the user deliberately presses Start Camera again,
     // giving a moment to adjust lighting / position before retrying.
     stopCamera();
@@ -596,10 +625,32 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
       if (next >= MAX_CONSECUTIVE_FAILURES) {
         setHardStopMessage(message);
         setShowHardStop(true);
-        stopCamera();
+        setCooldownNotice('Too many misses. Pausing briefly, then trying again...');
+
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+
+        if (cooldownTimerRef.current) {
+          clearTimeout(cooldownTimerRef.current);
+        }
+
+        cooldownTimerRef.current = setTimeout(() => {
+          setShowHardStop(false);
+          setHardStopMessage('');
+          setCooldownNotice(null);
+          consecutiveFailuresRef.current = 0;
+          setConsecutiveFailures(0);
+
+          if (streamRef.current && videoRef.current) {
+            setCameraState('active');
+            startDetectionLoop();
+          }
+        }, 2500);
       }
     },
-    [stopCamera],
+    [],
   );
 
   // ── Start camera ───────────────────────────────────────────────────────────
@@ -772,7 +823,11 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
           setConsecutiveFailures(0);
           pausedForConfirmRef.current = true;
           setLastFeedback(null);
-          setPendingDetection(result);
+          setPendingDetection({
+            ...result,
+            student_name:
+              (targetStudentIdNormalized && targetStudentLabel) || result.student_name || undefined,
+          });
           setCandidateSuggestions(null);
         } else {
           // ── FAILURE: classify message, update feedback ─────────────────
@@ -823,7 +878,7 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
                   ...result,
                   matched: true,
                   student_id: loggedInCandidate.student_id,
-                  student_name: loggedInCandidate.student_name,
+                  student_name: targetStudentLabel || loggedInCandidate.student_name,
                   confidence: loggedInCandidate.confidence,
                 });
                 setCandidateSuggestions(null);
