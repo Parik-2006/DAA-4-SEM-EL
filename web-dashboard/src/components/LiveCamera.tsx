@@ -240,6 +240,7 @@ const CandidatePromptModal: React.FC<CandidatePromptModalProps> = ({
           {suggestions.map((candidate) => {
             const pct = Math.round(candidate.confidence * 100);
             const displayName = getStudentDisplayName(candidate.student_id, candidate.student_name);
+            const displayEmail = getStudentEmail(candidate.student_id);
             return (
               <button
                 key={candidate.student_id}
@@ -258,6 +259,9 @@ const CandidatePromptModal: React.FC<CandidatePromptModalProps> = ({
                   <div>
                     <p style={{ fontWeight: 700, color: '#0f172a' }}>{displayName}</p>
                     <p style={{ fontSize: 12, color: '#64748b' }}>ID: {candidate.student_id}</p>
+                    {displayEmail && (
+                      <p style={{ fontSize: 12, color: '#64748b' }}>{displayEmail}</p>
+                    )}
                   </div>
                   <div style={{ fontSize: 12, fontWeight: 700, color: '#2563eb' }}>{pct}%</div>
                 </div>

@@ -10,6 +10,27 @@ function normalizeStudentKey(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+const FALLBACK_STUDENT_ROSTER: Array<{ student_id: string; name: string; email?: string }> = [
+  { student_id: 'student_001', name: 'Parikshith B Bilchode', email: 'parik@example.com' },
+];
+
+function addStudentEntry(
+  directory: Record<string, StudentInfo>,
+  student: { student_id: string; name: string; email?: string }
+): void {
+  const normalizedId = student.student_id.trim().toLowerCase();
+  const compactId = normalizeStudentKey(normalizedId);
+
+  directory[normalizedId] = { name: student.name, email: student.email };
+  directory[compactId] = { name: student.name, email: student.email };
+
+  if (student.email) {
+    const normalizedEmail = student.email.trim().toLowerCase();
+    directory[normalizedEmail] = { name: student.name, email: student.email };
+    directory[normalizeStudentKey(normalizedEmail)] = { name: student.name, email: student.email };
+  }
+}
+
 /**
  * Load student directory dynamically from the backend.
  * Returns a map of student_id -> { name, email }.
@@ -23,30 +44,11 @@ export async function loadStudentDirectory(
     const roster = await apiClient.getClassRoster(classId);
     
     const directory: Record<string, StudentInfo> = {};
+
+    FALLBACK_STUDENT_ROSTER.forEach((student) => addStudentEntry(directory, student));
+
     roster.forEach((student) => {
-      const normalizedId = student.student_id.trim().toLowerCase();
-      directory[normalizedId] = {
-        name: student.name,
-        email: student.email,
-      };
-
-      const compactId = normalizeStudentKey(normalizedId);
-      directory[compactId] = {
-        name: student.name,
-        email: student.email,
-      };
-
-      if (student.email) {
-        const normalizedEmail = student.email.trim().toLowerCase();
-        directory[normalizedEmail] = {
-          name: student.name,
-          email: student.email,
-        };
-        directory[normalizeStudentKey(normalizedEmail)] = {
-          name: student.name,
-          email: student.email,
-        };
-      }
+      addStudentEntry(directory, student);
     });
     
     studentDirectoryCache = directory;
@@ -93,6 +95,10 @@ export function getStudentInfo(studentId?: string | null): StudentInfo | null {
     'student_008': 'Mahesh Raju N',
     'stud__006': 'Nischith G A',
     'stud__08': 'Mahesh Raju N',
+    'student_001': 'Parikshith B Bilchode',
+    'student001': 'Parikshith B Bilchode',
+    'parik@example.com': 'Parikshith B Bilchode',
+    'parikexamplecom': 'Parikshith B Bilchode',
   };
 
   // Try exact match in hardcoded
@@ -138,6 +144,12 @@ export function findStudentByEmail(email?: string | null): { studentId: string; 
 
   const normalizedEmail = email.trim().toLowerCase();
   const emailKey = normalizeStudentKey(normalizedEmail);
+
+  for (const student of FALLBACK_STUDENT_ROSTER) {
+    if (student.email?.trim().toLowerCase() === normalizedEmail) {
+      return { studentId: student.student_id, name: student.name, email: student.email };
+    }
+  }
 
   if (studentDirectoryCache) {
     for (const [studentId, info] of Object.entries(studentDirectoryCache)) {
