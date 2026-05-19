@@ -953,6 +953,7 @@ async def detect_face_only(
     embedding, err = await _extract_embedding_from_upload(file)
     if err is not None:
         return err
+    embedding_list = embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
 
     # ── Metadata extraction from request (for liveness fusion) ────────────────
     device_id = request.headers.get("X-Device-ID")
@@ -1013,8 +1014,6 @@ async def detect_face_only(
 
                 if sv_result.matched:
                     # ✅ Fast path — anchored identity confirmed
-                    del embedding
-                    gc.collect()
                     logger.info(
                         "SELF_VERIFY-first HIT: session=%s user=%s → %s "
                         "(conf=%.3f, vectors=%d)",
@@ -1031,7 +1030,7 @@ async def detect_face_only(
                             candidate_scores=[
                                 {"student_id": sv_result.student_id, "similarity": sv_result.confidence}
                             ],
-                            embedding=embedding.tolist(),
+                            embedding=embedding_list,
                             bbox=[0, 0, 0, 0],  # Placeholder — bbox not available in this path
                             quality_metrics={
                                 "tier": "HIGH" if sv_result.confidence > 0.80 else "ACCEPTABLE",
@@ -1049,9 +1048,47 @@ async def detect_face_only(
                             period_id=period_id,
                             retention_minutes=30,
                         )
-                    except FaceRepositoryError as e:
+                    except Exception as e:
                         logger.warning(f"Failed to store pending detection (SELF_VERIFY): {e}")
                         detection_id = None
+
+                    # Optional: Auto-apply learning when the session anchor user
+                    # matches the detected student. This makes the system "learn"
+                    # from high-confidence self-verifications without manual confirm.
+                    if detection_id is not None and sv_result.student_id == anchored_user_id:
+                        try:
+                            from services.face_profile_learning_service import FaceProfileLearningService
+                            from database.face_profile_repository import FaceProfileRepository
+
+                            repo = FaceProfileRepository()
+                            detection = repo.get_pending_detection(detection_id)
+                            learning_svc = FaceProfileLearningService()
+                            event_id = f"auto_learn_{detection_id}"
+                            embedding = detection.get("embedding", [])
+                            quality = detection.get("quality", {})
+                            liveness = detection.get("liveness", {})
+                            fused_conf = detection.get("fused_confidence", 0.0)
+                            similarity = detection.get("confidence", 0.0)
+
+                            accepted, gates = learning_svc.apply_positive_confirmation(
+                                event_id=event_id,
+                                confirmed_student_id=sv_result.student_id,
+                                detection_id=detection_id,
+                                embedding=embedding,
+                                quality_tier=quality.get("tier", "ACCEPTABLE"),
+                                quality_score=float(quality.get("score", 0.0)),
+                                liveness_score=float(liveness.get("score", 0.0)),
+                                fused_confidence=float(fused_conf),
+                                similarity=float(similarity),
+                                source="auto_self_verify",
+                            )
+                            if accepted:
+                                repo.mark_detection_used(detection_id)
+                                logger.info(f"Auto-learn applied for {sv_result.student_id} from {detection_id}")
+                            else:
+                                logger.info(f"Auto-learn gates failed for {sv_result.student_id}: {gates.details}")
+                        except Exception as _auto_exc:
+                            logger.debug("Auto-learning attempt failed (ignored): %s", _auto_exc)
                     
                     del embedding
                     gc.collect()
@@ -1078,6 +1115,28 @@ async def detect_face_only(
                     "(conf=%.3f, force_scope=%s)",
                     session_id, anchored_user_id, sv_result.confidence, force_scope,
                 )
+
+                # Increment attempt counter for anchored user (self-verify miss)
+                try:
+                    from services.face_attempt_service import get_face_attempt_service
+                    attempt_svc = get_face_attempt_service(
+                        getattr(firebase, "firestore_db", None) or getattr(firebase, "_firestore", None)
+                    )
+                    new_count, _escalation = attempt_svc.increment_and_check(anchored_user_id, period_id)
+                    if new_count >= 5:
+                        del embedding
+                        gc.collect()
+                        return JSONResponse(status_code=200, content={
+                            "matched": False,
+                            "message": (
+                                f"Maximum detection attempts ({new_count}) reached for this period. Please ask an instructor for assistance."
+                            ),
+                            "window": window_info,
+                            "attempt_limit_exceeded": True,
+                        })
+                except Exception:
+                    # Fail silently — attempt tracking shouldn't block matching flow
+                    logger.debug("Attempt tracking failed during SELF_VERIFY-first miss (ignored)")
 
                 if force_scope:
                     # Caller wants a hard stop — no section-roster fallback
@@ -1125,6 +1184,28 @@ async def detect_face_only(
                     3,
                 )
 
+                    # If user is authenticated, count this as a failed attempt
+                    if user is not None:
+                        try:
+                            from services.face_attempt_service import get_face_attempt_service
+                            attempt_svc = get_face_attempt_service(
+                                getattr(firebase, "firestore_db", None) or getattr(firebase, "_firestore", None)
+                            )
+                            new_count, _ = attempt_svc.increment_and_check(user.user_id, period_id)
+                            if new_count >= 5:
+                                del embedding
+                                gc.collect()
+                                return JSONResponse(status_code=200, content={
+                                    "matched": False,
+                                    "message": (
+                                        f"Maximum detection attempts ({new_count}) reached for this period. Please ask an instructor for assistance."
+                                    ),
+                                    "window": window_info,
+                                    "attempt_limit_exceeded": True,
+                                })
+                        except Exception:
+                            logger.debug("Attempt tracking failed during scoped miss (ignored)")
+
                 legacy_best_student, legacy_confidence, legacy_best_distance = await run_in_threadpool(
                     _match_embedding_sync,
                     embedding, firebase, COSINE_THRESHOLD, None, None,
@@ -1140,7 +1221,7 @@ async def detect_face_only(
                             candidate_scores=[
                                 {"student_id": legacy_best_student.get("student_id", ""), "similarity": legacy_confidence}
                             ],
-                            embedding=embedding.tolist(),
+                            embedding=embedding_list,
                             bbox=[0, 0, 0, 0],  # Placeholder — bbox not available in this path
                             quality_metrics={
                                 "tier": "HIGH" if legacy_confidence > 0.80 else "ACCEPTABLE",
@@ -1158,7 +1239,7 @@ async def detect_face_only(
                             period_id=period_id,
                             retention_minutes=30,
                         )
-                    except FaceRepositoryError as e:
+                    except Exception as e:
                         logger.warning(f"Failed to store pending detection (legacy fallback): {e}")
                         detection_id = None
                     
@@ -1220,10 +1301,31 @@ async def detect_face_only(
                 candidate_ids, candidate_course,
             )
 
-        del embedding
-        gc.collect()
-
         if best_student is None:
+            # Increment attempt counter for authenticated user (if present)
+            if user is not None:
+                try:
+                    from services.face_attempt_service import get_face_attempt_service
+                    attempt_svc = get_face_attempt_service(
+                        getattr(firebase, "firestore_db", None) or getattr(firebase, "_firestore", None)
+                    )
+                    new_count, _ = attempt_svc.increment_and_check(user.user_id, period_id)
+                    if new_count >= 5:
+                        del embedding
+                        gc.collect()
+                        return JSONResponse(status_code=200, content={
+                            "matched": False,
+                            "message": (
+                                f"Maximum detection attempts ({new_count}) reached for this period. Please ask an instructor for assistance."
+                            ),
+                            "window": window_info,
+                            "attempt_limit_exceeded": True,
+                        })
+                except Exception:
+                    logger.debug("Attempt tracking failed during best_student miss (ignored)")
+
+            del embedding
+            gc.collect()
             return JSONResponse(status_code=200, content={
                 "matched":    False,
                 "message":    f"Face not recognised. Similarity: {max(0.0, 1 - best_distance):.2f}",
@@ -1241,7 +1343,7 @@ async def detect_face_only(
                 candidate_scores=[
                     {"student_id": best_student.get("student_id", ""), "similarity": confidence}
                 ],
-                embedding=embedding.tolist(),
+                embedding=embedding_list,
                 bbox=[0, 0, 0, 0],  # Placeholder — bbox not available in this path
                 quality_metrics={
                     "tier": "HIGH" if confidence > 0.80 else "ACCEPTABLE",
@@ -1259,10 +1361,12 @@ async def detect_face_only(
                 period_id=period_id,
                 retention_minutes=30,
             )
-        except FaceRepositoryError as e:
+        except Exception as e:
             logger.warning(f"Failed to store pending detection (scoped match): {e}")
             detection_id = None
 
+        del embedding
+        gc.collect()
         return JSONResponse(status_code=200, content={
             "matched":      True,
             "message":      f"Face identified: {best_student.get('name', 'Unknown')}",
@@ -1374,13 +1478,10 @@ async def confirm_attendance(
             )
 
             if frame is not None:
-                try:
-                    learned_embedding, error_content = await _extract_embedding_from_upload(frame)
-                    if error_content is None and learned_embedding is not None:
-                        firebase.store_embedding(student_id, learned_embedding)
-                        firebase.compute_and_update_prototype(student_id)
-                except Exception:
-                    logger.exception("Failed to store/update prototype for %s", student_id)
+                logger.debug(
+                    "confirm-attendance received a frame for %s; gated learning is handled by face-confirmation.",
+                    student_id,
+                )
 
             try:
                 if period_id:

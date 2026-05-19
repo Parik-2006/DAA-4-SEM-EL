@@ -92,6 +92,25 @@ class RealtimeService:
         for key in [k for k in self._cache if k.startswith("teacher_active_")]:
             self._cache.pop(key, None)
 
+    def _build_event(self, event_type: str, section_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "event": event_type,
+            "section_id": section_id,
+            "payload": payload,
+            "ts": _now(),
+        }
+
+    def _after_publish(self, event_type: str, section_id: str) -> None:
+        if event_type in {"attendance_marked", "bulk_attendance", "attendance_updated"}:
+            self._invalidate_teacher_caches()
+            try:
+                from services.embedding_scope_service import get_scope_service
+                svc = get_scope_service()
+                if svc:
+                    svc.invalidate_section(section_id)
+            except Exception:
+                pass
+
     # Compatibility: keep section-scope helpers used elsewhere
     def get_section_scope(self, faculty_id: str) -> Optional[Any]:
         return self.cache_get(f"scope_{faculty_id}")
@@ -239,31 +258,27 @@ class RealtimeService:
         finally:
             self._unregister(self._sse_connections, subscriber)
 
-    async def broadcast(self, event_type: str, section_id: str, payload: Dict[str, Any]) -> int:
-        event = {
-            "event": event_type,
-            "section_id": section_id,
-            "payload": payload,
-            "ts": _now(),
-        }
+    def publish_now(self, event_type: str, section_id: str, payload: Dict[str, Any]) -> int:
+        """
+        Synchronously enqueue an event for WebSocket/SSE clients.
 
+        RTSP stream handlers run in worker threads, outside FastAPI's async
+        request path. This method lets those CCTV workers emit the same
+        realtime attendance events as normal API requests without needing an
+        event loop in the stream thread.
+        """
+        event = self._build_event(event_type, section_id, payload)
         count = 0
         for sub in list(self._ws_connections.values()) + list(self._sse_connections.values()):
             if sub.may_receive(section_id):
                 self._enqueue(sub, event)
                 count += 1
 
-        if event_type in {"attendance_marked", "bulk_attendance"}:
-            self._invalidate_teacher_caches()
-            try:
-                from services.embedding_scope_service import get_scope_service
-                svc = get_scope_service()
-                if svc:
-                    svc.invalidate_section(section_id)
-            except Exception:
-                pass
-
+        self._after_publish(event_type, section_id)
         return count
+
+    async def broadcast(self, event_type: str, section_id: str, payload: Dict[str, Any]) -> int:
+        return self.publish_now(event_type, section_id, payload)
 
     # ── window_tick background loop ───────────────────────────────────────
 

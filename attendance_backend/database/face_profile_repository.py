@@ -36,7 +36,12 @@ class FaceProfileRepository:
     def __init__(self):
         """Initialize repository with Firebase client."""
         self.db = FirebaseClient()
-        self.fs_db = getattr(self.db, 'firestore_db', None) or getattr(self.db, 'db', None)
+        candidates = (
+            getattr(self.db, "firestore_db", None),
+            getattr(self.db, "fs", None),
+            getattr(self.db, "_firestore", None),
+        )
+        self.fs_db = next((client for client in candidates if hasattr(client, "collection")), None)
         if not self.fs_db:
             raise FaceRepositoryError("Firestore client not available")
     
@@ -53,6 +58,9 @@ class FaceProfileRepository:
         model_version: str = "facenet_vggface2",
         trusted_sample_count: int = 0,
         sample_count: int = 0,
+        last_positive_similarity: float = 0.0,
+        rolling_similarity_mean: float = 0.0,
+        rolling_similarity_std: float = 0.0,
     ) -> Dict[str, Any]:
         """
         Create or update a face profile for a student.
@@ -80,9 +88,9 @@ class FaceProfileRepository:
                 "variance": variance,
                 "sample_count": sample_count,
                 "trusted_sample_count": trusted_sample_count,
-                "last_positive_similarity": 0.0,
-                "rolling_similarity_mean": 0.0,
-                "rolling_similarity_std": 0.0,
+                "last_positive_similarity": float(last_positive_similarity),
+                "rolling_similarity_mean": float(rolling_similarity_mean),
+                "rolling_similarity_std": float(rolling_similarity_std),
                 "adaptive_threshold": adaptive_threshold,
                 "last_updated_at": datetime.utcnow().isoformat() + "Z",
                 "status": "active",
@@ -289,7 +297,8 @@ class FaceProfileRepository:
                 if isinstance(expires_at, str):
                     expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
                 
-                if datetime.utcnow() > expires_at:
+                now = datetime.now(expires_at.tzinfo) if getattr(expires_at, "tzinfo", None) else datetime.utcnow()
+                if now > expires_at:
                     raise FaceDetectionExpiredError(f"Detection {detection_id} expired")
             
             return detection

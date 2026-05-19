@@ -81,6 +81,7 @@ class FaceProfileLearningService:
         liveness_score: float,
         fused_confidence: float,
         similarity: float,
+        source: str = "yes_this_is_me",
     ) -> Tuple[bool, FaceLearningGates]:
         """
         Apply a positive confirmation to update or create a face profile.
@@ -141,7 +142,7 @@ class FaceProfileLearningService:
                 quality_score=quality_score,
                 quality_tier=quality_tier,
                 liveness_score=liveness_score,
-                source="yes_this_is_me",
+                source=source,
                 similarity_to_centroid=similarity if not is_new_profile else 0.0,
             )
             
@@ -153,6 +154,7 @@ class FaceProfileLearningService:
                     profile,
                     samples,
                 )
+                self._refresh_existing_search_store(confirmed_student_id, embedding)
             
             logger.info(f"✓ Profile updated for {confirmed_student_id}")
             return True, gates
@@ -279,6 +281,19 @@ class FaceProfileLearningService:
             logger.warning(f"Error checking similarity gate: {exc}")
             gates.similarity_gate_passed = False
             gates.details["similarity_gate"] = {"error": str(exc)}
+
+        # Fused confidence is part of the similarity/search safety decision.
+        # Enforce it after the centroid threshold check so a low-confidence
+        # sample cannot be accidentally re-enabled by the similarity branch.
+        if fused_confidence < self.config.FUSED_CONFIDENCE_MIN:
+            gates.similarity_gate_passed = False
+            gates.details["confidence_gate"] = {
+                "passed": False,
+                "confidence": fused_confidence,
+                "min_required": self.config.FUSED_CONFIDENCE_MIN,
+            }
+        else:
+            gates.details["confidence_gate"] = {"passed": True, "confidence": fused_confidence}
         
         # Anti-drift gate
         try:
@@ -396,6 +411,9 @@ class FaceProfileLearningService:
                 model_version="facenet_vggface2",
                 trusted_sample_count=len(samples_to_use),
                 sample_count=old_profile.get("sample_count", len(samples_to_use)),
+                last_positive_similarity=similarities[-1] if similarities else 0.0,
+                rolling_similarity_mean=rolling_mean,
+                rolling_similarity_std=rolling_std,
             )
             
             logger.info(
@@ -407,6 +425,37 @@ class FaceProfileLearningService:
         
         except Exception as exc:
             logger.error(f"Error updating profile for {student_id}: {exc}", exc_info=True)
+
+    def _refresh_existing_search_store(
+        self,
+        student_id: str,
+        embedding: List[float],
+    ) -> None:
+        """
+        Mirror accepted learning samples into the existing recognition store.
+
+        The new face_profiles collection is the audit/learning memory. The
+        live web and CCTV search paths still read student embeddings from the
+        existing Firebase student documents, so an accepted gated sample must
+        also refresh that store and its prototype.
+        """
+        try:
+            from services.firebase_service import get_firebase_service
+
+            firebase = get_firebase_service()
+            if not firebase:
+                logger.debug("Skipping search-store refresh for %s: Firebase unavailable", student_id)
+                return
+
+            firebase.store_embedding(student_id, np.array(embedding, dtype=np.float32))
+            firebase.compute_and_update_prototype(student_id)
+            logger.info("Refreshed live search prototype for %s", student_id)
+        except Exception as exc:
+            logger.warning(
+                "Search-store refresh failed for %s after gated learning: %s",
+                student_id,
+                exc,
+            )
     
     # ══════════════════════════════════════════════════════════════════════════════
     # Utility Methods

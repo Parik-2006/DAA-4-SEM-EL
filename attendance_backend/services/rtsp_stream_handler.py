@@ -553,7 +553,7 @@ class RTSPStreamHandler:
             self.on_detection(self.stream_id, result)
 
         # ── Attendance callback ─────────────────────────────────────────────
-        if self.on_attendance and self.firebase:
+        if self.firebase:
             for student_id, info in result.marked_students.items():
                 if info.get("just_confirmed"):
                     try:
@@ -570,7 +570,10 @@ class RTSPStreamHandler:
                                 "classroom_id": self.classroom_id,
                             },
                         )
-                        self.on_attendance(self.stream_id, student_id)
+                        self._apply_cctv_learning(student_id, info, result)
+                        self._publish_attendance_event(student_id, info)
+                        if self.on_attendance:
+                            self.on_attendance(self.stream_id, student_id)
                         logger.info(
                             "📋 Attendance persisted: %s via stream %s",
                             student_id, self.stream_id,
@@ -581,6 +584,168 @@ class RTSPStreamHandler:
                         )
 
     # ── Student registration ───────────────────────────────────────────────────
+
+    def _apply_cctv_learning(
+        self,
+        student_id: str,
+        info: Dict[str, Any],
+        result: "PipelineFrameResult",
+    ) -> None:
+        """
+        Feed temporally verified CCTV attendance into the gated learner.
+
+        CCTV has no user click, so the temporal verifier is only the signal
+        source. The same quality, liveness, similarity, and drift gates still
+        decide whether a sample can update the face profile.
+        """
+        try:
+            detection = next(
+                (
+                    det for det in result.detections
+                    if getattr(det, "student_id", None) == student_id
+                ),
+                None,
+            )
+            if detection is None:
+                logger.debug("No CCTV detection payload found for %s on %s", student_id, self.stream_id)
+                return
+
+            embedding = getattr(detection, "embedding", None)
+            if embedding is None:
+                logger.debug("No CCTV embedding available for %s on %s", student_id, self.stream_id)
+                return
+
+            embedding_list = embedding.tolist() if hasattr(embedding, "tolist") else list(embedding)
+            similarity = float(
+                info.get("confidence")
+                or getattr(detection, "match_similarity", 0.0)
+                or getattr(detection, "confidence", 0.0)
+                or 0.0
+            )
+            quality = getattr(detection, "quality", None)
+            quality_score = float(getattr(quality, "score", 0.0) or max(0.82, similarity))
+            quality_tier_value = getattr(quality, "tier", None)
+            quality_tier = getattr(quality_tier_value, "value", quality_tier_value) or (
+                "HIGH" if quality_score >= 0.82 else "ACCEPTABLE"
+            )
+            bbox = getattr(detection, "bbox", [0, 0, 0, 0])
+            bbox_list = bbox.tolist() if hasattr(bbox, "tolist") else list(bbox)
+
+            from services.face_detection_storage import store_pending_detection
+            from services.face_profile_learning_service import FaceProfileLearningService
+            from database.face_profile_repository import FaceProfileRepository
+
+            detection_id, _ = store_pending_detection(
+                session_id=f"cctv:{self.stream_id}",
+                predicted_student_id=student_id,
+                candidate_scores=[{"student_id": student_id, "similarity": similarity}],
+                embedding=embedding_list,
+                bbox=bbox_list,
+                quality_metrics={
+                    "tier": str(quality_tier).upper(),
+                    "score": quality_score,
+                    "frontality": 0.90,
+                    "sharpness": quality_score,
+                },
+                liveness_metrics={
+                    "is_live": True,
+                    "score": max(0.70, similarity),
+                    "method": "cctv_temporal_verification",
+                },
+                confidence=similarity,
+                fused_confidence=max(similarity, 0.70),
+                period_id=info.get("period_id"),
+                retention_minutes=30,
+            )
+            event_id = f"cctv_fce_{self.stream_id}_{detection_id}"
+            FaceProfileRepository().store_confirmation_event(event_id, {
+                "event_id": event_id,
+                "detection_id": detection_id,
+                "session_id": f"cctv:{self.stream_id}",
+                "confirmed_student_id": student_id,
+                "predicted_student_id": student_id,
+                "confirmed_by": self.stream_id,
+                "confirmed_by_role": "cctv",
+                "decision": "positive",
+                "quality_tier": str(quality_tier).upper(),
+                "similarity": similarity,
+                "fused_confidence": max(similarity, 0.70),
+                "liveness_score": max(0.70, similarity),
+                "learning_action": "queued",
+                "created_at": datetime.utcnow().isoformat() + "Z",
+            })
+
+            accepted, gates = FaceProfileLearningService().apply_positive_confirmation(
+                event_id=event_id,
+                confirmed_student_id=student_id,
+                detection_id=detection_id,
+                embedding=embedding_list,
+                quality_tier=str(quality_tier).upper(),
+                quality_score=quality_score,
+                liveness_score=max(0.70, similarity),
+                fused_confidence=max(similarity, 0.70),
+                similarity=similarity,
+                source="cctv_temporal_confirmation",
+            )
+            if accepted:
+                self.reload_students()
+            logger.info(
+                "CCTV gated learning for %s via %s: accepted=%s gates=%s",
+                student_id,
+                self.stream_id,
+                accepted,
+                getattr(gates, "details", {}),
+            )
+        except Exception as exc:
+            logger.warning(
+                "CCTV gated learning skipped for %s via %s: %s",
+                student_id,
+                self.stream_id,
+                exc,
+            )
+
+    def _publish_attendance_event(self, student_id: str, info: Dict[str, Any]) -> None:
+        """
+        Emit the standard dashboard realtime event for CCTV/RTSP attendance.
+
+        The stream worker is not running inside FastAPI's request loop, so it
+        uses RealtimeService.publish_now() to enqueue directly into connected
+        WebSocket and SSE subscribers.
+        """
+        section_id = self.classroom_id or info.get("classroom_id")
+        if not section_id:
+            logger.debug(
+                "Skipping realtime attendance event for %s on %s: no classroom_id",
+                student_id, self.stream_id,
+            )
+            return
+
+        try:
+            from services.realtime_service import get_realtime_service
+
+            payload = {
+                "student_id": student_id,
+                "confidence": info.get("confidence", 0.0),
+                "track_id": info.get("track_id"),
+                "camera_id": self.stream_id,
+                "source": "cctv_rtsp",
+                "method": "rtsp_super_pipeline",
+                "classroom_id": section_id,
+            }
+            notified = get_realtime_service().publish_now(
+                event_type="attendance_marked",
+                section_id=str(section_id),
+                payload=payload,
+            )
+            logger.debug(
+                "Realtime attendance event emitted for %s via %s (%d subscribers)",
+                student_id, self.stream_id, notified,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Realtime attendance event failed for %s via %s: %s",
+                student_id, self.stream_id, exc,
+            )
 
     def register_students(self, students_data: Dict[str, Any]) -> bool:
         """

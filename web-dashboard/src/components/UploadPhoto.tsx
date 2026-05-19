@@ -1,7 +1,21 @@
 import React, { useState, useRef } from 'react';
 import { Upload, Loader, X, ShieldCheck, User, Check } from 'lucide-react';
 import { attendanceAPI, DetectFaceResponse, ConfirmAttendanceResponse } from '@/services/api';
+import { getStoredClassId } from '@/services/firebase/auth.service';
 import { Card } from './UI';
+
+const UPLOAD_SESSION_KEY = 'smart_cctv_upload_session_id';
+
+function getUploadSessionId(): string {
+  const existing = sessionStorage.getItem(UPLOAD_SESSION_KEY);
+  if (existing) return existing;
+  const next =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? `upload_${crypto.randomUUID()}`
+      : `upload_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  sessionStorage.setItem(UPLOAD_SESSION_KEY, next);
+  return next;
+}
 
 interface UploadPhotoProps {
   onAttendanceMarked: (data: any) => void;
@@ -213,6 +227,7 @@ export const UploadPhoto: React.FC<UploadPhotoProps> = ({
   isLoading,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const sessionIdRef = useRef<string>(getUploadSessionId());
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
@@ -270,7 +285,11 @@ export const UploadPhoto: React.FC<UploadPhotoProps> = ({
       formData.append('file', selectedFile);
 
       // Step 1 — identify, no DB write
-      const result: DetectFaceResponse = await attendanceAPI.detectFaceOnly(formData);
+      const result: DetectFaceResponse = await attendanceAPI.detectFaceOnly(formData, {
+        scope_mode: 'section_roster',
+        section_id: getStoredClassId() || undefined,
+        session_id: sessionIdRef.current,
+      });
 
       if (result.matched) {
         // Show confirmation modal
@@ -292,6 +311,22 @@ export const UploadPhoto: React.FC<UploadPhotoProps> = ({
     if (!pendingDetection) return;
     setIsSaving(true);
     try {
+      if (pendingDetection.detection_id && pendingDetection.student_id) {
+        try {
+          await attendanceAPI.submitFaceConfirmation({
+            session_id: sessionIdRef.current,
+            period_id: 'unscoped',
+            predicted_student_id: pendingDetection.student_id,
+            confirmed_student_id: pendingDetection.student_id,
+            detection_id: pendingDetection.detection_id,
+            yes_this_is_me: true,
+            client_timestamp: new Date().toISOString(),
+          });
+        } catch (err) {
+          console.warn('[UploadPhoto] Face confirmation learning signal failed:', err);
+        }
+      }
+
       const confirmation: ConfirmAttendanceResponse = await attendanceAPI.confirmAttendance(
         pendingDetection.student_id!,
         pendingDetection.confidence ?? 0
@@ -330,6 +365,19 @@ export const UploadPhoto: React.FC<UploadPhotoProps> = ({
   };
 
   const handleDeny = () => {
+    if (pendingDetection?.detection_id && pendingDetection.student_id) {
+      void attendanceAPI.submitFaceConfirmation({
+        session_id: sessionIdRef.current,
+        period_id: 'unscoped',
+        predicted_student_id: pendingDetection.student_id,
+        confirmed_student_id: pendingDetection.student_id,
+        detection_id: pendingDetection.detection_id,
+        yes_this_is_me: false,
+        client_timestamp: new Date().toISOString(),
+      }).catch((err) => {
+        console.warn('[UploadPhoto] Negative face confirmation failed:', err);
+      });
+    }
     // User says it's not them — dismiss, no record written
     setPendingDetection(null);
     setError('Identification cancelled. Please try with a different photo or contact admin.');

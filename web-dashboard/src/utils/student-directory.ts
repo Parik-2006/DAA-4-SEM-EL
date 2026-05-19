@@ -6,17 +6,41 @@ interface StudentInfo {
   email?: string;
 }
 
+type StudentDirectoryEntry = { student_id: string; name: string; email?: string };
+
 function normalizeStudentKey(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-const FALLBACK_STUDENT_ROSTER: Array<{ student_id: string; name: string; email?: string }> = [
-  { student_id: 'student_001', name: 'Parikshith B Bilchode', email: 'parik@example.com' },
+const FALLBACK_STUDENT_ROSTER: StudentDirectoryEntry[] = [
+  { student_id: 'student_001', name: 'Parikshith B Bilchode', email: 'parikshithbb.cs25@rvce.edu.in' },
+  { student_id: 'STUD_001', name: 'Parikshith B Bilchode', email: 'parikshithbb.cs25@rvce.edu.in' },
+
+  { student_id: 'student_002', name: 'Gagan D K', email: 'gagandk2005@gmail.com' },
+  { student_id: 'STUD_002', name: 'Gagan D K', email: 'gagandk2005@gmail.com' },
+
+  { student_id: 'student_003', name: 'Prajwal K', email: 'prajwalk.cs24@rvce.edu.in' },
+  { student_id: 'STUD_003', name: 'Prajwal K', email: 'prajwalk.cs24@rvce.edu.in' },
+
+  { student_id: 'student_004', name: 'Ved U', email: 'vedu.cs25@rvce.edu.in' },
+  { student_id: 'STUD_004', name: 'Ved U', email: 'vedu.cs25@rvce.edu.in' },
+
+  { student_id: 'student_005', name: 'Pranav Kumar M', email: 'pranavkumarm.cs24@rvce.edu.in' },
+  { student_id: 'STUD_005', name: 'Pranav Kumar M', email: 'pranavkumarm.cs24@rvce.edu.in' },
+
+  { student_id: 'student_006', name: 'Nischith G A', email: 'nishchithgarg.cs24@rvce.edu.in' },
+  { student_id: 'STUD_006', name: 'Nischith G A', email: 'nishchithgarg.cs24@rvce.edu.in' },
+
+  { student_id: 'student_007', name: 'Yohith N', email: 'nyohith.cs24@rvce.edu.in' },
+  { student_id: 'STUD_007', name: 'Yohith N', email: 'nyohith.cs24@rvce.edu.in' },
+
+  { student_id: 'student_008', name: 'Mahesh Raju', email: 'nrmaheshraju.cs24@rvce.edu.in' },
+  { student_id: 'STUD_008', name: 'Mahesh Raju', email: 'nrmaheshraju.cs24@rvce.edu.in' },
 ];
 
 function addStudentEntry(
   directory: Record<string, StudentInfo>,
-  student: { student_id: string; name: string; email?: string }
+  student: StudentDirectoryEntry
 ): void {
   const normalizedId = student.student_id.trim().toLowerCase();
   const compactId = normalizeStudentKey(normalizedId);
@@ -41,7 +65,7 @@ export async function loadStudentDirectory(
 ): Promise<Record<string, StudentInfo>> {
   try {
     console.log(`[StudentDirectory] Loading roster for class: ${classId}`);
-    const roster = await apiClient.getClassRoster(classId);
+    const roster = (await apiClient.getClassRoster(classId)) as StudentDirectoryEntry[];
     
     const directory: Record<string, StudentInfo> = {};
 
@@ -108,6 +132,22 @@ export function getStudentInfo(studentId?: string | null): StudentInfo | null {
 
   if (STUDENT_DISPLAY_NAMES[compactId]) {
     return { name: STUDENT_DISPLAY_NAMES[compactId] };
+  }
+
+  // Last-chance fallback: check the static FALLBACK_STUDENT_ROSTER for name+email
+  for (const entry of FALLBACK_STUDENT_ROSTER) {
+    const entryNorm = entry.student_id.trim().toLowerCase();
+    const entryCompact = normalizeStudentKey(entryNorm);
+    if (entryNorm === normalizedId || entryCompact === compactId) {
+      return { name: entry.name, email: entry.email };
+    }
+    // Also match by email string
+    if (entry.email) {
+      const emailNorm = entry.email.trim().toLowerCase();
+      if (emailNorm === normalizedId || normalizeStudentKey(emailNorm) === compactId) {
+        return { name: entry.name, email: entry.email };
+      }
+    }
   }
 
   // Try without underscores

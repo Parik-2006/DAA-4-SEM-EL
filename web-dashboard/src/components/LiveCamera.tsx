@@ -9,6 +9,19 @@ import { getStudentDisplayName, getStudentEmail } from '../utils/student-directo
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const MAX_CONSECUTIVE_FAILURES = 5;
+const AUTO_CONFIRM_CONFIDENCE = 0.8;
+const CAMERA_SESSION_KEY = 'smart_cctv_web_camera_session_id';
+
+function getCameraSessionId(): string {
+  const existing = sessionStorage.getItem(CAMERA_SESSION_KEY);
+  if (existing) return existing;
+  const next =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? `tab_${crypto.randomUUID()}`
+      : `tab_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  sessionStorage.setItem(CAMERA_SESSION_KEY, next);
+  return next;
+}
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface LiveCameraProps {
@@ -501,6 +514,7 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
   const cooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const processingRef       = useRef(false);
   const pausedForConfirmRef = useRef(false);
+  const sessionIdRef = useRef<string>(getCameraSessionId());
 
   // Ref keeps the setInterval closure in sync with the current count;
   // the mirrored state drives the UI.
@@ -785,6 +799,8 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
                 scope_mode: 'self_verify',
                 student_id: targetStudentId,
                 period_id: periodId ?? undefined,
+                session_id: sessionIdRef.current,
+                force_scope: strictSelfVerify,
                 candidate_student_ids: strictSelfVerify
                   ? [targetStudentId]
                   : (candidateIds ?? undefined),
@@ -793,6 +809,7 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
             : {
                 scope_mode: 'section_roster',
                 period_id: periodId ?? undefined,
+                session_id: sessionIdRef.current,
                 candidate_student_ids: candidateIds ?? undefined,
                 exclude_student_ids: rejectedCandidateIds.length > 0 ? rejectedCandidateIds : undefined,
               },
@@ -812,7 +829,7 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
           detectedStudentIdNormalized &&
           detectedStudentIdNormalized !== targetStudentIdNormalized
         ) {
-          const expectedName = getStudentDisplayName(targetStudentId, targetStudentId);
+          const expectedName = getStudentDisplayName(targetStudentId ?? undefined, targetStudentId ?? undefined);
           const detectedName = getStudentDisplayName(result.student_id, result.student_name ?? 'another student');
           setFeedbackType('error');
           setLastFeedback(`❌ Logged in as ${expectedName}. Detected ${detectedName}. Please verify using your own account only.`);
@@ -822,16 +839,24 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
         }
 
         if (result.matched) {
-          // ── SUCCESS: reset counter, pause loop, show confirmation ──────
+          // ── SUCCESS: reset counter and either auto-save or ask for confirmation ──────
           consecutiveFailuresRef.current = 0;
           setConsecutiveFailures(0);
           pausedForConfirmRef.current = true;
           setLastFeedback(null);
-          setPendingDetection({
+
+          const enrichedResult: DetectFaceResponse = {
             ...result,
             student_name:
               (targetStudentIdNormalized && targetStudentLabel) || result.student_name || undefined,
-          });
+          };
+
+          if ((enrichedResult.confidence ?? 0) >= AUTO_CONFIRM_CONFIDENCE) {
+            void persistAttendance(enrichedResult);
+            return;
+          }
+
+          setPendingDetection(enrichedResult);
           setCandidateSuggestions(null);
         } else {
           // ── FAILURE: classify message, update feedback ─────────────────
@@ -918,66 +943,101 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
     }, 1500);  // 1.5 second interval for faster detection attempts
   };
 
-  // ── Confirmation: user says "Yes, it's me" ────────────────────────────────
+  // ── Persistence helper ────────────────────────────────────────────────────
 
-  const handleConfirm = async () => {
-    if (!pendingDetection) return;
-    setIsSaving(true);
+  const submitFaceConfirmation = useCallback(
+    async (
+      detection: DetectFaceResponse,
+      yesThisIsMe: boolean,
+      confirmedStudentId = detection.student_id,
+    ) => {
+      if (!detection.detection_id || !detection.student_id || !confirmedStudentId) {
+        return;
+      }
+
       try {
-      const learningFrame = await captureFrame();
+        await attendanceAPI.submitFaceConfirmation({
+          session_id: sessionIdRef.current,
+          period_id: periodId ?? 'unscoped',
+          predicted_student_id: detection.student_id,
+          confirmed_student_id: confirmedStudentId,
+          detection_id: detection.detection_id,
+          yes_this_is_me: yesThisIsMe,
+          client_timestamp: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.warn('[LiveCamera] Face confirmation learning signal failed:', err);
+      }
+    },
+    [periodId],
+  );
 
-      // Step 2: persist to database
-      const confirmation: ConfirmAttendanceResponse =
-        await attendanceAPI.confirmAttendance(
-          pendingDetection.student_id!,
-          pendingDetection.confidence ?? 0,
+  const persistAttendance = useCallback(
+    async (detection: DetectFaceResponse) => {
+      setIsSaving(true);
+      try {
+        await submitFaceConfirmation(detection, true);
+        const learningFrame = await captureFrame();
+        const confirmation: ConfirmAttendanceResponse = await attendanceAPI.confirmAttendance(
+          detection.student_id!,
+          detection.confidence ?? 0,
           periodId ?? undefined,
           learningFrame ?? undefined,
         );
 
-      setPendingDetection(null);
-      setSuccessName(confirmation.student_name);
-
-      // Full reset on confirmed success
-      consecutiveFailuresRef.current = 0;
-      setConsecutiveFailures(0);
-
-      onAttendanceMarked({
-        status:       'success',
-        message:      confirmation.message,
-        student_name: confirmation.student_name,
-        student_id:   confirmation.student_id,
-        confidence:   confirmation.confidence,
-        record_id:    confirmation.record_id,
-      });
-
-      stopCamera();
-      setTimeout(() => setSuccessName(null), 2400);
-    } catch (err: any) {
-      const status = err?.response?.status;
-      const detail = err?.response?.data?.detail ?? err?.message ?? 'Failed to save attendance.';
-      // 423 Locked — attendance window closed or not allowed
-      if (status === 423) {
         setPendingDetection(null);
-        pausedForConfirmRef.current = false;
-        setFeedbackType('error');
-        setLastFeedback(`⛔ Attendance window closed: ${detail}`);
+        setSuccessName(confirmation.student_name);
+        consecutiveFailuresRef.current = 0;
+        setConsecutiveFailures(0);
+
+        onAttendanceMarked({
+          status: 'success',
+          message: confirmation.message,
+          student_name: confirmation.student_name,
+          student_id: confirmation.student_id,
+          confidence: confirmation.confidence,
+          record_id: confirmation.record_id,
+        });
+
         stopCamera();
-      } else {
-        const msg = detail;
-        setPendingDetection(null);
-        pausedForConfirmRef.current = false;
-        setFeedbackType('error');
-        setLastFeedback(`❌ Save failed: ${msg}`);
+        setTimeout(() => setSuccessName(null), 2400);
+        return true;
+      } catch (err: any) {
+        const status = err?.response?.status;
+        const detail = err?.response?.data?.detail ?? err?.message ?? 'Failed to save attendance.';
+        if (status === 423) {
+          setPendingDetection(null);
+          pausedForConfirmRef.current = false;
+          setFeedbackType('error');
+          setLastFeedback(`⛔ Attendance window closed: ${detail}`);
+          stopCamera();
+        } else {
+          setPendingDetection(null);
+          pausedForConfirmRef.current = false;
+          setFeedbackType('error');
+          setLastFeedback(`❌ Save failed: ${detail}`);
+        }
+        return false;
+      } finally {
+        setIsSaving(false);
       }
-    } finally {
-      setIsSaving(false);
-    }
+    },
+    [onAttendanceMarked, periodId, stopCamera, submitFaceConfirmation],
+  );
+
+  // ── Confirmation: user says "Yes, it's me" ────────────────────────────────
+
+  const handleConfirm = async () => {
+    if (!pendingDetection) return;
+    await persistAttendance(pendingDetection);
   };
 
   // ── Confirmation: user says "No, not me" ──────────────────────────────────
 
   const handleDeny = (studentIdToBlock?: string, extraBlocks?: string[]) => {
+    if (pendingDetection) {
+      void submitFaceConfirmation(pendingDetection, false);
+    }
     const blocked = [studentIdToBlock, ...(extraBlocks ?? [])].filter(Boolean) as string[];
     if (blocked.length > 0) {
       setRejectedCandidateIds((prev) => Array.from(new Set([...prev, ...blocked])));

@@ -4,7 +4,7 @@
  * Role-aware shell with sidebar navigation and user menu.
  */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   Home,
@@ -24,8 +24,9 @@ import {
   ChevronDown,
   BarChart2,
 } from 'lucide-react';
-import { onAuthChange, signOut } from '@/services/firebase/auth.service';
+import { onAuthChange, signOut, getStoredAssignedSections, getStoredClassId, getStoredEmail, getSessionToken } from '@/services/firebase/auth.service';
 import { useBackendHealthMonitor } from '../hooks/useBackendHealth';
+import useRealtimeChannel, { type EventEnvelope } from '../hooks/useRealtimeChannel';
 import { getStoredRole, type UserRole } from '../utils/roles';
 
 interface NavLinkItem {
@@ -68,6 +69,30 @@ function getRoleBadge(role: UserRole | null): { label: string; color: string; ba
   }
   return { label: 'STUDENT', color: '#4338CA', background: 'rgba(99, 102, 241, 0.12)', border: 'rgba(99, 102, 241, 0.26)' };
 }
+
+const RealtimeAttendanceBridge: React.FC<{ sectionId: string; role: UserRole | null; clientId: string; token?: string | null }> = ({ sectionId, role, clientId, token }) => {
+  const handleEvent = useCallback((env: EventEnvelope) => {
+    if (!env.event || !['attendance_marked', 'bulk_attendance', 'attendance_updated'].includes(env.event)) return;
+    const detail = { ...env, payload: env.payload ?? {} };
+    try {
+      window.dispatchEvent(new CustomEvent('attendance:marked', { detail }));
+      window.dispatchEvent(new CustomEvent('attendance:updated', { detail }));
+      window.localStorage.setItem('attendance_last_updated', new Date().toISOString());
+    } catch (error) {
+      console.warn('[Layout] Failed to dispatch attendance update:', error);
+    }
+  }, []);
+
+  useRealtimeChannel({
+    clientId,
+    sectionId,
+    role: role ?? 'student',
+    token: token ?? undefined,
+    onEvent: handleEvent,
+  });
+
+  return null;
+};
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -172,6 +197,17 @@ export const Layout: React.FC<LayoutProps> = ({ children, systemRunning, lastSyn
     return '?';
   };
 
+  const realtimeSectionIds = useMemo(() => {
+    if (role === 'admin') return ['ADMIN_GLOBAL'];
+    if (role === 'teacher') {
+      const sections = getStoredAssignedSections();
+      return sections.length > 0 ? sections : [getStoredClassId() ?? ''];
+    }
+    const classId = getStoredClassId();
+    return classId ? [classId] : [];
+  }, [role]);
+  const realtimeClientId = useMemo(() => currentUser?.email ?? getStoredEmail() ?? sessionStorage.getItem('user_id') ?? '', [currentUser?.email]);
+  const realtimeToken = useMemo(() => getSessionToken(), []);
   const shortcuts = role === 'student'
     ? [{ to: '/profile', icon: <User size={14} />, label: 'View Profile' }]
     : [
@@ -181,271 +217,282 @@ export const Layout: React.FC<LayoutProps> = ({ children, systemRunning, lastSyn
       ];
 
   return (
-    <div className="flex h-screen overflow-hidden" style={{ background: 'var(--cream-100)' }}>
-      <aside
-        className={`glass-sidebar flex-shrink-0 flex flex-col transition-all duration-300 ease-in-out overflow-hidden z-20 ${sidebarOpen ? 'w-60' : 'w-[68px]'}`}
-      >
-        <div className="flex items-center justify-between px-4 pt-6 pb-5">
-          {sidebarOpen && (
-            <div className="flex items-center gap-3 animate-fade-in">
-              <div
-                className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-                style={{
-                  background: 'linear-gradient(135deg, var(--gold) 0%, var(--gold-light) 100%)',
-                  boxShadow: '0 2px 8px rgba(155,122,58,0.35)',
-                }}
-              >
-                <span className="text-white font-bold text-sm" style={{ fontFamily: 'Fraunces, serif' }}>A</span>
-              </div>
-              <div>
-                <p className="text-sm font-semibold tracking-tight leading-none" style={{ color: 'var(--ink)', fontFamily: 'Fraunces, serif' }}>
-                  AttendMate
-                </p>
-                <p className="text-[10px] mt-0.5 tracking-widest uppercase" style={{ color: 'var(--whisper)' }}>
-                  Command
-                </p>
-              </div>
-            </div>
-          )}
-
-          <button
-            onClick={() => setSidebarOpen((open) => !open)}
-            className="rounded-lg p-1.5 btn-press flex-shrink-0 transition-colors"
-            style={{ color: 'var(--muted)' }}
-            onMouseEnter={(event) => (event.currentTarget.style.background = 'rgba(155,122,58,0.10)')}
-            onMouseLeave={(event) => (event.currentTarget.style.background = 'transparent')}
-          >
-            {sidebarOpen ? <X size={16} /> : <Menu size={16} />}
-          </button>
-        </div>
-
-        <div className="tac-divider mx-3 mb-4" />
-
-        <nav className="flex-1 px-3 space-y-0.5 overflow-y-auto pb-4">
-          {navLinks.map((link, index) => {
-            const previousLink = index > 0 ? navLinks[index - 1] : null;
-            const showGroup = Boolean(link.group && (!previousLink || previousLink.group !== link.group));
-            const isActive = location.pathname === link.path;
-
-            return (
-              <div key={link.path}>
-                {showGroup && sidebarOpen && (
-                  <div className="pt-5 pb-2 px-2">
-                    <p className="text-[10px] font-semibold tracking-[0.14em] uppercase" style={{ color: 'var(--whisper)' }}>
-                      {link.group}
-                    </p>
-                  </div>
-                )}
-                {showGroup && !sidebarOpen && (
-                  <div className="pt-3 pb-1">
-                    <div className="tac-divider mx-1" />
-                  </div>
-                )}
-
-                <Link
-                  to={link.path}
-                  title={!sidebarOpen ? link.label : undefined}
-                  className={[
-                    'nav-item flex items-center rounded-xl px-3 py-2.5',
-                    !sidebarOpen ? 'justify-center' : 'gap-3',
-                    isActive ? 'nav-active' : '',
-                  ].join(' ')}
-                  style={{
-                    color: isActive ? 'var(--gold)' : 'var(--muted)',
-                    fontWeight: isActive ? '600' : '400',
-                    fontSize: '0.8125rem',
-                  }}
-                  onMouseEnter={(event) => {
-                    if (!isActive) (event.currentTarget as HTMLElement).style.color = 'var(--ink)';
-                  }}
-                  onMouseLeave={(event) => {
-                    if (!isActive) (event.currentTarget as HTMLElement).style.color = 'var(--muted)';
-                  }}
-                >
-                  <span className="flex-shrink-0" style={{ opacity: isActive ? 1 : 0.75 }}>
-                    {link.icon}
-                  </span>
-                  {sidebarOpen && <span>{link.label}</span>}
-                  {isActive && sidebarOpen && (
-                    <span className="ml-auto w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: 'var(--gold)' }} />
-                  )}
-                </Link>
-              </div>
-            );
-          })}
-        </nav>
-
-        <div className="px-3 pb-5 pt-2">
-          <div className="tac-divider mb-3" />
-          <button
-            onClick={handleLogout}
-            className={[
-              'nav-item w-full flex items-center rounded-xl px-3 py-2.5 btn-press',
-              !sidebarOpen ? 'justify-center' : 'gap-3',
-            ].join(' ')}
-            style={{ color: 'var(--whisper)', fontSize: '0.8125rem' }}
-            onMouseEnter={(event) => {
-              event.currentTarget.style.color = 'var(--terra)';
-              event.currentTarget.style.background = 'rgba(193,123,91,0.08)';
-            }}
-            onMouseLeave={(event) => {
-              event.currentTarget.style.color = 'var(--whisper)';
-              event.currentTarget.style.background = 'transparent';
-            }}
-            title={!sidebarOpen ? 'Sign Out' : undefined}
-          >
-            <LogOut size={17} className="flex-shrink-0" />
-            {sidebarOpen && <span className="font-medium">Sign Out</span>}
-          </button>
-        </div>
-      </aside>
-
-      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-        <header className="glass-header flex-shrink-0 px-7 py-3.5 z-10">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl font-semibold tracking-tight leading-none" style={{ fontFamily: 'Fraunces, serif', color: 'var(--ink)' }}>
-              {currentPageLabel}
-            </h2>
-
-            <div className="flex items-center gap-3">
-              <div
-                className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full"
-                style={{
-                  background: roleBadge.background,
-                  border: `1px solid ${roleBadge.border}`,
-                }}
-              >
-                <span
-                  className="inline-flex h-2 w-2 rounded-full"
-                  style={{ background: roleBadge.color }}
-                />
-                <span className="text-[11px] font-semibold tracking-[0.16em]" style={{ color: roleBadge.color }}>
-                  {roleBadge.label}
-                </span>
-                <span className="text-[11px] text-[color:var(--muted)] max-w-[140px] truncate">
-                  {currentUser?.email ?? role}
-                </span>
-              </div>
-
-              <div
-                className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full"
-                style={{
-                  background: isSystemRunning ? 'rgba(107,138,113,0.10)' : 'rgba(193,123,91,0.10)',
-                  border: `1px solid ${isSystemRunning ? 'rgba(107,138,113,0.25)' : 'rgba(193,123,91,0.25)'}`,
-                }}
-              >
-                <span
-                  className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isSystemRunning ? 'pulse-gold' : ''}`}
-                  style={{ background: isSystemRunning ? 'var(--sage)' : 'var(--terra)' }}
-                />
-                <span className="text-xs font-medium" style={{ color: isSystemRunning ? 'var(--sage)' : 'var(--terra)' }}>
-                  {isSystemRunning ? 'Online' : 'Offline'}
-                </span>
-              </div>
-
-              {effectiveLastSyncTime && (
+    <>
+      {isSystemRunning && realtimeSectionIds.filter(Boolean).map((sectionId) => (
+        <RealtimeAttendanceBridge
+          key={sectionId}
+          sectionId={sectionId}
+          role={role}
+          clientId={realtimeClientId}
+          token={realtimeToken}
+        />
+      ))}
+      <div className="flex h-screen overflow-hidden" style={{ background: 'var(--cream-100)' }}>
+        <aside
+          className={`glass-sidebar flex-shrink-0 flex flex-col transition-all duration-300 ease-in-out overflow-hidden z-20 ${sidebarOpen ? 'w-60' : 'w-[68px]'}`}
+        >
+          <div className="flex items-center justify-between px-4 pt-6 pb-5">
+            {sidebarOpen && (
+              <div className="flex items-center gap-3 animate-fade-in">
                 <div
-                  className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-full"
-                  style={{ background: 'rgba(155,122,58,0.08)', border: '1px solid rgba(155,122,58,0.15)' }}
-                >
-                  <Clock size={11} style={{ color: 'var(--gold)' }} />
-                  <span className="text-[11px] font-mono" style={{ color: 'var(--muted)' }}>
-                    {effectiveLastSyncTime.toLocaleTimeString()}
-                  </span>
-                </div>
-              )}
-
-              <div className="relative" ref={dropdownRef}>
-                <button
-                  onClick={() => setDropdownOpen((open) => !open)}
-                  className="flex items-center gap-2.5 pl-1.5 pr-3 py-1.5 rounded-full btn-press"
+                  className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
                   style={{
-                    background: 'var(--glass-bg)',
-                    border: '1px solid var(--glass-border)',
-                    boxShadow: '0 2px 8px rgba(80,50,20,0.06)',
+                    background: 'linear-gradient(135deg, var(--gold) 0%, var(--gold-light) 100%)',
+                    boxShadow: '0 2px 8px rgba(155,122,58,0.35)',
                   }}
                 >
-                  {currentUser?.photoURL ? (
-                    <img src={currentUser.photoURL ?? undefined} alt={displayName} className="w-7 h-7 rounded-full object-cover" />
-                  ) : (
-                    <div
-                      className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[11px] font-bold flex-shrink-0"
-                      style={{ background: 'linear-gradient(135deg, var(--gold) 0%, var(--gold-light) 100%)' }}
-                    >
-                      {getInitials(currentUser?.displayName ?? null, currentUser?.email ?? null)}
+                  <span className="text-white font-bold text-sm" style={{ fontFamily: 'Fraunces, serif' }}>A</span>
+                </div>
+                <div>
+                  <p className="text-sm font-semibold tracking-tight leading-none" style={{ color: 'var(--ink)', fontFamily: 'Fraunces, serif' }}>
+                    AttendMate
+                  </p>
+                  <p className="text-[10px] mt-0.5 tracking-widest uppercase" style={{ color: 'var(--whisper)' }}>
+                    Command
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <button
+              onClick={() => setSidebarOpen((open) => !open)}
+              className="rounded-lg p-1.5 btn-press flex-shrink-0 transition-colors"
+              style={{ color: 'var(--muted)' }}
+              onMouseEnter={(event) => (event.currentTarget.style.background = 'rgba(155,122,58,0.10)')}
+              onMouseLeave={(event) => (event.currentTarget.style.background = 'transparent')}
+            >
+              {sidebarOpen ? <X size={16} /> : <Menu size={16} />}
+            </button>
+          </div>
+
+          <div className="tac-divider mx-3 mb-4" />
+
+          <nav className="flex-1 px-3 space-y-0.5 overflow-y-auto pb-4">
+            {navLinks.map((link, index) => {
+              const previousLink = index > 0 ? navLinks[index - 1] : null;
+              const showGroup = Boolean(link.group && (!previousLink || previousLink.group !== link.group));
+              const isActive = location.pathname === link.path;
+
+              return (
+                <div key={link.path}>
+                  {showGroup && sidebarOpen && (
+                    <div className="pt-5 pb-2 px-2">
+                      <p className="text-[10px] font-semibold tracking-[0.14em] uppercase" style={{ color: 'var(--whisper)' }}>
+                        {link.group}
+                      </p>
                     </div>
                   )}
-                  <span className="text-sm font-medium max-w-[100px] truncate" style={{ color: 'var(--ink)' }}>
-                    {displayName}
-                  </span>
-                  <ChevronDown
-                    size={13}
-                    className="transition-transform duration-200"
-                    style={{ color: 'var(--muted)', transform: dropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}
-                  />
-                </button>
+                  {showGroup && !sidebarOpen && (
+                    <div className="pt-3 pb-1">
+                      <div className="tac-divider mx-1" />
+                    </div>
+                  )}
 
-                {dropdownOpen && (
-                  <div
-                    className="absolute right-0 top-full mt-2 w-52 rounded-2xl overflow-hidden animate-scale-in z-50"
+                  <Link
+                    to={link.path}
+                    title={!sidebarOpen ? link.label : undefined}
+                    className={[
+                      'nav-item flex items-center rounded-xl px-3 py-2.5',
+                      !sidebarOpen ? 'justify-center' : 'gap-3',
+                      isActive ? 'nav-active' : '',
+                    ].join(' ')}
                     style={{
-                      background: 'var(--glass-bg-hover)',
-                      backdropFilter: 'var(--blur-md)',
-                      WebkitBackdropFilter: 'var(--blur-md)',
-                      border: '1px solid var(--glass-border)',
-                      boxShadow: 'var(--glass-shadow-lg)',
+                      color: isActive ? 'var(--gold)' : 'var(--muted)',
+                      fontWeight: isActive ? '600' : '400',
+                      fontSize: '0.8125rem',
+                    }}
+                    onMouseEnter={(event) => {
+                      if (!isActive) (event.currentTarget as HTMLElement).style.color = 'var(--ink)';
+                    }}
+                    onMouseLeave={(event) => {
+                      if (!isActive) (event.currentTarget as HTMLElement).style.color = 'var(--muted)';
                     }}
                   >
-                    <div className="px-4 py-3" style={{ borderBottom: '1px solid rgba(190,160,118,0.20)' }}>
-                      <p className="text-sm font-semibold truncate" style={{ color: 'var(--ink)' }}>{displayName}</p>
-                      <p className="text-xs truncate mt-0.5" style={{ color: 'var(--muted)' }}>{currentUser?.email}</p>
-                    </div>
+                    <span className="flex-shrink-0" style={{ opacity: isActive ? 1 : 0.75 }}>
+                      {link.icon}
+                    </span>
+                    {sidebarOpen && <span>{link.label}</span>}
+                    {isActive && sidebarOpen && (
+                      <span className="ml-auto w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: 'var(--gold)' }} />
+                    )}
+                  </Link>
+                </div>
+              );
+            })}
+          </nav>
 
-                    {shortcuts.map(({ to, icon, label }) => (
-                      <Link
-                        key={to}
-                        to={to}
-                        onClick={() => setDropdownOpen(false)}
-                        className="flex items-center gap-3 px-4 py-2.5 text-sm transition-colors"
-                        style={{ color: 'var(--muted)' }}
-                        onMouseEnter={(event) => {
-                          (event.currentTarget as HTMLElement).style.background = 'rgba(155,122,58,0.07)';
-                          (event.currentTarget as HTMLElement).style.color = 'var(--ink)';
-                        }}
-                        onMouseLeave={(event) => {
-                          (event.currentTarget as HTMLElement).style.background = 'transparent';
-                          (event.currentTarget as HTMLElement).style.color = 'var(--muted)';
-                        }}
-                      >
-                        <span style={{ color: 'var(--whisper)' }}>{icon}</span>
-                        {label}
-                      </Link>
-                    ))}
+          <div className="px-3 pb-5 pt-2">
+            <div className="tac-divider mb-3" />
+            <button
+              onClick={handleLogout}
+              className={[
+                'nav-item w-full flex items-center rounded-xl px-3 py-2.5 btn-press',
+                !sidebarOpen ? 'justify-center' : 'gap-3',
+              ].join(' ')}
+              style={{ color: 'var(--whisper)', fontSize: '0.8125rem' }}
+              onMouseEnter={(event) => {
+                event.currentTarget.style.color = 'var(--terra)';
+                event.currentTarget.style.background = 'rgba(193,123,91,0.08)';
+              }}
+              onMouseLeave={(event) => {
+                event.currentTarget.style.color = 'var(--whisper)';
+                event.currentTarget.style.background = 'transparent';
+              }}
+              title={!sidebarOpen ? 'Sign Out' : undefined}
+            >
+              <LogOut size={17} className="flex-shrink-0" />
+              {sidebarOpen && <span className="font-medium">Sign Out</span>}
+            </button>
+          </div>
+        </aside>
 
-                    <div className="mt-1 pt-1" style={{ borderTop: '1px solid rgba(190,160,118,0.20)' }}>
-                      <button
-                        onClick={handleLogout}
-                        className="w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-colors"
-                        style={{ color: 'var(--terra)' }}
-                        onMouseEnter={(event) => (event.currentTarget.style.background = 'rgba(193,123,91,0.08)')}
-                        onMouseLeave={(event) => (event.currentTarget.style.background = 'transparent')}
-                      >
-                        <LogOut size={14} />
-                        Sign Out
-                      </button>
-                    </div>
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+          <header className="glass-header flex-shrink-0 px-7 py-3.5 z-10">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-semibold tracking-tight leading-none" style={{ fontFamily: 'Fraunces, serif', color: 'var(--ink)' }}>
+                {currentPageLabel}
+              </h2>
+
+              <div className="flex items-center gap-3">
+                <div
+                  className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full"
+                  style={{
+                    background: roleBadge.background,
+                    border: `1px solid ${roleBadge.border}`,
+                  }}
+                >
+                  <span
+                    className="inline-flex h-2 w-2 rounded-full"
+                    style={{ background: roleBadge.color }}
+                  />
+                  <span className="text-[11px] font-semibold tracking-[0.16em]" style={{ color: roleBadge.color }}>
+                    {roleBadge.label}
+                  </span>
+                  <span className="text-[11px] text-[color:var(--muted)] max-w-[140px] truncate">
+                    {currentUser?.email ?? role}
+                  </span>
+                </div>
+
+                <div
+                  className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full"
+                  style={{
+                    background: isSystemRunning ? 'rgba(107,138,113,0.10)' : 'rgba(193,123,91,0.10)',
+                    border: `1px solid ${isSystemRunning ? 'rgba(107,138,113,0.25)' : 'rgba(193,123,91,0.25)'}`,
+                  }}
+                >
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isSystemRunning ? 'pulse-gold' : ''}`}
+                    style={{ background: isSystemRunning ? 'var(--sage)' : 'var(--terra)' }}
+                  />
+                  <span className="text-xs font-medium" style={{ color: isSystemRunning ? 'var(--sage)' : 'var(--terra)' }}>
+                    {isSystemRunning ? 'Online' : 'Offline'}
+                  </span>
+                </div>
+
+                {effectiveLastSyncTime && (
+                  <div
+                    className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-full"
+                    style={{ background: 'rgba(155,122,58,0.08)', border: '1px solid rgba(155,122,58,0.15)' }}
+                  >
+                    <Clock size={11} style={{ color: 'var(--gold)' }} />
+                    <span className="text-[11px] font-mono" style={{ color: 'var(--muted)' }}>
+                      {effectiveLastSyncTime.toLocaleTimeString()}
+                    </span>
                   </div>
                 )}
+
+                <div className="relative" ref={dropdownRef}>
+                  <button
+                    onClick={() => setDropdownOpen((open) => !open)}
+                    className="flex items-center gap-2.5 pl-1.5 pr-3 py-1.5 rounded-full btn-press"
+                    style={{
+                      background: 'var(--glass-bg)',
+                      border: '1px solid var(--glass-border)',
+                      boxShadow: '0 2px 8px rgba(80,50,20,0.06)',
+                    }}
+                  >
+                    {currentUser?.photoURL ? (
+                      <img src={currentUser.photoURL ?? undefined} alt={displayName} className="w-7 h-7 rounded-full object-cover" />
+                    ) : (
+                      <div
+                        className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[11px] font-bold flex-shrink-0"
+                        style={{ background: 'linear-gradient(135deg, var(--gold) 0%, var(--gold-light) 100%)' }}
+                      >
+                        {getInitials(currentUser?.displayName ?? null, currentUser?.email ?? null)}
+                      </div>
+                    )}
+                    <span className="text-sm font-medium max-w-[100px] truncate" style={{ color: 'var(--ink)' }}>
+                      {displayName}
+                    </span>
+                    <ChevronDown
+                      size={13}
+                      className="transition-transform duration-200"
+                      style={{ color: 'var(--muted)', transform: dropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}
+                    />
+                  </button>
+
+                  {dropdownOpen && (
+                    <div
+                      className="absolute right-0 top-full mt-2 w-52 rounded-2xl overflow-hidden animate-scale-in z-50"
+                      style={{
+                        background: 'var(--glass-bg-hover)',
+                        backdropFilter: 'var(--blur-md)',
+                        WebkitBackdropFilter: 'var(--blur-md)',
+                        border: '1px solid var(--glass-border)',
+                        boxShadow: 'var(--glass-shadow-lg)',
+                      }}
+                    >
+                      <div className="px-4 py-3" style={{ borderBottom: '1px solid rgba(190,160,118,0.20)' }}>
+                        <p className="text-sm font-semibold truncate" style={{ color: 'var(--ink)' }}>{displayName}</p>
+                        <p className="text-xs truncate mt-0.5" style={{ color: 'var(--muted)' }}>{currentUser?.email}</p>
+                      </div>
+
+                      {shortcuts.map(({ to, icon, label }) => (
+                        <Link
+                          key={to}
+                          to={to}
+                          onClick={() => setDropdownOpen(false)}
+                          className="flex items-center gap-3 px-4 py-2.5 text-sm transition-colors"
+                          style={{ color: 'var(--muted)' }}
+                          onMouseEnter={(event) => {
+                            (event.currentTarget as HTMLElement).style.background = 'rgba(155,122,58,0.07)';
+                            (event.currentTarget as HTMLElement).style.color = 'var(--ink)';
+                          }}
+                          onMouseLeave={(event) => {
+                            (event.currentTarget as HTMLElement).style.background = 'transparent';
+                            (event.currentTarget as HTMLElement).style.color = 'var(--muted)';
+                          }}
+                        >
+                          <span style={{ color: 'var(--whisper)' }}>{icon}</span>
+                          {label}
+                        </Link>
+                      ))}
+
+                      <div className="mt-1 pt-1" style={{ borderTop: '1px solid rgba(190,160,118,0.20)' }}>
+                        <button
+                          onClick={handleLogout}
+                          className="w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-colors"
+                          style={{ color: 'var(--terra)' }}
+                          onMouseEnter={(event) => (event.currentTarget.style.background = 'rgba(193,123,91,0.08)')}
+                          onMouseLeave={(event) => (event.currentTarget.style.background = 'transparent')}
+                        >
+                          <LogOut size={14} />
+                          Sign Out
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        </header>
+          </header>
 
-        <main className="flex-1 overflow-y-auto p-7 md:p-8">
-          {children}
-        </main>
+          <main className="flex-1 overflow-y-auto p-7 md:p-8">
+            {children}
+          </main>
+        </div>
       </div>
-    </div>
+    </>
   );
 };
 

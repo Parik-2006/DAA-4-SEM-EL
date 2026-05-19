@@ -175,6 +175,12 @@ export interface DetectFaceResponse {
   student_name?: string;
   student_id?: string;
   confidence?: number;
+  fused_confidence?: number;
+  detection_id?: string | null;
+  can_confirm?: boolean;
+  learning_eligible?: boolean;
+  scope_mode?: string;
+  anchor?: Record<string, unknown>;
   record_id?: string;
   timestamp?: string;
   window?: AttendanceWindowInfo | null;
@@ -288,13 +294,70 @@ export interface FaceDetectScopeParams {
   student_id?: string;
   section_id?: string;
   period_id?: string;
+  session_id?: string;
+  force_scope?: boolean;
   candidate_student_ids?: string[];
   exclude_student_ids?: string[];
+}
+
+export interface FaceConfirmationPayload {
+  session_id: string;
+  period_id: string;
+  predicted_student_id: string;
+  confirmed_student_id: string;
+  detection_id: string;
+  yes_this_is_me: boolean;
+  client_timestamp?: string;
+}
+
+export interface FaceConfirmationResponse {
+  accepted: boolean;
+  learning_status: string;
+  anchor_refreshed: boolean;
+  message: string;
+  error?: string | null;
 }
 
 export interface AttendanceCandidatesResponse {
   candidate_student_ids: string[] | null;
   count: number | null;
+}
+
+export interface CCTVStreamConfig {
+  stream_id: string;
+  rtsp_url: string;
+  camera_name?: string;
+  location?: string;
+  enabled?: boolean;
+  classroom_id?: string;
+  frame_skip?: number;
+  min_consecutive_frames?: number;
+  confidence_threshold?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CCTVStreamMetrics {
+  stream_id: string;
+  classroom_id?: string | null;
+  status: string;
+  is_running?: boolean;
+  is_paused?: boolean;
+  students_loaded?: boolean;
+  students_loaded_count?: number;
+  student_load_error?: string | null;
+  fps?: number;
+  frames_read?: number;
+  frames_processed_by_ai?: number;
+  active_tracks?: number;
+  total_detections?: number;
+  marked_students?: number;
+  last_error?: string | null;
+}
+
+export interface CCTVStreamsResponse {
+  success: boolean;
+  count: number;
+  streams: Record<string, CCTVStreamMetrics>;
 }
 
 export interface AdminHistoryFilters {
@@ -660,6 +723,8 @@ class AttendanceAPI {
     if (scope.student_id) params.set('student_id', scope.student_id);
     if (scope.section_id) params.set('section_id', scope.section_id);
     if (scope.period_id)  params.set('period_id',  scope.period_id);
+    if (scope.session_id) params.set('session_id', scope.session_id);
+    if (scope.force_scope !== undefined) params.set('force_scope', String(scope.force_scope));
     if (scope.candidate_student_ids?.length) {
       params.set('candidate_student_ids', scope.candidate_student_ids.join(','));
     }
@@ -686,6 +751,23 @@ class AttendanceAPI {
       console.error('[detectFaceOnly] Failed after retries:', err);
       return buildDetectError(err);
     }
+  }
+
+  async submitFaceConfirmation(
+    payload: FaceConfirmationPayload
+  ): Promise<FaceConfirmationResponse> {
+    const response = await withRetry(
+      async () => {
+        const response = await apiClient.post<FaceConfirmationResponse>(
+          '/api/v1/attendance/face-confirmation',
+          payload,
+          { timeout: 20_000 }
+        );
+        return response.data;
+      },
+      { ...this.retryConfig, maxRetries: 2 }
+    );
+    return response;
   }
 
   async confirmAttendance(
@@ -1826,6 +1908,48 @@ class AttendanceAPI {
   }
 
   // ── Health Check ─────────────────────────────────────────────────────────────
+
+  async addCCTVStream(config: CCTVStreamConfig): Promise<CCTVStreamMetrics> {
+    return withRetry(async () => {
+      const response = await apiClient.post('/api/v1/attendance/streams', {
+        enabled: true,
+        frame_skip: 2,
+        min_consecutive_frames: 5,
+        confidence_threshold: 0.6,
+        ...config,
+      });
+      return response.data as CCTVStreamMetrics;
+    }, { ...this.retryConfig, maxRetries: 2 });
+  }
+
+  async getCCTVStreams(): Promise<CCTVStreamsResponse> {
+    return withRetry(async () => {
+      const response = await apiClient.get('/api/v1/attendance/streams');
+      return response.data as CCTVStreamsResponse;
+    }, this.retryConfig);
+  }
+
+  async getCCTVStream(streamId: string): Promise<CCTVStreamMetrics | null> {
+    return withRetry(async () => {
+      const response = await apiClient.get(`/api/v1/attendance/streams/${encodeURIComponent(streamId)}`);
+      const data = response.data as { stream?: CCTVStreamMetrics };
+      return data.stream ?? null;
+    }, this.retryConfig);
+  }
+
+  async startCCTVStream(streamId: string): Promise<unknown> {
+    return withRetry(async () => {
+      const response = await apiClient.post(`/api/v1/attendance/streams/${encodeURIComponent(streamId)}/start`);
+      return response.data;
+    }, { ...this.retryConfig, maxRetries: 2 });
+  }
+
+  async stopCCTVStream(streamId: string): Promise<unknown> {
+    return withRetry(async () => {
+      const response = await apiClient.post(`/api/v1/attendance/streams/${encodeURIComponent(streamId)}/stop`);
+      return response.data;
+    }, { ...this.retryConfig, maxRetries: 2 });
+  }
 
   /**
    * Calls the health endpoint via plain fetch so it is never intercepted by

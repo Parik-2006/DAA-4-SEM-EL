@@ -10,7 +10,7 @@ from typing import Optional, Tuple, Dict, Any
 from datetime import datetime
 
 from database.face_profile_repository import FaceProfileRepository
-from services.session_anchor_service import SessionAnchorService
+from services.session_anchor_service import get_anchor_service
 from utils.face_exceptions import (
     FaceConfirmationError,
     FaceDetectionNotFoundError,
@@ -38,7 +38,7 @@ class FaceConfirmationService:
     def __init__(self):
         """Initialize service with dependencies."""
         self.repo = FaceProfileRepository()
-        self.anchor_service = SessionAnchorService()
+        self.anchor_service = get_anchor_service()
     
     def process_confirmation(
         self,
@@ -117,7 +117,7 @@ class FaceConfirmationService:
             anchor_refreshed = False
             if yes_this_is_me:
                 try:
-                    self.anchor_service.pin(
+                    self.anchor_service.anchor(
                         session_id=session_id,
                         user_id=confirmed_student_id,
                         period_id=period_id,
@@ -168,10 +168,35 @@ class FaceConfirmationService:
         - Teachers/admins can confirm students in their scope (simplified: allow all)
         """
         if authenticated_user_role == "student":
-            if authenticated_user_id != confirmed_student_id:
-                raise FaceAuthorizationError(
-                    f"Student {authenticated_user_id} cannot confirm {confirmed_student_id}"
-                )
+            # Fast path: if the stored authenticated id equals the student id, allow
+            if authenticated_user_id == confirmed_student_id:
+                return
+
+            # Otherwise attempt to resolve authenticated user -> student mapping
+            try:
+                from database.user_repository import UserRepository
+                from services.firebase_service import FirebaseService
+
+                user_repo = UserRepository()
+                user = user_repo.get_user(authenticated_user_id)
+                if user and user.get("email"):
+                    email = user.get("email").strip().lower()
+                    fb = FirebaseService()
+                    # Search students for a matching email
+                    students = fb.get_all_students() or []
+                    for s in students:
+                        s_email = (s.get("email") or "").strip().lower()
+                        sid = s.get("student_id") or s.get("id") or None
+                        if s_email and sid and s_email == email:
+                            if sid == confirmed_student_id:
+                                return
+            except Exception as exc:
+                logger.debug("Could not map authenticated user to student id: %s", exc)
+
+            # If mapping didn't match, deny
+            raise FaceAuthorizationError(
+                f"Student {authenticated_user_id} cannot confirm {confirmed_student_id}"
+            )
         
         # Teachers/admins can confirm any student in their assigned scope
         # (simplified: we assume authorization middleware handles scope)

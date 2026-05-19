@@ -205,11 +205,11 @@ export const DashboardPage: React.FC = () => {
     .sort((a, b) => String(b.scanned_at ?? '').localeCompare(String(a.scanned_at ?? '')));
   const missedEntries = selectedEntries.filter((entry) => entry.status === 'not_marked');
 
-  const refreshAll = useCallback(() => {
+  const refreshAll = useCallback(async () => {
     refetchWeekly();
     refetchDaily();
     if (selectedClassId) {
-      loadPeriods(selectedClassId, selectedDateKey);
+      await loadPeriods(selectedClassId, selectedDateKey);
     }
   }, [loadPeriods, refetchDaily, refetchWeekly, selectedClassId, selectedDateKey]);
 
