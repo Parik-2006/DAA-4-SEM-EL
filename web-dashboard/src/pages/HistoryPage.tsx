@@ -17,6 +17,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Layout } from '../components/Layout';
 import { AttendanceHistory, AdminHistoryTable } from '../components/AttendanceHistory';
 import { useAdminHistory, useClassesAndPeriods } from '../hooks/useAttendanceHooks';
+import { useContiniousAttendancePolling } from '../hooks/useAttendanceRefresh';
 import { getStoredAssignedSections, getSessionToken } from '../services/firebase/auth.service';
 import { getStoredRole } from '../utils/roles';
 import ChannelBadge from '../components/ChannelBadge';
@@ -419,6 +420,15 @@ function AdminHistoryPage({ allowedClassIds = [] }: { allowedClassIds?: string[]
     enabled:        !teacherScoped || Boolean(filters.classId),
   });
 
+  useEffect(() => {
+    const handler = () => {
+      // immediate refresh when attendance is marked elsewhere
+      refetch();
+    };
+    window.addEventListener('attendance:marked', handler);
+    return () => window.removeEventListener('attendance:marked', handler);
+  }, [refetch]);
+
   const activeFilterCount = [
     filters.classId, filters.periodId, filters.status, filters.search,
     filters.startDate, filters.endDate,
@@ -575,7 +585,12 @@ const StaffHistoryView: React.FC = () => {
   useEffect(() => {
     fetchRecords();
     const interval = setInterval(fetchRecords, 10_000);
-    return () => clearInterval(interval);
+    const handler = () => void fetchRecords();
+    window.addEventListener('attendance:updated', handler);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('attendance:updated', handler);
+    };
   }, [fetchRecords]);
 
   return (

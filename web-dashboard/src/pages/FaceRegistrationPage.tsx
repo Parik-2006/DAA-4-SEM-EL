@@ -11,6 +11,10 @@ import {
   LiveCamera,
 } from '../components';
 import { getCurrentUser } from '../services/firebase/auth.service';
+import {
+  useAttendanceEligibility,
+  usePostMarkRefresh,
+} from '../hooks/useAttendanceRefresh';
 
 import {
   AlertTriangle,
@@ -71,9 +75,11 @@ const FaceRegistrationPage: React.FC = () => {
       // Reset failure counter after success
       if (data?.status === 'success') {
         setConsecutiveFailures(0);
+        // Trigger auto-refresh of pages after marking
+        triggerPostMarkRefresh();
       }
     },
-    []
+    [triggerPostMarkRefresh]
   );
 
   const handleConsecutiveFailures = useCallback(
@@ -82,6 +88,15 @@ const FaceRegistrationPage: React.FC = () => {
     },
     []
   );
+
+  // Eligibility check: is current time within a scheduled period?
+  const eligibility = useAttendanceEligibility();
+
+  // Auto-refresh after marking attendance
+  const triggerPostMarkRefresh = usePostMarkRefresh(() => {
+    // Optional: trigger any dashboard refresh here
+    eligibility.refetch();
+  });
 
   // Read optional query param to auto-start camera for a particular student
   const [searchParams] = useSearchParams();
@@ -202,6 +217,40 @@ const FaceRegistrationPage: React.FC = () => {
 
           <div className="lg:col-span-2">
 
+            {!eligibility.isEligible && (
+              <div
+                className="p-6 rounded-2xl border-2 text-center mb-6"
+                style={{
+                  background: '#FEF2F2',
+                  borderColor: '#fca5a5',
+                  color: '#dc2626',
+                }}
+              >
+                <p className="font-bold text-lg mb-2">⏰ Outside Attendance Window</p>
+                <p className="text-sm mb-4">{eligibility.reason}</p>
+                {eligibility.nextPeriod && (
+                  <p className="text-sm font-semibold">
+                    Next class: {eligibility.nextPeriod.course_code} at {eligibility.nextPeriod.start_time}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {eligibility.isEligible && (
+              <div
+                className="p-4 rounded-xl border mb-6"
+                style={{
+                  background: '#F0FDF4',
+                  borderColor: '#86efac',
+                  color: '#166534',
+                }}
+              >
+                <p className="font-semibold text-sm">
+                  ✓ Active class: {eligibility.currentPeriod?.course_code} ({eligibility.currentPeriod?.start_time}–{eligibility.currentPeriod?.end_time})
+                </p>
+              </div>
+            )}
+
             <LiveCamera
               onAttendanceMarked={
                 handleAttendanceMarked
@@ -211,7 +260,7 @@ const FaceRegistrationPage: React.FC = () => {
               onConsecutiveFailures={
                 handleConsecutiveFailures
               }
-              autoStart={!!targetStudent}
+              autoStart={!!targetStudent && eligibility.isEligible}
               targetStudentId={targetStudent}
             />
           </div>

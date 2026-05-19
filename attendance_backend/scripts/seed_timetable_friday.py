@@ -1,20 +1,42 @@
-import os
-import sys
-from pathlib import Path
-import logging
-from datetime import datetime
+#!/usr/bin/env python
+"""
+Legacy Script: seed_timetable_friday.py
 
-# Add parent dir to path for imports
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+Purpose: Seed Friday-only timetable for CSE C 4th semester.
 
-from services.firebase_service import initialize_firebase, get_firebase_service
-from services.timetable_service import TimetableService
+This script is a hardcoded seed for a specific day and class.
+For general timetable seeding, use the unified:
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-logger = logging.getLogger("seed_timetable")
+    python scripts/seed_via_backend.py [--section SECTION] [--teacher TEACHER]
 
-# Friday Timetable for CSE C 4th Sem
-FRIDAY_PERIODS = [
+This legacy script:
+  ✓ Seeds Friday periods with hardcoded CSE-C-4SEM class
+  ✗ Only covers one day of the week
+  ✗ Hardcoded courses and faculty
+  ✗ Not reusable for other classes or days
+
+The unified seeding path is recommended for:
+  ✓ Full-week timetables
+  ✓ Parameterized by section and teacher
+  ✓ Flexible and reusable
+
+To use this legacy script:
+    python scripts/seed_timetable_friday.py
+
+Or seed full week via unified path:
+    python scripts/seed_via_backend.py --section CSE-C-4SEM
+
+Status: Deprecated. Prefer unified seeding or REST API.
+"""
+
+raise NotImplementedError(
+    "This script has been deprecated.\n"
+    "Use: python scripts/seed_via_backend.py --section CSE-C-4SEM\n"
+    "Or upload timetable via: POST /api/v1/timetable/upload"
+)
+
+# Original implementation retained below for reference:
+# FRIDAY_PERIODS = [
     {
         "class_id": "CSE-C-4SEM",
         "faculty_id": "T001",

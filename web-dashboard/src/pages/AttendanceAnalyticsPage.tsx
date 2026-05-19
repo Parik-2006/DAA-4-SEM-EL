@@ -47,6 +47,12 @@ const StudentAnalyticsView: React.FC = () => {
     enabled: true,
   });
 
+  React.useEffect(() => {
+    const handler = () => refetch();
+    window.addEventListener('attendance:updated', handler);
+    return () => window.removeEventListener('attendance:updated', handler);
+  }, [refetch]);
+
   if (isLoading) {
     return (
       <Layout>
@@ -278,6 +284,12 @@ const TeacherAnalyticsView: React.FC = () => {
         }
   );
 
+  React.useEffect(() => {
+    const handler = () => refetch();
+    window.addEventListener('attendance:updated', handler);
+    return () => window.removeEventListener('attendance:updated', handler);
+  }, [refetch]);
+
   if (!selectedClass) {
     return (
       <Layout>
@@ -443,7 +455,15 @@ const AdminAnalyticsView: React.FC = () => {
       enabled: true,
     });
 
-  const { data: drillDownData, isLoading: drillDownLoading } = useAdminStudentDrillDown(
+  React.useEffect(() => {
+    const handler = () => {
+      refetchTrend();
+    };
+    window.addEventListener('attendance:updated', handler);
+    return () => window.removeEventListener('attendance:updated', handler);
+  }, [refetchTrend]);
+
+  const { data: drillDownData, isLoading: drillDownLoading, refetch: refetchDrillDown } = useAdminStudentDrillDown(
     drillDownStudentId,
     {
       startDate: drillDownStartDate,
@@ -451,6 +471,16 @@ const AdminAnalyticsView: React.FC = () => {
       enabled: !!drillDownStudentId,
     }
   );
+
+  React.useEffect(() => {
+    const handler = () => {
+      if (drillDownStudentId) {
+        refetchDrillDown();
+      }
+    };
+    window.addEventListener('attendance:updated', handler);
+    return () => window.removeEventListener('attendance:updated', handler);
+  }, [drillDownStudentId, refetchDrillDown]);
 
   if (trendLoading) {
     return (

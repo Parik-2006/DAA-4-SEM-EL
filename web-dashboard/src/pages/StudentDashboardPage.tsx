@@ -138,8 +138,6 @@ async function fetchJSON<T>(url: string, params?: Record<string, string>): Promi
 
 async function fetchTodayPeriods(studentId: string): Promise<Period[]> {
   try {
-    // Fetch dashboard data which includes today's periods array
-    // Don't pass student_id - backend uses authenticated user from JWT token
     const dashboardData = await fetchJSON<{
       today_date: string;
       day_name: string;
@@ -148,14 +146,11 @@ async function fetchTodayPeriods(studentId: string): Promise<Period[]> {
       summary: Record<string, number>;
       overall_attendance: Record<string, any>;
     }>('/api/v1/student/dashboard');
-    return dashboardData.periods_today || [];
-  } catch {
-    return [
-      { period_id: 'p1', course_code: 'CS401', course_name: 'Machine Learning',  start_time: '09:00', end_time: '10:00', faculty_name: 'Dr. Sharma',  room: 'A201',  is_lab_class: false, course_color: '#6366F1', status: 'present' },
-      { period_id: 'p2', course_code: 'CS402', course_name: 'Cloud Computing',   start_time: '10:00', end_time: '11:00', faculty_name: 'Prof. Rao',    room: 'A202',  is_lab_class: false, course_color: '#14B8A6', status: 'absent'  },
-      { period_id: 'p3', course_code: 'CS403', course_name: 'Networks Lab',      start_time: '11:00', end_time: '13:00', faculty_name: 'Dr. Patel',    room: 'Lab 3', is_lab_class: true,  course_color: '#8B5CF6', status: 'pending' },
-      { period_id: 'p4', course_code: 'CS404', course_name: 'DBMS',             start_time: '14:00', end_time: '15:00', faculty_name: 'Prof. Mehta',   room: 'A101',  is_lab_class: false, course_color: '#F59E0B', status: 'late'    },
-    ];
+
+    return Array.isArray(dashboardData.periods_today) ? dashboardData.periods_today : [];
+  } catch (err) {
+    console.warn('[StudentDashboardPage] fetchTodayPeriods failed', err);
+    return [];
   }
 }
 
@@ -172,34 +167,42 @@ async function fetchOverallStats(studentId: string): Promise<OverallStats> {
 
 async function fetchPeriodStats(periodId: string, studentId: string): Promise<PeriodStats> {
   try {
-    return await fetchJSON<PeriodStats>('/api/v1/attendance/period-stats', { period_id: periodId, student_id: studentId });
-  } catch {
-    const mock: Record<string, PeriodStats> = {
-      p1: { period_id: 'p1', total_students: 65, present: 58, late: 3,  absent: 4, not_marked: 0,  attendance_pct: 93.8, last_updated: new Date().toISOString() },
-      p2: { period_id: 'p2', total_students: 65, present: 10, late: 2,  absent: 5, not_marked: 48, attendance_pct: 18.5, last_updated: new Date().toISOString() },
-      p3: { period_id: 'p3', total_students: 65, present: 0,  late: 0,  absent: 0, not_marked: 65, attendance_pct: 0,    last_updated: new Date().toISOString() },
-      p4: { period_id: 'p4', total_students: 65, present: 55, late: 7,  absent: 3, not_marked: 0,  attendance_pct: 95.4, last_updated: new Date().toISOString() },
+    return await fetchJSON<PeriodStats>(`/api/v1/attendance/period/${encodeURIComponent(periodId)}/summary`, {
+      student_id: studentId,
+    });
+  } catch (err) {
+    console.warn('[StudentDashboardPage] fetchPeriodStats failed', err);
+    return {
+      period_id: periodId,
+      total_students: 0,
+      present: 0,
+      late: 0,
+      absent: 0,
+      not_marked: 0,
+      attendance_pct: 0,
+      last_updated: new Date().toISOString(),
     };
-    return mock[periodId] ?? { period_id: periodId, total_students: 60, present: 45, late: 5, absent: 10, not_marked: 0, attendance_pct: 83.3, last_updated: new Date().toISOString() };
   }
 }
 
-async function fetchPeriodRecords(periodId: string, _studentId: string): Promise<AttendanceRecord[]> {
+async function fetchPeriodRecords(periodId: string, studentId: string): Promise<AttendanceRecord[]> {
   try {
-    return await fetchJSON<AttendanceRecord[]>('/api/v1/attendance/period-records', { period_id: periodId, student_id: _studentId });
-  } catch {
-    const names    = ['Parikshith B', 'Gagan D K', 'Prajwal K', 'Ved U', 'Pranav Kumar', 'Nischith G A', 'Arjun S', 'Pooja M', 'Rahul T', 'Sneha R'];
-    const statuses: AttendanceRecord['status'][] = ['present','present','present','late','absent','present','present','late','present','absent'];
-    return names.map((name, i) => ({
-      record_id:    `r${periodId}-${i}`,
-      student_name: name,
-      student_id:   `STUD_00${i + 1}`,
-      roll_no:      `4CS${String(i + 1).padStart(2, '0')}`,
-      status:       statuses[i] ?? 'present',
-      marked_at:    new Date(Date.now() - i * 120000).toISOString(),
-      confidence:   statuses[i] === 'present' ? 0.92 + Math.random() * 0.07 : undefined,
-      marked_by:    'Face Recognition',
+    const summary = await fetchJSON<{ students?: Array<Record<string, unknown>> }>(`/api/v1/attendance/period/${encodeURIComponent(periodId)}/summary`, {
+      student_id: studentId,
+    });
+    return (summary.students ?? []).map((item) => ({
+      record_id: String(item.record_id ?? item.id ?? ''),
+      student_name: String(item.student_name ?? item.name ?? ''),
+      student_id: String(item.student_id ?? ''),
+      roll_no: String(item.roll_no ?? item.roll_number ?? ''),
+      status: (item.status as AttendanceRecord['status']) ?? 'pending',
+      marked_at: String(item.scan_timestamp ?? item.marked_at ?? ''),
+      confidence: item.confidence != null ? Number(item.confidence) : undefined,
+      marked_by: String(item.marked_by_name ?? item.marked_by ?? 'Face Recognition'),
     }));
+  } catch (err) {
+    console.warn('[StudentDashboardPage] fetchPeriodRecords failed', err);
+    return [];
   }
 }
 

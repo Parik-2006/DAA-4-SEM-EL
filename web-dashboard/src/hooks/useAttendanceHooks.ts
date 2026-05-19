@@ -585,11 +585,37 @@ export function useAttendanceByPeriod({
     try {
       const now = new Date();
       const todayKey = date ?? now.toISOString().slice(0, 10);
-      const periods = SEEDED_TIMETABLE.filter((p) => p.day === day).sort((a, b) => {
-        const [ah, am] = a.start_time.split(':').map(Number);
-        const [bh, bm] = b.start_time.split(':').map(Number);
-        return ah * 60 + am - (bh * 60 + bm);
-      });
+      let periods: SeedPeriod[] = [];
+      let useSeeded = false;
+
+      try {
+        const remotePeriods = await attendanceAPI.getClassPeriods(classId, todayKey);
+        if (remotePeriods && remotePeriods.length > 0) {
+          periods = remotePeriods.map((p) => ({
+            period_id: p.period_id,
+            day,
+            start_time: p.start_time,
+            end_time: p.end_time,
+            course_code: p.course_code,
+            course_name: p.course_name,
+            course_color: p.course_color ?? '#6366F1',
+            room: p.room,
+            faculty_name: p.faculty_name,
+          }));
+        } else {
+          useSeeded = true;
+        }
+      } catch (err) {
+        useSeeded = true;
+      }
+
+      if (useSeeded) {
+        periods = SEEDED_TIMETABLE.filter((p) => p.day === day).sort((a, b) => {
+          const [ah, am] = a.start_time.split(':').map(Number);
+          const [bh, bm] = b.start_time.split(':').map(Number);
+          return ah * 60 + am - (bh * 60 + bm);
+        });
+      }
 
       const results: PeriodAttendanceSlot[] = [];
       for (const p of periods) {
@@ -624,8 +650,11 @@ export function useAttendanceByPeriod({
         } else {
           results.push({
             period: p,
-            present: 0, late: 0, absent: 0,
-            pending: 70, total_students: 70,
+            present: 0,
+            late: 0,
+            absent: 0,
+            pending: useSeeded ? 70 : 0,
+            total_students: useSeeded ? 70 : 0,
             records: [],
             is_active: isActive(p),
           });

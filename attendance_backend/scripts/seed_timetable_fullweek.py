@@ -1,9 +1,42 @@
 """
-Seed script: convert provided timetable screenshots (pre-parsed into JSON)
-into Firestore `periods` collection via TimetableService.seed_from_screenshot.
+Legacy Script: seed_timetable_fullweek.py
 
-Usage: set environment FIREBASE_CREDENTIALS_PATH and run locally.
+Purpose: Load timetable periods from a JSON file (e.g., parsed from screenshots).
+
+This script is a data import tool for CSV/JSON timetable files.
+For general timetable seeding, use the unified:
+
+    python scripts/seed_via_backend.py [--section SECTION_ID] [--teacher TEACHER]
+
+Or use the REST API directly:
+    POST /api/v1/timetable/upload
+
+This legacy script:
+  ✓ Reads timetable_from_screenshots.json (or custom TIMETABLE_JSON_PATH)
+  ✓ Seeds periods via TimetableService.seed_from_screenshot()
+  ✗ Requires manual JSON file preparation
+  ✗ Not parameterized
+
+The unified seeding path is recommended for:
+  ✓ Creating sections, teachers, students, timetables atomically
+  ✓ CLI-driven configuration
+  ✓ Using backend's Firebase initialization
+
+To use this legacy script:
+    TIMETABLE_JSON_PATH=timetable_from_screenshots.json python scripts/seed_timetable_fullweek.py
+
+Or upload via REST API:
+    curl -X POST http://localhost:8000/api/v1/timetable/upload \
+      -F "file=@timetable.json"
+
+Status: Deprecated. Prefer REST API or unified seeding.
 """
+
+raise NotImplementedError(
+    "This script has been deprecated in favor of the REST API.\n"
+    "Use: POST /api/v1/timetable/upload with JSON/CSV file\n"
+    "Or: python scripts/seed_via_backend.py"
+)
 
 from __future__ import annotations
 

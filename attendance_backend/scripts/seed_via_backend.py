@@ -17,7 +17,6 @@ Examples:
 """
 
 import sys
-import os
 import argparse
 import logging
 from pathlib import Path
@@ -146,10 +145,6 @@ Examples:
     except Exception as exc:
         logger.error("✗ Unexpected error during seeding: %s", exc, exc_info=True)
         return 1
-
-
-if __name__ == '__main__':
-    sys.exit(main())
 
 
 if __name__ == "__main__":

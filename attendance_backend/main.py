@@ -55,6 +55,7 @@ from api.audit   import router as audit_router    # /api/v1/audit/*  (admin, rea
 
 # Core domain
 from api.attendance import router as attendance_router
+from api.face_confirmation import router as face_confirmation_router  # /api/v1/attendance/face-confirmation
 from api.escalation import router as escalation_router  # /api/v1/escalation/* (secondary-factor verification)
 from api.sections   import router as sections_router   # courses, sections, enrollments, assignments
 from api.timetable  import router as timetable_router
@@ -394,6 +395,7 @@ app.include_router(audit_router)       # GET  /api/v1/audit/logs  (admin only)
 
 # ── Core domain ───────────────────────────────────────────────────────────────
 app.include_router(attendance_router)  # /api/v1/attendance/*
+app.include_router(face_confirmation_router)  # /api/v1/attendance/face-confirmation, face-profile/*
 app.include_router(escalation_router)  # /api/v1/escalation/* (secondary-factor verification)
 app.include_router(admin_router)       # /api/v1/admin/*
 app.include_router(sections_router)    # /api/v1/sections/*  (courses, enrollments, assignments)

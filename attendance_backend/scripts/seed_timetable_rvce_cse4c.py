@@ -1,14 +1,40 @@
 """
-scripts/seed_timetable_rvce_cse4c.py
-──────────────────────────────────────────────────────────────────────────────
-Seeds the Firestore `periods`, `courses`, and `course_assignments` collections
-from the real RVCE CSE 4C Semester 4 (Even Sem 2025-26) timetable.
+Legacy Script: seed_timetable_rvce_cse4c.py
 
-Run once during initial setup:
-    python -m scripts.seed_timetable_rvce_cse4c
+Purpose: Seed the real RVCE CSE 4C Semester 4 timetable with hardcoded curriculum.
 
-Idempotent: uses period_id as the document ID so re-running is safe.
+This script is institution-specific and contains a fixed curriculum snapshot.
+For general timetable seeding, use the unified:
+
+    python scripts/seed_via_backend.py [--section SECTION_ID] [--teacher TEACHER]
+
+This legacy script:
+  ✓ Contains real RVCE CSE 4C course catalog
+  ✓ Seeds periods, courses, and faculty assignments
+  ✓ Idempotent (safe to re-run)
+  ✗ Hardcoded to one section (CSE_4C_SEM4)
+  ✗ Not parameterized
+
+The unified seeding path is recommended for:
+  ✓ Custom sections and courses via CLI
+  ✓ Flexible teacher/student assignments
+  ✓ Parameterized timetable creation
+
+To use this legacy script:
+    python scripts/seed_timetable_rvce_cse4c.py
+
+Or integrate into unified flow:
+    1. Create the section with seed_via_backend.py
+    2. Update courses and periods via /api/v1/timetable/upload endpoint
+
+Status: Deprecated. Prefer unified seeding or REST API.
 """
+
+raise NotImplementedError(
+    "This script has been deprecated in favor of the unified seeding path.\n"
+    "Use: python scripts/seed_via_backend.py\n"
+    "Or upload timetable via: POST /api/v1/timetable/upload"
+)
 
 from __future__ import annotations
 

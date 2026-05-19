@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Layout } from '../components/Layout';
 import { PeriodStatsCard, AuditTrailList } from '../components/StatsCard';
 import { useBackendHealthMonitor } from '../hooks/useBackendHealth';
+import { useContiniousAttendancePolling } from '../hooks/useAttendanceRefresh';
 import {
   CSE4C_META,
   useAttendanceByPeriod,
@@ -211,6 +212,19 @@ export const DashboardPage: React.FC = () => {
       loadPeriods(selectedClassId, selectedDateKey);
     }
   }, [loadPeriods, refetchDaily, refetchWeekly, selectedClassId, selectedDateKey]);
+
+  // Auto-refresh data every 10s while dashboard is visible
+  const { lastRefreshAt } = useContiniousAttendancePolling(
+    true, // Always enabled while on dashboard
+    refreshAll,
+    10_000 // Refresh every 10 seconds
+  );
+
+  useEffect(() => {
+    const handler = () => refreshAll();
+    window.addEventListener('attendance:marked', handler);
+    return () => window.removeEventListener('attendance:marked', handler);
+  }, [refreshAll]);
 
   const selectedClass = classOptions.find((item) => item.class_id === selectedClassId) ?? classOptions[0];
   const totalPeriodsInWindow = weekSummaries.reduce((sum, day) => sum + day.periodCount, 0);

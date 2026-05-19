@@ -1,32 +1,44 @@
 """
-Migration: add_section_to_attendance.py
-=======================================
-Backfills all existing attendance records in Firestore that are missing a
-``section_id`` field, stamping them with the default value ``"CSE_C"``.
+Migration Tool: add_section_to_attendance.py
+=============================================
 
-Also creates the default Course, Section, Enrollment, and CourseAssignment
-documents so the new section-scoped queries work immediately after migration.
+Purpose: One-time data migration to backfill missing section_id on attendance records.
 
-Usage
------
-Run once from the project root:
+This is a DATA MIGRATION tool, separate from the seeding path.
+Use this ONLY if upgrading from an older schema that lacked section_id.
 
-    python attendance_backend/scripts/add_section_to_attendance.py
+What it does:
+  ✓ Finds all attendance records with missing/empty section_id
+  ✓ Stamps them with a default section_id (configurable)
+  ✓ Creates seed documents (Course, Section, Enrollment, CourseAssignment)
+  ✓ Uses atomic Firestore batched commits
+  ✓ Provides detailed reporting and dry-run mode
+  ✓ Safe to re-run (already-patched docs are skipped)
 
-Flags
------
---dry-run          Print what would change without writing anything.
---batch-size N     Firestore batch commit size (default: 400, max: 500).
---default-section  Override the default section name (default: "CSE_C").
---section-id       Override the full section_id to stamp (default auto-derived).
---verbose          Print each document ID as it is processed.
+Usage (one-time migration):
+  python attendance_backend/scripts/add_section_to_attendance.py
 
-Safety
-------
-* Only documents where ``section_id`` is absent or empty are touched.
-* All writes use Firestore batched commits — the migration is atomic per batch.
-* A summary is printed at the end: total docs, patched, skipped, errors.
-* Re-running the script is safe (already-patched docs are skipped).
+With options:
+  --dry-run              Preview changes without writing
+  --default-section CSE_C  Override default section name
+  --section-id ID        Explicitly set section_id to stamp
+  --batch-size 500       Firestore batch size (default 400, max 500)
+  --verbose              Print every document processed
+
+Example:
+  python attendance_backend/scripts/add_section_to_attendance.py --dry-run
+  python attendance_backend/scripts/add_section_to_attendance.py --default-section CSE_4C
+
+Notes:
+  • Run once during schema upgrade.
+  • Safe to re-run (idempotent).
+  • Batched writes are atomic per batch.
+  • Only edits docs with missing section_id.
+
+NOTE: For NEW sections/attendance, use the unified seeding path:
+  python scripts/seed_via_backend.py [--section SECTION]
+
+Status: Active (migration tool, not seeding).
 """
 
 from __future__ import annotations

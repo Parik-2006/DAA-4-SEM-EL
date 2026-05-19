@@ -1,55 +1,90 @@
-import os
-import sys
-import re
-from pathlib import Path
-import logging
-import numpy as np
-from PIL import Image
+#!/usr/bin/env python
+"""
+Legacy Script: seed_students_with_names.py
 
-# Add parent dir to path for imports
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+Purpose: Load student face photos from local folders and register embeddings.
 
-from services.firebase_service import initialize_firebase, get_firebase_service
-from models.facenet_extractor import FaceNetExtractor
+This script is specialized for bulk student enrollment from local photo directories.
+For general test data seeding, use the unified:
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-logger = logging.getLogger("seed")
+    python scripts/seed_via_backend.py [--section SEC] [--teacher TEACHER] [--students N]
 
-# Mapping from STUD_ID to Name
-STUDENT_MAPPING = {
-    "STUD_001": "Parikshith B Bilchode",
-    "STUD_002": "Gagan D K",
-    "STUD_003": "Prajwal K",
-    "STUD_004": "Ved U",
-    "STUD_005": "Pranav Kumar M",
-    "STUD_006": "Nischith G A"
-}
+This legacy script requires:
+  - test_data/student_photos/ folder with subdirectories per student
+  - FaceNetExtractor model loaded
+  - Manual student name mapping
 
+The unified seeding path is recommended for:
+  ✓ Creating sections, teachers, students, timetables via Firestore
+  ✓ Parameterized via CLI
+  ✓ Using backend's Firebase initialization
 
-def _normalize_folder_name(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+To use this legacy script:
+  1. Prepare test_data/student_photos/{folder}/ with JPEG/PNG files
+  2. Update STUDENT_MAPPING if needed
+  3. Run: python scripts/seed_students_with_names.py
 
+Alternatively, integrate photo enrollment into the unified flow by:
+  1. Create students via seed_via_backend.py
+  2. Upload photos separately via the face enrollment endpoint
 
-def _resolve_folder_path(photos_base: Path, stud_id: str, name: str) -> Path | None:
-    candidates = [
-        stud_id.lower(),
-        stud_id.lower().replace("stud_", "student_"),
-        _normalize_folder_name(name),
-        _normalize_folder_name(f"{name}_{stud_id}"),
-    ]
+Status: Deprecated. Prefer unified seeding + face enrollment endpoints.
+"""
 
-    for candidate in dict.fromkeys(candidates):
-        folder = photos_base / candidate
-        if folder.exists() and folder.is_dir():
-            return folder
-    return None
+raise NotImplementedError(
+    "This script has been deprecated in favor of the unified seeding path.\n"
+    "Use: python scripts/seed_via_backend.py\n"
+    "For face photo enrollment, use the /api/v1/attendance/register-face endpoint."
+)
 
-def seed():
-    # Initialize Firebase
-    creds = os.getenv("FIREBASE_CREDENTIALS_PATH", "config/firebase-credentials.json")
-    db_url = os.getenv("FIREBASE_DATABASE_URL")
-    bucket = os.getenv("FIREBASE_STORAGE_BUCKET")
-    firebase = initialize_firebase(creds, db_url, bucket, use_firestore=True)
+# Original implementation retained below for reference:
+# import os
+# import sys
+# import re
+# from pathlib import Path
+# import logging
+# import numpy as np
+# from PIL import Image
+#
+# sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+#
+# from services.firebase_service import initialize_firebase, get_firebase_service
+# from models.facenet_extractor import FaceNetExtractor
+#
+# logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+# logger = logging.getLogger("seed")
+#
+# STUDENT_MAPPING = {
+#     "STUD_001": "Parikshith B Bilchode",
+#     "STUD_002": "Gagan D K",
+#     "STUD_003": "Prajwal K",
+#     "STUD_004": "Ved U",
+#     "STUD_005": "Pranav Kumar M",
+#     "STUD_006": "Nischith G A"
+# }
+#
+# def _normalize_folder_name(value: str) -> str:
+#     return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+#
+# def _resolve_folder_path(photos_base: Path, stud_id: str, name: str) -> Path | None:
+#     candidates = [
+#         stud_id.lower(),
+#         stud_id.lower().replace("stud_", "student_"),
+#         _normalize_folder_name(name),
+#         _normalize_folder_name(f"{name}_{stud_id}"),
+#     ]
+#
+#     for candidate in dict.fromkeys(candidates):
+#         folder = photos_base / candidate
+#         if folder.exists() and folder.is_dir():
+#             return folder
+#     return None
+#
+# def seed():
+#     creds = os.getenv("FIREBASE_CREDENTIALS_PATH", "config/firebase-credentials.json")
+#     db_url = os.getenv("FIREBASE_DATABASE_URL")
+#     bucket = os.getenv("FIREBASE_STORAGE_BUCKET")
+#     firebase = initialize_firebase(creds, db_url, bucket, use_firestore=True)
     
     extractor = FaceNetExtractor()
     

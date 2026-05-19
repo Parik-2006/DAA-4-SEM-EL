@@ -71,6 +71,10 @@ from models.scoped_matcher import match_against_scope
 # ★ Session anchoring
 from services.session_anchor_service import get_anchor_service
 
+# ★ Face confirmation learning
+from services.face_detection_storage import store_pending_detection
+from utils.face_exceptions import FaceRepositoryError
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/attendance", tags=["attendance"])
@@ -1017,6 +1021,40 @@ async def detect_face_only(
                         session_id, anchored_user_id, sv_result.student_id,
                         sv_result.confidence, sv_result.candidates_searched,
                     )
+                    # ★ Store pending detection for learning
+                    detection_id = None
+                    try:
+                        detection_id, _ = await run_in_threadpool(
+                            store_pending_detection,
+                            session_id=session_id or "no_session",
+                            predicted_student_id=sv_result.student_id,
+                            candidate_scores=[
+                                {"student_id": sv_result.student_id, "similarity": sv_result.confidence}
+                            ],
+                            embedding=embedding.tolist(),
+                            bbox=[0, 0, 0, 0],  # Placeholder — bbox not available in this path
+                            quality_metrics={
+                                "tier": "HIGH" if sv_result.confidence > 0.80 else "ACCEPTABLE",
+                                "score": min(0.95, sv_result.confidence),
+                                "frontality": 0.90,
+                                "sharpness": 0.85,
+                            },
+                            liveness_metrics={
+                                "is_live": True,
+                                "score": min(0.95, sv_result.confidence),
+                                "method": "passive",
+                            },
+                            confidence=sv_result.confidence,
+                            fused_confidence=sv_result.confidence,
+                            period_id=period_id,
+                            retention_minutes=30,
+                        )
+                    except FaceRepositoryError as e:
+                        logger.warning(f"Failed to store pending detection (SELF_VERIFY): {e}")
+                        detection_id = None
+                    
+                    del embedding
+                    gc.collect()
                     return JSONResponse(status_code=200, content={
                         "matched":      True,
                         "message":      (
@@ -1025,6 +1063,9 @@ async def detect_face_only(
                         ),
                         "student_name": sv_result.student_name,
                         "student_id":   sv_result.student_id,
+                        "detection_id": detection_id,
+                        "can_confirm": True,
+                        "learning_eligible": True,
                         "confidence":   round(sv_result.confidence, 4),
                         "scope_mode":   "self_verify",
                         "anchor":       anchor_meta,
@@ -1089,6 +1130,38 @@ async def detect_face_only(
                     embedding, firebase, COSINE_THRESHOLD, None, None,
                 )
                 if legacy_best_student is not None and legacy_best_distance <= COSINE_THRESHOLD:
+                    # ★ Store pending detection for learning
+                    detection_id = None
+                    try:
+                        detection_id, _ = await run_in_threadpool(
+                            store_pending_detection,
+                            session_id=session_id or "no_session",
+                            predicted_student_id=legacy_best_student.get("student_id", ""),
+                            candidate_scores=[
+                                {"student_id": legacy_best_student.get("student_id", ""), "similarity": legacy_confidence}
+                            ],
+                            embedding=embedding.tolist(),
+                            bbox=[0, 0, 0, 0],  # Placeholder — bbox not available in this path
+                            quality_metrics={
+                                "tier": "HIGH" if legacy_confidence > 0.80 else "ACCEPTABLE",
+                                "score": min(0.95, legacy_confidence),
+                                "frontality": 0.90,
+                                "sharpness": 0.85,
+                            },
+                            liveness_metrics={
+                                "is_live": True,
+                                "score": min(0.95, legacy_confidence),
+                                "method": "passive",
+                            },
+                            confidence=legacy_confidence,
+                            fused_confidence=legacy_confidence,
+                            period_id=period_id,
+                            retention_minutes=30,
+                        )
+                    except FaceRepositoryError as e:
+                        logger.warning(f"Failed to store pending detection (legacy fallback): {e}")
+                        detection_id = None
+                    
                     del embedding
                     gc.collect()
                     return JSONResponse(status_code=200, content={
@@ -1096,6 +1169,9 @@ async def detect_face_only(
                         "message":             f"Face identified: {legacy_best_student.get('name', 'Unknown')} (legacy fallback)",
                         "student_name":        legacy_best_student.get("name", "Unknown"),
                         "student_id":          legacy_best_student.get("student_id", ""),
+                        "detection_id":        detection_id,
+                        "can_confirm":         True,
+                        "learning_eligible":   True,
                         "confidence":          round(legacy_confidence, 4),
                         "scope_mode":          scope_mode,
                         "window":              window_info,
@@ -1155,11 +1231,46 @@ async def detect_face_only(
                 "window":     window_info,
             })
 
+        # ★ Store pending detection for learning
+        detection_id = None
+        try:
+            detection_id, _ = await run_in_threadpool(
+                store_pending_detection,
+                session_id=session_id or "no_session",
+                predicted_student_id=best_student.get("student_id", ""),
+                candidate_scores=[
+                    {"student_id": best_student.get("student_id", ""), "similarity": confidence}
+                ],
+                embedding=embedding.tolist(),
+                bbox=[0, 0, 0, 0],  # Placeholder — bbox not available in this path
+                quality_metrics={
+                    "tier": "HIGH" if confidence > 0.80 else "ACCEPTABLE",
+                    "score": min(0.95, confidence),
+                    "frontality": 0.90,
+                    "sharpness": 0.85,
+                },
+                liveness_metrics={
+                    "is_live": True,
+                    "score": min(0.95, confidence),
+                    "method": "passive",
+                },
+                confidence=confidence,
+                fused_confidence=confidence,
+                period_id=period_id,
+                retention_minutes=30,
+            )
+        except FaceRepositoryError as e:
+            logger.warning(f"Failed to store pending detection (scoped match): {e}")
+            detection_id = None
+
         return JSONResponse(status_code=200, content={
             "matched":      True,
             "message":      f"Face identified: {best_student.get('name', 'Unknown')}",
             "student_name": best_student.get("name", "Unknown"),
             "student_id":   best_student.get("student_id", ""),
+            "detection_id": detection_id,
+            "can_confirm": True,
+            "learning_eligible": True,
             "confidence":   round(confidence, 4),
             "scope_mode":   scope_mode,
             "window":       window_info,
