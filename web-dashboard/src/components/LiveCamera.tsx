@@ -805,6 +805,31 @@ export const LiveCamera: React.FC<LiveCameraProps> = ({
           }
 
           if (result.suggested_candidates?.length) {
+            // Check if logged-in user is among candidates
+            if (targetStudentIdNormalized && result.suggested_candidates.some(
+              c => c.student_id.trim().toLowerCase() === targetStudentIdNormalized
+            )) {
+              // Auto-select logged-in user for confirmation without prompting
+              const loggedInCandidate = result.suggested_candidates.find(
+                c => c.student_id.trim().toLowerCase() === targetStudentIdNormalized
+              );
+              if (loggedInCandidate) {
+                consecutiveFailuresRef.current = 0;
+                setConsecutiveFailures(0);
+                pausedForConfirmRef.current = true;
+                setLastFeedback(null);
+                setPendingDetection({
+                  ...result,
+                  matched: true,
+                  student_id: loggedInCandidate.student_id,
+                  student_name: loggedInCandidate.student_name,
+                  confidence: loggedInCandidate.confidence,
+                });
+                setCandidateSuggestions(null);
+                return;
+              }
+            }
+
             if (strictSelfVerify) {
               setCandidateSuggestions(null);
               setFeedbackType('error');

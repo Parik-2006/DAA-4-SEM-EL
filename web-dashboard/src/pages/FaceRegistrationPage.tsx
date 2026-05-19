@@ -11,6 +11,7 @@ import {
   LiveCamera,
 } from '../components';
 import { getCurrentUser } from '../services/firebase/auth.service';
+import { attendanceAPI, ClassPeriod } from '../services/api';
 import {
   useAttendanceEligibility,
   usePostMarkRefresh,
@@ -22,6 +23,8 @@ import {
   RefreshCw,
   Camera,
   Loader2,
+  Calendar,
+  Clock,
 } from 'lucide-react';
 
 // ─────────────────────────────────────────────────────────────
@@ -63,6 +66,13 @@ const FaceRegistrationPage: React.FC = () => {
   const [consecutiveFailures, setConsecutiveFailures] =
     useState(0);
 
+  // Timetable state
+  const [selectedDay, setSelectedDay] = useState<string>('');
+  const [selectedPeriodId, setSelectedPeriodId] = useState<string>('');
+  const [availableDays, setAvailableDays] = useState<string[]>([]);
+  const [periodsByDay, setPeriodsByDay] = useState<Record<string, ClassPeriod[]>>({});
+  const [timetableLoading, setTimetableLoading] = useState(false);
+
   // ─────────────────────────────────────────────────────────
   // Hooks
   // ─────────────────────────────────────────────────────────
@@ -101,6 +111,43 @@ const FaceRegistrationPage: React.FC = () => {
     },
     []
   );
+
+  // Load timetable when page mounts
+  useEffect(() => {
+    const loadTimetable = async () => {
+      // TODO: Get actual class_id from student profile/context
+      // For now, use a placeholder or fetch from user profile
+      const classId = sessionStorage.getItem('class_id') || 'class_default';
+      
+      setTimetableLoading(true);
+      try {
+        const timetable = await attendanceAPI.getClassTimetable(classId);
+        if (timetable?.days) {
+          const days = Object.keys(timetable.days).sort();
+          setAvailableDays(days);
+          setPeriodsByDay(timetable.days);
+          
+          // Auto-select first day
+          if (days.length > 0) {
+            setSelectedDay(days[0]);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load timetable:', err);
+      } finally {
+        setTimetableLoading(false);
+      }
+    };
+
+    loadTimetable();
+  }, []);
+
+  // Auto-select first period when day changes
+  useEffect(() => {
+    if (selectedDay && periodsByDay[selectedDay]?.length > 0) {
+      setSelectedPeriodId(periodsByDay[selectedDay][0].period_id);
+    }
+  }, [selectedDay, periodsByDay]);
 
   // Read optional query param to auto-start camera for a particular student
   const [searchParams] = useSearchParams();
@@ -215,6 +262,54 @@ const FaceRegistrationPage: React.FC = () => {
 
         {/* ───────────────── MAIN GRID ───────────────── */}
 
+        {/* DAY & PERIOD SELECTION */}
+        {timetableLoading ? (
+          <div className="flex items-center justify-center gap-2 p-4 bg-blue-50 rounded-lg">
+            <Loader2 size={16} className="animate-spin text-blue-500" />
+            <span className="text-sm text-blue-600">Loading timetable...</span>
+          </div>
+        ) : availableDays.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl border border-blue-200">
+            {/* Day Selection */}
+            <div>
+              <label className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-2">
+                <Calendar size={16} className="text-blue-600" />
+                Select Day
+              </label>
+              <select
+                value={selectedDay}
+                onChange={(e) => setSelectedDay(e.target.value)}
+                className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+              >
+                {availableDays.map((day) => (
+                  <option key={day} value={day}>
+                    {day}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Period Selection */}
+            <div>
+              <label className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-2">
+                <Clock size={16} className="text-blue-600" />
+                Select Period
+              </label>
+              <select
+                value={selectedPeriodId}
+                onChange={(e) => setSelectedPeriodId(e.target.value)}
+                className="w-full px-3 py-2 border border-blue-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+              >
+                {periodsByDay[selectedDay]?.map((period) => (
+                  <option key={period.period_id} value={period.period_id}>
+                    {period.course_code} ({period.start_time}–{period.end_time})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        ) : null}
+
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
           {/* CAMERA */}
@@ -266,6 +361,7 @@ const FaceRegistrationPage: React.FC = () => {
               }
               autoStart={!!targetStudent && eligibility.isEligible}
               targetStudentId={targetStudent}
+              periodId={selectedPeriodId || undefined}
             />
           </div>
 
